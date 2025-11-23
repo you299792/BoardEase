@@ -17,6 +17,7 @@ import {
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
+import { supabase } from '../../lib/supabaseClient';
 import {
   getCurrentUser,
   getTenantBookings,
@@ -53,8 +54,21 @@ export default function Bookings() {
 
       setCurrentUser(user);
 
-      // Fetch bookings from Supabase
-      const { success, bookings: data, error } = await getTenantBookings(user.id);
+      // Get tenant profile
+      const { data: tenantProfile, error: profileError } = await supabase
+        .from('tenant_profile')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!tenantProfile) {
+        Alert.alert('Error', 'Tenant profile not found');
+        setIsLoading(false);
+        return;
+      }
+
+      // Fetch bookings from Supabase using tenant profile ID
+      const { success, bookings: data, error } = await getTenantBookings(tenantProfile.id);
 
       if (success) {
         // Transform Supabase data to match component expectations
@@ -67,16 +81,16 @@ export default function Bookings() {
           landlordEmail: booking.listings?.landlord_profile?.users?.email,
           landlordPhone: booking.listings?.landlord_profile?.users?.phone,
           landlordImage: booking.listings?.landlord_profile?.users?.profile_image_url,
-          moveInDate: booking.check_in_date ? new Date(booking.check_in_date).toLocaleDateString() : 'TBD',
-          moveOutDate: booking.check_out_date ? new Date(booking.check_out_date).toLocaleDateString() : 'TBD',
-          guests: booking.number_of_occupants || 1,
+          moveInDate: booking.move_in_date ? new Date(booking.move_in_date).toLocaleDateString() : 'TBD',
+          moveOutDate: booking.move_out_date ? new Date(booking.move_out_date).toLocaleDateString() : 'TBD',
+          guests: booking.number_of_guests || 1,
           amount: booking.total_amount,
-          status: booking.booking_status,
+          status: booking.status,
           bookedAt: booking.created_at,
           cancelledAt: booking.cancelled_at,
           cancelReason: booking.cancellation_reason,
           notes: booking.special_requests,
-          tenantId: booking.tenant_profile_id,
+          tenantId: booking.tenant_id,
         }));
 
         setBookings(transformedBookings);
