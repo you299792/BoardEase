@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import MapView, { Marker } from 'react-native-maps';
+import { supabase } from '../../lib/supabaseClient';
 import {
   getCurrentUser,
   getListing,
@@ -26,6 +27,8 @@ import {
   toggleFavorite,
   createBooking,
   sendInterestMessage,
+  sendMessage,
+  createConversation,
 } from '../../lib/supabaseClient';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -584,118 +587,69 @@ export default function BoardingHouseDetails() {
     })();
   };
 
-  const submitBooking = () => {
+  const submitBooking = async () => {
     const landlord = getLandlord();
     const messageText = `I'd like to book ${getHouseName()} on ${bookingDate || 'N/A'} for ${bookingGuests} guest(s). Please confirm availability.`;
 
-    const messageData = {
-      id: `msg_${Date.now()}`,
-      sender: currentUser.id,
-      text: messageText,
-      type: 'booking',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    (async () => {
-      try {
-        const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-        let tenantConversations = tenantJson != null ? JSON.parse(tenantJson) : [];
-
-        const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
-        const landlordKey = contactKey(landlord);
-        const conversationId = `${landlordKey}_${house.id}`;
-        
-        const tenantConvoIndex = tenantConversations.findIndex(c => c.id === conversationId);
-
-        if (tenantConvoIndex > -1) {
-          if (!tenantConversations[tenantConvoIndex].history) tenantConversations[tenantConvoIndex].history = [];
-          tenantConversations[tenantConvoIndex].history.unshift(messageData);
-          tenantConversations[tenantConvoIndex].lastMessage = messageText;
-          tenantConversations[tenantConvoIndex].time = 'Just now';
-          tenantConversations[tenantConvoIndex].unread = false;
-          tenantConversations[tenantConvoIndex].status = tenantConversations[tenantConvoIndex].status || 'ready_to_book';
-        } else {
-          tenantConversations.unshift({
-            id: conversationId,
-            landlord: {
-              id: landlord.id,
-              name: landlord.name,
-              image: landlord.image,
-              email: landlord.email,
-              phone: landlord.phone,
-            },
-            houseName: getHouseName(),
-            houseId: house.id,
-            lastMessage: messageText,
-            time: 'Just now',
-            unread: false,
-            status: 'ready_to_book',
-            history: [messageData],
-          });
-        }
-
-        await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(tenantConversations));
-
-        const landlordJson = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-        let landlordInquiries = landlordJson != null ? JSON.parse(landlordJson) : [];
-
-        const landlordConvoIndex = landlordInquiries.findIndex(c => 
-          c.tenant.id === currentUser.id && 
-          contactKey(c.landlord) === landlordKey &&
-          c.property === getHouseName()
-        );
-
-        if (landlordConvoIndex > -1) {
-          if (!landlordInquiries[landlordConvoIndex].history) landlordInquiries[landlordConvoIndex].history = [];
-          landlordInquiries[landlordConvoIndex].history.unshift(messageData);
-          landlordInquiries[landlordConvoIndex].lastMessage = messageText;
-          landlordInquiries[landlordConvoIndex].time = 'Just now';
-          landlordInquiries[landlordConvoIndex].unread = true;
-          landlordInquiries[landlordConvoIndex].status = landlordInquiries[landlordConvoIndex].status || 'ready_to_book';
-        } else {
-          landlordInquiries.unshift({
-            id: `inq_${Date.now()}`,
-            tenant: currentUser,
-            landlord: {
-              id: landlord.id,
-              name: landlord.name,
-              image: landlord.image,
-              email: landlord.email,
-              phone: landlord.phone,
-            },
-            property: getHouseName() || 'Booking Request',
-            houseId: house.id,
-            lastMessage: messageText,
-            time: 'Just now',
-            unread: true,
-            status: 'ready_to_book',
-            history: [messageData],
-          });
-        }
-
-        await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(landlordInquiries));
-
-        Alert.alert('Booking Request Sent!', `Your booking request for ${getHouseName()} has been sent to ${landlord.name}.`);
-        setShowBookingModal(false);
-        setBookingDate('');
-        setBookingGuests('1');
-
-        router.push({
-          pathname: '/(tenant)/chat',
-          params: {
-            landlordId: landlord.id,
-            landlordEmail: landlord.email,
-            landlordPhone: landlord.phone,
-            landlordName: landlord.name,
-            landlordImage: landlord.image,
-            houseName: getHouseName(),
-          }
-        });
-      } catch (e) {
-        console.error('Failed to send booking request', e);
-        Alert.alert('Error', 'Failed to send booking request. Please try again.');
+    try {
+      if (!currentUser) {
+        Alert.alert('Error', 'User not authenticated');
+        return;
       }
-    })();
+
+      if (!tenantProfileId || !house?.landlord_profile?.id) {
+        Alert.alert('Error', 'Missing tenant or landlord profile information');
+        return;
+      }
+
+      // Use createConversation helper like sendInterestMessage does
+      const { success: convSuccess, conversation, error: convError } = await createConversation(
+        tenantProfileId,
+        house.landlord_profile.id,
+        house.id
+      );
+
+      if (!convSuccess || !conversation) {
+        Alert.alert('Error', convError || 'Failed to create conversation');
+        return;
+      }
+
+      const conversationId = conversation.id;
+
+      // Send the booking message
+      const { success, error } = await sendMessage(
+        conversationId,
+        currentUser.id,
+        messageText,
+        null // no image for booking message
+      );
+
+      if (!success) {
+        Alert.alert('Error', error || 'Failed to send booking request');
+        return;
+      }
+
+      Alert.alert('Booking Request Sent!', `Your booking request for ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
+      setShowBookingModal(false);
+      setBookingDate('');
+      setBookingGuests('1');
+
+      router.push({
+        pathname: '/(tenant)/chat',
+        params: {
+          conversationId: conversationId,
+          landlordId: landlord.id,
+          landlordEmail: landlord.email,
+          landlordPhone: landlord.phone,
+          landlordName: `${landlord.first_name || ''} ${landlord.last_name || ''}`.trim(),
+          landlordImage: landlord.profile_image_url,
+          houseName: getHouseName(),
+        }
+      });
+    } catch (e) {
+      console.error('Failed to send booking request', e);
+      Alert.alert('Error', 'Failed to send booking request. Please try again.');
+    }
   };
 
   const handleViewLandlordProfile = () => {
@@ -1247,6 +1201,11 @@ export default function BoardingHouseDetails() {
             <Text style={styles.modalSubtitle}>
               Send booking request for {getHouseName()}
             </Text>
+            
+            <View style={styles.priceSection}>
+              <Text style={styles.priceLabel}>Monthly Rate:</Text>
+              <Text style={styles.priceValue}>₱{getHousePrice()}/month</Text>
+            </View>
             
             <View style={styles.bookingForm}>
               <View style={styles.inputGroup}>
@@ -2024,6 +1983,25 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 20,
     lineHeight: 22,
+  },
+  priceSection: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  priceLabel: {
+    fontSize: 16,
+    color: '#666',
+    fontWeight: '500',
+  },
+  priceValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#667eea',
   },
   messageInput: {
     borderWidth: 1,
