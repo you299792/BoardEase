@@ -21,28 +21,39 @@ import {
   getMessages,
   sendMessage,
   uploadProfileImage,
+  uploadMessageImage,
   subscribeToMessages,
+  getUserProfile,
 } from '../../lib/supabaseClient';
 
 export default function ChatScreen() {
-  const { conversationId: routeConversationId, landlordId, landlordName, houseName, houseId } = useLocalSearchParams();
+  const { conversationId: routeConversationId } = useLocalSearchParams();
 
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
-  const [landlordInfo, setLandlordInfo] = useState(null);
-  const [landlordImage, setLandlordImage] = useState(null);
   const [conversationId, setConversationId] = useState(routeConversationId || null);
   const [conversationStatus, setConversationStatus] = useState(null);
+  const [subscription, setSubscription] = useState(null);
+  const [landlordInfo, setLandlordInfo] = useState(null);
+  const [houseName, setHouseName] = useState(null);
 
   useEffect(() => {
     loadConversation();
-  }, [landlordId, routeConversationId]);
+    
+    return () => {
+      // Cleanup subscription on unmount
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
+  }, [routeConversationId]);
 
   const loadConversation = async () => {
     try {
       setIsLoading(true);
+      setMessages([]);
 
       // Get current user
       const user = await getCurrentUser();
@@ -54,78 +65,86 @@ export default function ChatScreen() {
 
       setCurrentUser(user);
 
-      // If we have a conversationId from route, use it directly
-      let convId = routeConversationId;
+      // Use conversationId from route params - this is CRITICAL for conversation isolation
+      const convId = routeConversationId;
 
-      // If no conversationId from route, fetch from Supabase
       if (!convId) {
-        const { success, messages: messagesData, conversationId: fetchedConvId, error } = await getMessages(
-          user.id,
-          landlordId,
-          houseId
-        );
+        Alert.alert('Error', 'Conversation ID is missing');
+        setIsLoading(false);
+        return;
+      }
 
-        if (!success) {
-          Alert.alert('Error', error || 'Failed to load messages');
-          setIsLoading(false);
-          return;
+      // Fetch messages for this specific conversation
+      const { success, messages: messagesData, error } = await getMessages(convId);
+
+      if (!success || !messagesData) {
+        Alert.alert('Error', error || 'Failed to load messages');
+        setIsLoading(false);
+        return;
+      }
+
+      // Get landlord and property info from first message or last conversation update
+      if (messagesData.length > 0) {
+        // Get info from first message
+        const firstMessage = messagesData[0];
+        if (firstMessage.receiver && firstMessage.sender_id === user.id) {
+          // Current user is sender, receiver is landlord
+          setLandlordInfo({
+            name: `${firstMessage.receiver.first_name} ${firstMessage.receiver.last_name}`,
+            image: firstMessage.receiver.profile_image_url,
+          });
+        } else if (firstMessage.sender && firstMessage.receiver_id === user.id) {
+          // Current user is receiver, sender is landlord
+          setLandlordInfo({
+            name: `${firstMessage.sender.first_name} ${firstMessage.sender.last_name}`,
+            image: firstMessage.sender.profile_image_url,
+          });
         }
 
-        convId = fetchedConvId;
-
-        // Transform and sort messages (newest first for display)
-        const transformedMessages = messagesData.map(msg => ({
-          id: msg.id,
-          sender: msg.sender_id,
-          text: msg.message_text,
-          image: msg.image_url,
-          timestamp: msg.created_at,
-          type: msg.message_type,
-        })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-        setMessages(transformedMessages);
-      } else {
-        // If we have conversationId, fetch messages for it
-        const { success, messages: messagesData, error } = await getMessages(
-          user.id,
-          landlordId,
-          houseId
-        );
-
-        if (success && messagesData) {
-          const transformedMessages = messagesData.map(msg => ({
-            id: msg.id,
-            sender: msg.sender_id,
-            text: msg.message_text,
-            image: msg.image_url,
-            timestamp: msg.created_at,
-            type: msg.message_type,
-          })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-          setMessages(transformedMessages);
+        // Extract property name from conversation data
+        if (firstMessage.conversation?.listing?.title) {
+          setHouseName(firstMessage.conversation.listing.title);
         }
       }
 
-      if (convId) {
-        setConversationId(convId);
+      // Transform messages to include sender profile data
+      const transformedMessages = messagesData.map(msg => ({
+        id: msg.id,
+        sender_id: msg.sender_id,
+        sender: msg.sender,
+        receiver: msg.receiver,
+        text: msg.message_text,
+        image: msg.media_url,
+        timestamp: msg.created_at,
+        type: msg.message_type,
+      })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-        // Subscribe to real-time messages
-        const subscription = subscribeToMessages(convId, (newMsg) => {
-          const transformedMsg = {
-            id: newMsg.id,
-            sender: newMsg.sender_id,
-            text: newMsg.message_text,
-            image: newMsg.image_url,
-            timestamp: newMsg.created_at,
-            type: newMsg.message_type,
-          };
-          setMessages(prev => [transformedMsg, ...prev]);
-        });
+      setMessages(transformedMessages);
+      setConversationId(convId);
 
-        return () => {
-          if (subscription) subscription.unsubscribe();
+      // Unsubscribe from previous subscription if exists
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+
+      // Subscribe to real-time messages for THIS specific conversation only
+      const newSubscription = subscribeToMessages(convId, (newMsg) => {
+        console.log(`[Chat] New message in conversation ${convId}:`, newMsg);
+        
+        const transformedMsg = {
+          id: newMsg.id,
+          sender_id: newMsg.sender_id,
+          sender: newMsg.sender,
+          receiver: newMsg.receiver,
+          text: newMsg.message_text,
+          image: newMsg.media_url,
+          timestamp: newMsg.created_at,
+          type: newMsg.message_type,
         };
-      }
+        setMessages(prev => [transformedMsg, ...prev]);
+      });
+
+      setSubscription(newSubscription);
     } catch (error) {
       console.error('Failed to load conversation', error);
       Alert.alert('Error', 'Failed to load conversation');
@@ -143,7 +162,7 @@ export default function ChatScreen() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.8,
@@ -167,31 +186,62 @@ export default function ChatScreen() {
         return;
       }
 
+      // Fetch user's full profile to get image
+      const { success: profileSuccess, user: userProfile } = await getUserProfile(currentUser.id);
+      
+      // Upload message image if provided
       let imageUrl = null;
-
-      // Upload image if provided
       if (imageUri) {
-        const uploadResult = await uploadProfileImage(imageUri);
+        const uploadResult = await uploadMessageImage(imageUri, currentUser.id);
         if (uploadResult.success) {
           imageUrl = uploadResult.publicUrl;
+        } else {
+          Alert.alert('Error', 'Failed to upload image');
+          return;
         }
       }
+
+      // Clear input first (so user sees it's been sent)
+      setNewMessage('');
+
+      // Create optimistic message object for immediate display
+      const optimisticMessage = {
+        id: `temp-${Date.now()}`,
+        sender_id: currentUser.id,
+        sender: {
+          id: currentUser.id,
+          first_name: userProfile?.first_name || currentUser.user_metadata?.first_name || 'You',
+          last_name: userProfile?.last_name || currentUser.user_metadata?.last_name || '',
+          profile_image_url: userProfile?.profile_image_url || currentUser.user_metadata?.profile_image_url,
+        },
+        receiver: landlordInfo,
+        text: text.trim() || null,
+        image: imageUrl || null,
+        timestamp: new Date().toISOString(),
+        type: imageUrl ? 'image' : 'text',
+      };
+
+      // Show message immediately (optimistic update)
+      setMessages([optimisticMessage, ...messages]);
 
       // Send message to Supabase with conversation ID
       const { success, error } = await sendMessage(
         conversationId,
         currentUser.id,
-        text.trim() || null
+        text.trim() || null,
+        imageUrl
       );
 
-      if (success) {
-        setNewMessage('');
-        // Message will appear through real-time subscription
-      } else {
+      if (!success) {
+        // Remove optimistic message if send failed
+        setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
         Alert.alert('Error', error || 'Failed to send message');
       }
+      // On success, real-time subscription will replace the optimistic message with the actual one
     } catch (error) {
       console.error('Failed to send message', error);
+      // Remove optimistic message on error
+      setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
       Alert.alert('Error', 'Failed to send message');
     }
   };
@@ -224,33 +274,62 @@ export default function ChatScreen() {
     );
   };
 
-  const renderMessage = ({ item }) => (
-    <View
-      style={[
-        styles.messageBubble,
-        item.sender === currentUser?.id
-          ? styles.myMessage
-          : styles.otherMessage,
-      ]}
-    >
-      {item.image ? (
-        <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
-          <Image source={{ uri: item.image }} style={styles.messageImage} />
-        </TouchableOpacity>
-      ) : (
-        <Text
-          style={
-            item.sender === currentUser?.id
-              ? styles.myMessageText
-              : styles.otherMessageText
-          }
-        >
-          {item.text}
-        </Text>
-      )}
-      <Text style={styles.messageTime}>{item.timestamp}</Text>
-    </View>
-  );
+  const renderMessage = ({ item }) => {
+    const isMyMessage = currentUser && item.sender_id === currentUser.id;
+    const senderProfile = item.sender;
+    const senderAvatar = senderProfile?.profile_image_url;
+
+    return (
+      <View
+        style={[
+          styles.messageContainer,
+          isMyMessage ? styles.myMessageContainer : styles.otherMessageContainer,
+        ]}
+      >
+        {!isMyMessage && senderAvatar && (
+          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+        )}
+        {!isMyMessage && !senderAvatar && (
+          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
+            <Ionicons name="person-circle" size={32} color="#ccc" />
+          </View>
+        )}
+
+        <View style={[
+          styles.messageBubble,
+          isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble
+        ]}>
+          {item.image ? (
+            <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
+              <Image source={{ uri: item.image }} style={styles.messageImage} />
+            </TouchableOpacity>
+          ) : (
+            <Text
+              style={
+                isMyMessage
+                  ? styles.myMessageText
+                  : styles.otherMessageText
+              }
+            >
+              {item.text}
+            </Text>
+          )}
+          <Text style={[styles.messageTime, isMyMessage ? styles.myMessageTime : styles.otherMessageTime]}>
+            {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </Text>
+        </View>
+
+        {isMyMessage && senderAvatar && (
+          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+        )}
+        {isMyMessage && !senderAvatar && (
+          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
+            <Ionicons name="person-circle" size={32} color="#ccc" />
+          </View>
+        )}
+      </View>
+    );
+  };
 
   if (isLoading) {
     return (
@@ -271,9 +350,9 @@ export default function ChatScreen() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
-        {landlordImage && <Image source={{ uri: landlordImage }} style={styles.avatar} />}
+        {landlordInfo?.image && <Image source={{ uri: landlordInfo.image }} style={styles.avatar} />}
         <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>{landlordName}</Text>
+          <Text style={styles.headerTitle}>{landlordInfo?.name || 'Loading...'}</Text>
           {houseName && <Text style={styles.headerSubtitle}>Regarding: {houseName}</Text>}
           {conversationStatus ? (
             <View style={styles.statusBadge}>
@@ -355,11 +434,38 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 10,
   },
+  messageContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginVertical: 6,
+    gap: 6,
+  },
+  myMessageContainer: {
+    justifyContent: 'flex-end',
+  },
+  otherMessageContainer: {
+    justifyContent: 'flex-start',
+  },
+  senderAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#e5e7eb',
+  },
+  defaultAvatar: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   messageBubble: {
     padding: 12,
     borderRadius: 18,
-    marginVertical: 4,
-    maxWidth: '80%',
+    maxWidth: '70%',
+  },
+  myMessageBubble: {
+    backgroundColor: '#667eea',
+  },
+  otherMessageBubble: {
+    backgroundColor: '#e5e7eb',
   },
   myMessage: {
     alignSelf: 'flex-end',
@@ -377,17 +483,23 @@ const styles = StyleSheet.create({
     color: '#333',
     fontSize: 16,
   },
-  messageImage: {
-    width: 200,
-    height: 150,
-    borderRadius: 12,
-    marginBottom: 8,
-  },
   messageTime: {
     fontSize: 10,
     color: 'rgba(0,0,0,0.5)',
     alignSelf: 'flex-end',
     marginTop: 5,
+  },
+  myMessageTime: {
+    color: 'rgba(255,255,255,0.7)',
+  },
+  otherMessageTime: {
+    color: 'rgba(0,0,0,0.5)',
+  },
+  messageImage: {
+    width: 200,
+    height: 150,
+    borderRadius: 12,
+    marginBottom: 8,
   },
   statusBadge: {
     marginTop: 6,
