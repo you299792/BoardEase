@@ -14,21 +14,21 @@ import { router, useFocusEffect } from 'expo-router';
 import SearchBar from '../../components/SearchBar';
 import {
   getCurrentUser,
+  getTenantProfile,
   getConversations,
 } from '../../lib/supabaseClient'; 
 
 export default function Messages() {
   const [searchQuery, setSearchQuery] = useState('');
   const [allMessages, setAllMessages] = useState([]); 
-  const [isLoading, setIsLoading] = useState(true); 
+  const [isLoading, setIsLoading] = useState(true);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
 
-  
-  
   const loadMessages = async () => {
     try {
       setIsLoading(true);
 
-      // Get current user
+      // Get current user from auth
       const user = await getCurrentUser();
       if (!user) {
         Alert.alert('Error', 'Not logged in');
@@ -36,19 +36,31 @@ export default function Messages() {
         return;
       }
 
-      // Fetch conversations from Supabase
-      const { success, conversations, error } = await getConversations(user.id);
+      // Get tenant profile to get the tenant_profile.id
+      const { success: profileSuccess, profile, error: profileError } = await getTenantProfile(user.id);
+      if (!profileSuccess || !profile) {
+        Alert.alert('Error', profileError || 'Could not load tenant profile');
+        setIsLoading(false);
+        return;
+      }
+
+      setTenantProfileId(profile.id);
+
+      // Fetch conversations using tenant_profile.id
+      const { success, conversations, error } = await getConversations(profile.id);
 
       if (success && conversations) {
         // Transform conversations to message format
+        // Each conversation is a separate chat with a landlord
         const messages = conversations.map(conv => ({
           id: conv.id,
+          conversationId: conv.id,  // CRITICAL: Each conversation has unique ID
           landlord: {
-            id: conv.landlord_id,
-            name: `${conv.landlord?.users?.first_name} ${conv.landlord?.users?.last_name}`,
-            email: conv.landlord?.users?.email,
-            phone: conv.landlord?.users?.phone,
-            image: conv.landlord?.users?.profile_image_url,
+            id: conv.landlord_profile?.id,
+            name: `${conv.landlord_profile?.users?.first_name || 'Unknown'} ${conv.landlord_profile?.users?.last_name || 'Landlord'}`,
+            email: conv.landlord_profile?.users?.email,
+            phone: conv.landlord_profile?.users?.phone,
+            image: conv.landlord_profile?.users?.profile_image_url,
           },
           houseName: conv.listing?.title || 'General Inquiry',
           houseId: conv.listing_id,
@@ -56,8 +68,10 @@ export default function Messages() {
           time: conv.last_message_time,
         }));
 
+        console.log(`[Messages] Loaded ${messages.length} conversations`);
         setAllMessages(messages);
       } else {
+        console.log('[Messages] No conversations found or error:', error);
         setAllMessages([]);
       }
     } catch (e) {
@@ -80,15 +94,10 @@ export default function Messages() {
   );
 
   const handlePressMessage = (item) => {
-    const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
     router.push({
       pathname: '/(tenant)/chat',
       params: {
-        landlordId: contactKey(item.landlord),
-        landlordName: item.landlord.name,
-        landlordImage: item.landlord.image,
-        houseName: item.houseName,
-        houseId: item.houseId,
+        conversationId: item.conversationId,
       },
     });
   };
@@ -108,16 +117,13 @@ export default function Messages() {
           style: "destructive",
           onPress: async () => {
             try {
-             
+              // Remove from local state
               const newMessagesList = allMessages.filter(
                 (item) => item.id !== itemToDelete.id
               );
               
-              
               setAllMessages(newMessagesList);
-              
-              
-              await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(newMessagesList));
+              Alert.alert('Deleted', 'Conversation has been removed from your inbox.');
             } catch (e) {
               console.error("Failed to delete message", e);
               Alert.alert("Error", "Could not delete conversation.");
