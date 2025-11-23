@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,11 +9,39 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback } from 'react';
 import TermsAndPrivacyScreen from '../../components/TermsAndPrivacy';
+import { getCurrentUser, getTenantProfile } from '../../lib/supabaseClient';
 
 export default function Menu() {
   const [showTerms, setShowTerms] = useState(false);
+  const [userData, setUserData] = useState(null);
+
+  // Reload user data when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      loadUserData();
+    }, [])
+  );
+
+  const loadUserData = async () => {
+    try {
+      const user = await getCurrentUser();
+      if (user) {
+        // Fetch complete profile data from database
+        const { success, user: profileUser } = await getTenantProfile(user.id);
+        if (success && profileUser) {
+          setUserData(profileUser);
+        } else {
+          // Fallback to auth user if profile fetch fails
+          setUserData(user);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load user data', error);
+    }
+  };
 
   const menuItems = [
     {
@@ -102,13 +130,19 @@ export default function Menu() {
       <ScrollView style={styles.content}>
         {/* User Profile Section */}
         <View style={styles.profileSection}>
-          <Image
-            source={{ uri: 'https://i.insider.com/5d9f454ee94e865e924818da?width=700' }}
-            style={styles.profileImage}
-          />
+          {userData?.profile_image_url ? (
+            <Image
+              source={{ uri: userData.profile_image_url }}
+              style={styles.profileImage}
+            />
+          ) : (
+            <View style={[styles.profileImage, styles.placeholderImage]}>
+              <Ionicons name="person-circle" size={60} color="#667eea" />
+            </View>
+          )}
           <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>Jesse Pinkman</Text>
-            <Text style={styles.profileEmail}>jessepinkmanyo@gmail.com</Text>
+            <Text style={styles.profileName}>{userData?.first_name} {userData?.last_name}</Text>
+            <Text style={styles.profileEmail}>{userData?.email}</Text>
             <Text style={styles.profileType}>Tenant</Text>
           </View>
           <TouchableOpacity 
@@ -189,6 +223,11 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 30,
     marginRight: 16,
+  },
+  placeholderImage: {
+    backgroundColor: '#f0f4ff',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileInfo: {
     flex: 1,

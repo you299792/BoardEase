@@ -74,3 +74,6 @@ export const useAuth = () => {
   }
   return context;
 };
+
+// Default export to prevent routing warnings (not meant to be rendered as a screen)
+export default AuthProvider;

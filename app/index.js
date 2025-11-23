@@ -10,13 +10,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons, Feather } from '@expo/vector-icons';
-import { useAuth } from './landlord/AuthContext';
+import { signIn } from '../lib/supabaseClient';
 
 export default function Login() {
-  const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [userType, setUserType] = useState('tenant'); 
   const [password, setPassword] = useState('');
@@ -24,29 +24,53 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleLogin = async () => {
-    if (email && password) {
-      setIsLoading(true);
+    if (!email || !password) {
+      Alert.alert('Error', 'Please enter email and password');
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      const result = await signIn(email, password);
       
-      try {
-       
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        if (userType === 'tenant') {
+      if (result.success && result.data) {
+        const user = result.data.user;
+        // Route based on user_type from database
+        if (user.user_type === 'tenant') {
           router.replace('/(tenant)/home');
-        } else {
-          const landlordData = {
-            name: 'Walter White',
-            email: email,
-            photoURL: 'https://lucien0maverick.wordpress.com/wp-content/uploads/2014/07/walter-white.jpg'
-          };
-          login(landlordData);
+        } else if (user.user_type === 'landlord') {
           router.replace('/landlord');
+        } else {
+          Alert.alert('Error', 'Unable to determine user type');
         }
-      } catch (error) {
-        console.log('Login error:', error);
-      } finally {
-        setIsLoading(false);
+      } else {
+        // Handle specific errors
+        const errorMessage = result.error || 'Invalid email or password';
+        
+        if (errorMessage.includes('Invalid login credentials')) {
+          Alert.alert(
+            'Invalid Credentials',
+            'The email or password you entered is incorrect. Please try again or sign up if you don\'t have an account.',
+            [
+              { text: 'Try Again', style: 'default' },
+              { text: 'Sign Up', onPress: () => handleSignUpPress(), style: 'cancel' }
+            ]
+          );
+        } else if (errorMessage.includes('Email not confirmed')) {
+          Alert.alert(
+            'Email Not Confirmed',
+            'Please check your email and confirm your account before signing in.'
+          );
+        } else {
+          Alert.alert('Login Failed', errorMessage);
+        }
       }
+    } catch (error) {
+      console.error('Login error:', error);
+      Alert.alert('Error', 'An unexpected error occurred during login. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 

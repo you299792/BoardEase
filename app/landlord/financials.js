@@ -1,4 +1,4 @@
-import React, { useState, useEffect,useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,25 +11,27 @@ import {
   TextInput,
   Platform,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const BOOKINGS_STORAGE_KEY = '@bookings_data';
-const PAYMENTS_STORAGE_KEY = '@payments_data';
-const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
-const TENANT_MESSAGES_KEY = '@tenant_messages';
+import {
+  getCurrentUser,
+  getLandlordBookings,
+  getLandlordRevenue,
+  recordPaymentAsLandlord,
+} from '../../lib/supabaseClient';
 
 export default function FinancialsScreen() {
   const [selectedPeriod, setSelectedPeriod] = useState('monthly');
   const [refreshing, setRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
-  const [listings, setListings] = useState([]);
+  const [revenue, setRevenue] = useState({});
+  const [currentUser, setCurrentUser] = useState(null);
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
     tenantName: '',
@@ -39,46 +41,52 @@ export default function FinancialsScreen() {
     date: new Date().toISOString().split('T')[0],
   });
 
-  const currentLandlord = {
-    id: 'landlord_walter_white_01',
-    name: 'Walter White',
-    email: 'walter.white@example.com',
-    phone: '+1 234 567 8901',
-  };
-
   useEffect(() => {
     loadData();
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [])
+  );
+
   const loadData = async () => {
     try {
-      // Load bookings
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-      const landlordBookings = allBookings.filter(booking => booking.landlordId === currentLandlord.id);
-      setBookings(landlordBookings);
+      setIsLoading(true);
+      const user = await getCurrentUser();
+      setCurrentUser(user);
 
-      // Load payments
-      const paymentsJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-      const allPayments = paymentsJson ? JSON.parse(paymentsJson) : [];
-      const landlordPayments = allPayments.filter(payment => payment.landlordId === currentLandlord.id);
-      setPayments(landlordPayments);
+      if (user) {
+        // Load bookings
+        const { success: bookingsSuccess, bookings: dbBookings } = await getLandlordBookings(user.id);
+        if (bookingsSuccess) {
+          setBookings(dbBookings || []);
+        }
 
-      // Load listings
-      const listingsJson = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-      const allListings = listingsJson ? JSON.parse(listingsJson) : [];
-      const landlordListings = allListings.filter(listing => listing.landlord?.id === currentLandlord.id);
-      setListings(landlordListings);
-
+        // Load revenue
+        const { success: revenueSuccess, payments: dbPayments, revenue: revenueData } = await getLandlordRevenue(user.id, selectedPeriod);
+        if (revenueSuccess) {
+          setPayments(dbPayments || []);
+          setRevenue(revenueData || {});
+        }
+      }
     } catch (error) {
       console.error('Failed to load data', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadData();
-    setRefreshing(false);
+    try {
+      await loadData();
+    } catch (error) {
+      console.error('Refresh error:', error);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   // Calculate financial data from actual data
@@ -712,6 +720,7 @@ export default function FinancialsScreen() {
     </>
   );
 }
+
 
 const styles = StyleSheet.create({
   container: {

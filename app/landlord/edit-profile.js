@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,51 +12,77 @@ import {
   Alert,
   Switch,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors } from '../../constants/Colors';
-import { useAuth } from './AuthContext';
+import {
+  getCurrentUser,
+  getLandlordProfile,
+  updateLandlordProfile,
+} from '../../lib/supabaseClient';
 
 export default function LandlordProfile() {
-  const { user, login } = useAuth();
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [bio, setBio] = useState('');
+  const [company, setCompany] = useState('');
+  const [yearsExperience, setYearsExperience] = useState('');
+  const [photoURL, setPhotoURL] = useState('');
   
-  const [name, setName] = useState(user?.name || 'Walter White');
-  const [email, setEmail] = useState(user?.email || 'wwhite@los-pollos.com');
-  const [phone, setPhone] = useState(user?.phone || '+63 912 345 6789');
-  const [bio, setBio] = useState(user?.bio || 'Professional landlord with 5+ years of experience providing quality student accommodations in CDO. All properties are well-maintained and located near universities.');
-  const [company, setCompany] = useState(user?.company || 'Los Pollos Hermanos Properties');
-  const [yearsExperience, setYearsExperience] = useState(user?.yearsExperience || '5');
-  const [photoURL, setPhotoURL] = useState(user?.photoURL || 'https://i.insider.com/5d9f454ee94e865e924818da?width=700');
-  
- 
-  const [emailNotifications, setEmailNotifications] = useState(user?.settings?.emailNotifications ?? true);
-  const [smsNotifications, setSmsNotifications] = useState(user?.settings?.smsNotifications ?? true);
-  const [showContactInfo, setShowContactInfo] = useState(user?.settings?.showContactInfo ?? true);
+  const [emailNotifications, setEmailNotifications] = useState(true);
+  const [smsNotifications, setSmsNotifications] = useState(true);
+  const [showContactInfo, setShowContactInfo] = useState(true);
 
-  const landlordData = {
-    name,
-    email,
-    phone,
-    bio,
-    company,
-    yearsExperience,
-    photoURL,
-    joinDate: '2022-03-15',
-    verified: true,
-    totalProperties: 5,
-    responseRate: '95%',
-    responseTime: 'within 2 hours',
+  useEffect(() => {
+    loadProfileData();
+  }, []);
+
+  const loadProfileData = async () => {
+    try {
+      setIsLoading(true);
+      const user = await getCurrentUser();
+      setCurrentUser(user);
+
+      if (user) {
+        // Load complete landlord profile from database
+        const { success, profile } = await getLandlordProfile(user.id);
+        if (success && profile) {
+          // Get user data from nested users object
+          const userData = profile.users;
+          if (userData) {
+            setName(`${userData.first_name || ''} ${userData.last_name || ''}`.trim() || userData.email);
+            setEmail(userData.email || '');
+            setPhone(userData.phone || '');
+            // Set photoURL to null unless one exists
+            setPhotoURL(userData.profile_image_url || null);
+          }
+          // Load landlord-specific data
+          setBio(profile.bio || '');
+          setCompany(profile.company_name || '');
+          setYearsExperience(String(profile.years_experience || 0));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load profile:', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const stats = [
-    { label: 'Properties', value: landlordData.totalProperties, icon: 'business' },
-    { label: 'Years Experience', value: landlordData.yearsExperience, icon: 'trophy' },
-    { label: 'Response Rate', value: landlordData.responseRate, icon: 'speedometer' },
+    { label: 'Properties', value: '5', icon: 'business' },
+    { label: 'Years Experience', value: yearsExperience, icon: 'trophy' },
+    { label: 'Response Rate', value: '95%', icon: 'speedometer' },
   ];
 
   const pickImage = async () => {
@@ -105,50 +131,54 @@ export default function LandlordProfile() {
   }, []) 
 );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name.trim() || !email.trim()) {
       Alert.alert('Validation', 'Name and Email are required.');
       return;
     }
 
-    
-    const updatedUser = {
-      ...user,
-      name: name.trim(),
-      email: email.trim(),
-      phone: phone.trim(),
-      bio: bio.trim(),
-      company: company.trim(),
-      yearsExperience: yearsExperience,
-      photoURL: photoURL,
-      settings: {
-        emailNotifications,
-        smsNotifications,
-        showContactInfo,
-      },
-    };
+    if (!currentUser) {
+      Alert.alert('Error', 'Not logged in');
+      return;
+    }
 
-    login(updatedUser);
-    setIsEditing(false);
-    Alert.alert('Success', 'Profile updated successfully!');
+    setIsSaving(true);
+    try {
+      const [firstName, lastName] = name.trim().split(' ');
+      const { success, error } = await updateLandlordProfile(currentUser.id, {
+        first_name: firstName || '',
+        last_name: lastName || '',
+        email: email.trim(),
+        phone: phone.trim(),
+        profile_image_url: photoURL,
+        bio: bio.trim(),
+        company_name: company.trim(),
+        years_experience: parseInt(yearsExperience) || 0,
+      });
+
+      if (success) {
+        setIsEditing(false);
+        Alert.alert('Success', 'Profile updated successfully!');
+      } else {
+        Alert.alert('Error', error || 'Failed to update profile');
+      }
+    } catch (err) {
+      console.error('Save error:', err);
+      Alert.alert('Error', err.message || 'Failed to save profile');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCancel = () => {
-    
-    setName(user?.name || 'Walter White');
-    setEmail(user?.email || 'wwhite@los-pollos.com');
-    setPhone(user?.phone || '+63 912 345 6789');
-    setBio(user?.bio || 'Professional landlord with 5+ years of experience providing quality student accommodations in CDO. All properties are well-maintained and located near universities.');
-    setCompany(user?.company || 'Los Pollos Hermanos Properties');
-    setYearsExperience(user?.yearsExperience || '5');
-    setPhotoURL(user?.photoURL || 'https://i.insider.com/5d9f454ee94e865e924818da?width=700');
+    loadProfileData();
     setIsEditing(false);
   };
 
   const contactInfo = [
-    { label: 'Email', value: landlordData.email, icon: 'mail' },
-    { label: 'Phone', value: landlordData.phone, icon: 'call' },
-    { label: 'Response Time', value: landlordData.responseTime, icon: 'time' },
+    { label: 'Email', value: email, icon: 'mail' },
+    { label: 'Phone', value: phone, icon: 'call' },
+    { label: 'Years Experience', value: yearsExperience, icon: 'briefcase' },
   ];
 
   return (
@@ -190,18 +220,19 @@ export default function LandlordProfile() {
               onPress={isEditing ? pickImage : null}
               disabled={!isEditing}
             >
-              <Image
-                source={{ uri: landlordData.photoURL }}
-                style={styles.profileImage}
-              />
+              {photoURL ? (
+                <Image
+                  source={{ uri: photoURL }}
+                  style={styles.profileImage}
+                />
+              ) : (
+                <View style={[styles.profileImage, styles.placeholderImage]}>
+                  <Ionicons name="person-circle" size={93} color="#667eea" />
+                </View>
+              )}
               {isEditing && (
                 <View style={styles.editPhotoOverlay}>
                   <Ionicons name="camera" size={24} color="white" />
-                </View>
-              )}
-              {landlordData.verified && (
-                <View style={styles.verifiedBadge}>
-                  <Ionicons name="checkmark-circle" size={20} color="#10b981" />
                 </View>
               )}
             </TouchableOpacity>
@@ -223,26 +254,26 @@ export default function LandlordProfile() {
               </>
             ) : (
               <>
-                <Text style={styles.name}>{landlordData.name}</Text>
-                <Text style={styles.company}>{landlordData.company}</Text>
+                <Text style={styles.name}>{name}</Text>
+                <Text style={styles.company}>{company}</Text>
               </>
             )}
             
             <View style={styles.verificationSection}>
               <View style={styles.verificationBadge}>
                 <Ionicons 
-                  name={landlordData.verified ? "shield-checkmark" : "time"} 
+                  name="shield-checkmark" 
                   size={16} 
-                  color={landlordData.verified ? "#10b981" : "#666"} 
+                  color="#10b981"
                 />
                 <Text style={[
                   styles.verificationText,
-                  { color: landlordData.verified ? "#10b981" : "#666" }
+                  { color: "#10b981" }
                 ]}>
-                  {landlordData.verified ? 'Verified Landlord' : 'Pending Verification'}
+                  Verified Landlord
                 </Text>
               </View>
-              <Text style={styles.joinDate}>Member since {landlordData.joinDate}</Text>
+              <Text style={styles.joinDate}>Member since 2024</Text>
             </View>
           </View>
 
@@ -273,12 +304,12 @@ export default function LandlordProfile() {
                 textAlignVertical="top"
               />
             ) : (
-              <Text style={styles.bioText}>{landlordData.bio}</Text>
+              <Text style={styles.bioText}>{bio}</Text>
             )}
             <View style={styles.experienceBadge}>
               <Ionicons name="trophy" size={16} color="#f59e0b" />
               <Text style={styles.experienceText}>
-                {landlordData.yearsExperience}+ years experience
+                {yearsExperience}+ years experience
               </Text>
             </View>
           </View>
@@ -427,6 +458,11 @@ const styles = StyleSheet.create({
     borderRadius: 50,
     borderWidth: 3,
     borderColor: Colors.primary,
+  },
+  placeholderImage: {
+    backgroundColor: '#e0e0e0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   editPhotoOverlay: {
     position: 'absolute',

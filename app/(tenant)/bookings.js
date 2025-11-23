@@ -12,28 +12,28 @@ import {
   RefreshControl,
   BackHandler,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const BOOKINGS_STORAGE_KEY = '@bookings_data';
-const TENANT_MESSAGES_KEY = '@tenant_messages';
-const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
+import {
+  getCurrentUser,
+  getTenantBookings,
+  updateBookingStatus,
+  getTenantProfile,
+  sendMessage,
+} from '../../lib/supabaseClient';
 
 export default function Bookings() {
   const [bookings, setBookings] = useState([]);
-  const [filter, setFilter] = useState('all'); 
+  const [filter, setFilter] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
-
-  const currentUser = {
-    id: 'tenant_jesse_pinkman_01',
-    name: 'Jesse Pinkman',
-  };
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
     loadBookings();
@@ -41,17 +41,53 @@ export default function Bookings() {
 
   const loadBookings = async () => {
     try {
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-      
-      
-      const userBookings = allBookings.filter(booking => 
-        booking.tenantId === currentUser.id
-      );
-      
-      setBookings(userBookings);
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(user);
+
+      // Fetch bookings from Supabase
+      const { success, bookings: data, error } = await getTenantBookings(user.id);
+
+      if (success) {
+        // Transform Supabase data to match component expectations
+        const transformedBookings = data.map(booking => ({
+          id: booking.id,
+          propertyId: booking.listing_id,
+          property: booking.listings?.title,
+          landlordId: booking.listings?.landlord_profile?.user_id,
+          landlordName: `${booking.listings?.landlord_profile?.users?.first_name} ${booking.listings?.landlord_profile?.users?.last_name}`,
+          landlordEmail: booking.listings?.landlord_profile?.users?.email,
+          landlordPhone: booking.listings?.landlord_profile?.users?.phone,
+          landlordImage: booking.listings?.landlord_profile?.users?.profile_image_url,
+          moveInDate: booking.check_in_date ? new Date(booking.check_in_date).toLocaleDateString() : 'TBD',
+          moveOutDate: booking.check_out_date ? new Date(booking.check_out_date).toLocaleDateString() : 'TBD',
+          guests: booking.number_of_occupants || 1,
+          amount: booking.total_amount,
+          status: booking.booking_status,
+          bookedAt: booking.created_at,
+          cancelledAt: booking.cancelled_at,
+          cancelReason: booking.cancellation_reason,
+          notes: booking.special_requests,
+          tenantId: booking.tenant_profile_id,
+        }));
+
+        setBookings(transformedBookings);
+      } else {
+        Alert.alert('Error', error || 'Failed to load bookings');
+      }
     } catch (error) {
       console.error('Failed to load bookings', error);
+      Alert.alert('Error', 'Failed to load bookings');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -134,84 +170,36 @@ export default function Bookings() {
     }
 
     try {
-     
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-      
-      const updatedBookings = allBookings.map(booking => 
-        booking.id === selectedBooking.id 
-          ? { 
-              ...booking, 
-              status: 'cancelled',
-              cancelledAt: new Date().toISOString(),
-              cancelReason: cancelReason,
-              cancelledBy: 'tenant'
-            }
-          : booking
+      // Update booking status in Supabase
+      const { success, error } = await updateBookingStatus(
+        selectedBooking.id,
+        'cancelled',
+        cancelReason
       );
 
-      await AsyncStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(updatedBookings));
+      if (success) {
+        // Send notification message to landlord via messages table
+        const messageResult = await sendMessage(
+          selectedBooking.landlordId,
+          `❌ Booking Cancelled\n\nI need to cancel my booking for ${selectedBooking.property}.\nReason: ${cancelReason}`,
+          'cancellation'
+        );
 
-      
-      const cancellationMessage = {
-        id: `msg_${Date.now()}`,
-        sender: currentUser.id,
-        text: `❌ Booking Cancelled\n\nI need to cancel my booking for ${selectedBooking.property}.\nReason: ${cancelReason}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        type: 'cancellation',
-      };
+        // Update local state
+        setBookings(prev => prev.map(booking =>
+          booking.id === selectedBooking.id
+            ? { ...booking, status: 'cancelled', cancelledAt: new Date().toISOString(), cancelReason }
+            : booking
+        ));
 
-      
-      const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-      let tenantConversations = tenantJson ? JSON.parse(tenantJson) : [];
+        setShowCancelModal(false);
+        setCancelReason('');
+        setSelectedBooking(null);
 
-      const tenantConvoIndex = tenantConversations.findIndex(
-        conv => conv.landlord?.id === selectedBooking.landlordId
-      );
-
-      if (tenantConvoIndex > -1) {
-        if (!tenantConversations[tenantConvoIndex].history) {
-          tenantConversations[tenantConvoIndex].history = [];
-        }
-        tenantConversations[tenantConvoIndex].history.unshift(cancellationMessage);
-        tenantConversations[tenantConvoIndex].lastMessage = cancellationMessage.text;
-        tenantConversations[tenantConvoIndex].time = 'Just now';
+        Alert.alert('Booking Cancelled', 'Your booking has been cancelled and the landlord has been notified.');
+      } else {
+        Alert.alert('Error', error || 'Failed to cancel booking');
       }
-
-      await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(tenantConversations));
-
-      
-      const landlordJson = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-      let landlordInquiries = landlordJson ? JSON.parse(landlordJson) : [];
-
-      const landlordConvoIndex = landlordInquiries.findIndex(
-        conv => conv.tenant?.id === currentUser.id
-      );
-
-      if (landlordConvoIndex > -1) {
-        if (!landlordInquiries[landlordConvoIndex].history) {
-          landlordInquiries[landlordConvoIndex].history = [];
-        }
-        landlordInquiries[landlordConvoIndex].history.unshift(cancellationMessage);
-        landlordInquiries[landlordConvoIndex].lastMessage = cancellationMessage.text;
-        landlordInquiries[landlordConvoIndex].time = 'Just now';
-        landlordInquiries[landlordConvoIndex].unread = true;
-      }
-
-      await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(landlordInquiries));
-
-      
-      setBookings(prev => prev.map(booking => 
-        booking.id === selectedBooking.id 
-          ? { ...booking, status: 'cancelled', cancelledAt: new Date().toISOString(), cancelReason }
-          : booking
-      ));
-
-      setShowCancelModal(false);
-      setCancelReason('');
-      setSelectedBooking(null);
-
-      Alert.alert('Booking Cancelled', 'Your booking has been cancelled and the landlord has been notified.');
     } catch (error) {
       console.error('Failed to cancel booking', error);
       Alert.alert('Error', 'Failed to cancel booking. Please try again.');
@@ -311,6 +299,30 @@ export default function Bookings() {
       </View>
     </View>
   );
+
+  if (isLoading) {
+    return (
+      <>
+        <Stack.Screen
+          options={{
+            title: 'My Bookings',
+            headerShown: true,
+            headerStyle: {
+              backgroundColor: Colors.primary,
+            },
+            headerTintColor: '#fff',
+            headerTitleStyle: {
+              fontWeight: 'bold',
+            },
+          }}
+        />
+        <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+          <ActivityIndicator size="large" color="#667eea" />
+          <Text style={{ marginTop: 10, color: '#666' }}>Loading bookings...</Text>
+        </View>
+      </>
+    );
+  }
 
   return (
     <>

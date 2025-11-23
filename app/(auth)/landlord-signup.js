@@ -16,6 +16,7 @@ import {
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
+import { landlordSignUp, uploadProfileImage } from '../../lib/supabaseClient';
 
 const SignUpForm = () => {
   const [step, setStep] = useState(1);
@@ -29,6 +30,8 @@ const SignUpForm = () => {
     profileImage: null,
     idPhoto: null,
     businessPermit: null,
+    companyName: '',
+    yearsExperience: '0',
   });
 
   const [errors, setErrors] = useState({});
@@ -107,22 +110,78 @@ const SignUpForm = () => {
 
   
   const handleSubmit = async () => {
-    if (validateStep()) {
-      setIsLoading(true);
-      
-      try {
-       
-        await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!validateStep()) {
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      // Sign up landlord with Supabase
+      const signUpResult = await landlordSignUp({
+        email: formData.email,
+        password: formData.password,
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+        phone: formData.phoneNumber,
+        companyName: formData.companyName,
+        yearsExperience: parseInt(formData.yearsExperience) || 0,
+      });
+
+      if (signUpResult.success && signUpResult.user) {
+        const userId = signUpResult.user.id;
         
-        console.log('Form submitted:', formData);
+        // Upload profile image if available
+        if (formData.profileImage) {
+          const uploadResult = await uploadProfileImage(userId, formData.profileImage);
+          if (!uploadResult.success) {
+            console.warn('Profile image upload failed:', uploadResult.error);
+          }
+        }
         
+        Alert.alert(
+          'Success',
+          'Registration completed! Welcome to BoardEase.',
+          [
+            {
+              text: 'OK',
+              onPress: () => router.replace('/landlord')
+            }
+          ]
+        );
+      } else {
+        const errorMessage = signUpResult.error || 'An error occurred';
         
-        router.replace('/landlord');
-      } catch (error) {
-        Alert.alert('Error', 'Something went wrong. Please try again later.');
-      } finally {
-        setIsLoading(false);
+        if (errorMessage.includes('already registered')) {
+          Alert.alert(
+            'Email Already Registered',
+            'This email is already registered. Please sign in or use a different email.'
+          );
+        } else if (errorMessage.includes('Invalid password')) {
+          Alert.alert(
+            'Weak Password',
+            'Password must be at least 6 characters long.'
+          );
+        } else if (errorMessage.includes('only request this after')) {
+          Alert.alert(
+            'Too Many Attempts',
+            'For security purposes, please wait a minute before trying again with the same email.'
+          );
+        } else {
+          Alert.alert('Registration Failed', errorMessage);
+        }
       }
+    } catch (error) {
+      console.error('Signup error:', error);
+      let errorMessage = 'An unexpected error occurred during registration';
+      
+      if (error.message && error.message.includes('Invalid API key')) {
+        errorMessage = 'Connection error. Please check your internet connection.';
+      }
+      
+      Alert.alert('Error', errorMessage);
+    } finally {
+      setIsLoading(false);
     }
   };
 

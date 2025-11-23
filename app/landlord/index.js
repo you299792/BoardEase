@@ -1,4 +1,4 @@
-import React, { useContext, useState } from 'react';
+import React, { useContext, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,20 +10,27 @@ import {
   Modal,
   FlatList,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Colors } from '../../constants/Colors';
 import { GlobalListingContext } from './_layout';
 import MapView, { Marker } from 'react-native-maps';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  getCurrentUser,
+  getLandlordListings,
+  getLandlordInquiries,
+  deleteListing as deleteListingFromDB,
+} from '../../lib/supabaseClient';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-const REVIEWS_STORAGE_KEY = '@boarding_house_reviews';
-const INQUIRIES_STORAGE_KEY = '@landlord_inquiries';
 
 export default function LandlordPortal() {
-  const { listings, deleteListing } = useContext(GlobalListingContext);
+  const { listings: contextListings, deleteListing } = useContext(GlobalListingContext);
+  const [listings, setListings] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isLoadingListings, setIsLoadingListings] = useState(false);
   const [selectedListing, setSelectedListing] = useState(null);
   const [showListingOverlay, setShowListingOverlay] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
@@ -45,31 +52,61 @@ export default function LandlordPortal() {
         },
         { 
           text: "Delete", 
-          onPress: () => deleteListing(id),
+          onPress: async () => {
+            const { success, error } = await deleteListingFromDB(id);
+            if (success) {
+              setListings(listings.filter(l => l.id !== id));
+              Alert.alert('Success', 'Property deleted successfully');
+            } else {
+              Alert.alert('Error', error || 'Failed to delete property');
+            }
+          },
           style: "destructive" 
         }
       ]
     );
   };
-  
-  const handleEditListing = (id) => {
-    router.push(`/landlord/create-listing?id=${id}`);
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      loadData();
+    }, [])
+  );
+
+  const loadData = async () => {
+    try {
+      const user = await getCurrentUser();
+      setCurrentUser(user);
+
+      if (user) {
+        setIsLoadingListings(true);
+        const { success, listings: dbListings, error } = await getLandlordListings(user.id);
+        
+        if (success) {
+          setListings(dbListings || []);
+        } else {
+          Alert.alert('Error', error || 'Failed to load listings');
+          setListings([]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load data', error);
+    } finally {
+      setIsLoadingListings(false);
+    }
   };
 
-  const handleViewAllListings = () => {
-    router.push('/landlord/all-listings');
-  };
-
-  // Function to show listing overlay
   const handleShowListingOverlay = async (listing) => {
     setSelectedListing(listing);
     setActiveImageIndex(0);
     setShowListingOverlay(true);
-    await loadReviews(listing.id);
-    await loadInquiries(listing.id);
+    await loadListingDetails(listing.id);
   };
 
-  // Function to close listing overlay
   const handleCloseListingOverlay = () => {
     setShowListingOverlay(false);
     setSelectedListing(null);
@@ -77,27 +114,23 @@ export default function LandlordPortal() {
     setInquiries([]);
   };
 
-  // Function to load reviews
-  const loadReviews = async (houseId) => {
+  const loadListingDetails = async (listingId) => {
     try {
-      const reviewsJson = await AsyncStorage.getItem(REVIEWS_STORAGE_KEY);
-      const allReviews = reviewsJson ? JSON.parse(reviewsJson) : [];
-      const houseReviews = allReviews.filter(review => review.houseId === houseId);
-      setReviews(houseReviews);
+      if (currentUser) {
+        const { success, inquiries: dbInquiries, error } = await getLandlordInquiries(currentUser.id);
+        
+        if (success) {
+          const listingInquiries = dbInquiries.filter(inq => inq.listing_id === listingId);
+          setInquiries(listingInquiries);
+          
+          // Load reviews from selected listing
+          if (selectedListing?.reviews) {
+            setReviews(selectedListing.reviews);
+          }
+        }
+      }
     } catch (error) {
-      console.error('Failed to load reviews', error);
-    }
-  };
-
-  // Function to load inquiries
-  const loadInquiries = async (houseId) => {
-    try {
-      const inquiriesJson = await AsyncStorage.getItem(INQUIRIES_STORAGE_KEY);
-      const allInquiries = inquiriesJson ? JSON.parse(inquiriesJson) : [];
-      const houseInquiries = allInquiries.filter(inquiry => inquiry.houseId === houseId);
-      setInquiries(houseInquiries);
-    } catch (error) {
-      console.error('Failed to load inquiries', error);
+      console.error('Failed to load listing details', error);
     }
   };
 
@@ -395,13 +428,13 @@ export default function LandlordPortal() {
               {/* Basic Info Section */}
               <View style={styles.section}>
                 <View style={styles.titleSection}>
-                  <Text style={styles.houseName}>{selectedListing.name}</Text>
+                  <Text style={styles.houseName}>{selectedListing.title}</Text>
                   <Text style={styles.housePrice}>₱{selectedListing.price?.toLocaleString()}/month</Text>
                 </View>
 
                 <View style={styles.locationSection}>
                   <Ionicons name="location" size={16} color="#666" />
-                  <Text style={styles.locationText}>{selectedListing.location}</Text>
+                  <Text style={styles.locationText}>{selectedListing.city}</Text>
                 </View>
 
                 <View style={styles.ratingSection}>
@@ -410,7 +443,7 @@ export default function LandlordPortal() {
                     <Text style={styles.rating}>{calculateAverageRating()}</Text>
                     <Text style={styles.reviewsCount}>({reviews.length} reviews)</Text>
                   </View>
-                  <Text style={styles.houseType}>{selectedListing.type}</Text>
+                  <Text style={styles.houseType}>{selectedListing.house_type}</Text>
                 </View>
               </View>
 
@@ -512,23 +545,12 @@ export default function LandlordPortal() {
                 {renderAmenities(selectedListing.amenities)}
               </View>
 
-              {/* Recent Reviews Preview */}
-              {reviews.length > 0 && (
+              {/* Available From */}
+              {selectedListing.available_from && (
                 <View style={styles.section}>
-                  <View style={styles.reviewsHeader}>
-                    <Text style={styles.sectionTitle}>Recent Reviews</Text>
-                    <TouchableOpacity onPress={() => setShowAllReviewsModal(true)}>
-                      <Text style={styles.seeAllReviews}>See All</Text>
-                    </TouchableOpacity>
-                  </View>
-                  
-                  <FlatList
-                    data={reviews.slice(0, 2)}
-                    renderItem={renderReview}
-                    keyExtractor={item => item.id}
-                    scrollEnabled={false}
-                    showsVerticalScrollIndicator={false}
-                  />
+                  <Text style={styles.availableFromText}>
+                    Available from: {selectedListing.available_from}
+                  </Text>
                 </View>
               )}
             </ScrollView>
@@ -667,7 +689,7 @@ export default function LandlordPortal() {
     </Modal>
   );
 
-  const previewListings = listings;
+  const previewListings = isLoadingListings ? [] : listings;
 
   return (
     <View style={styles.page}>
@@ -677,78 +699,98 @@ export default function LandlordPortal() {
           <Text style={styles.subtitle}>Manage your properties and track performance</Text>
         </View>
 
-        <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <Feather name="home" size={22} color={Colors.primary} />
-            <Text style={styles.statValue}>{listings.length}</Text> 
-            <Text style={styles.statLabel}>Properties</Text>
+        {isLoadingListings && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={Colors.primary} />
           </View>
-          <View style={styles.statCard}>
-            <Feather name="message-square" size={22} color={Colors.primary} />
-            <Text style={styles.statValue}>12</Text>
-            <Text style={styles.statLabel}>Inquiries</Text>
-          </View>
-          <View style={styles.statCard}>
-            <Feather name="dollar-sign" size={22} color={Colors.primary} />
-            <Text style={styles.statValue}>89%</Text>
-            <Text style={styles.statLabel}>Occupancy</Text>
-          </View>
-        </View>
+        )}
 
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Your Properties</Text>
-        </View>
-
-        <View style={styles.listingsRow}>
-          {previewListings.map((listing) => (
-            <View key={listing.id} style={styles.card}>
-              <TouchableOpacity 
-                style={styles.cardClickable}
-                onPress={() => handleShowListingOverlay(listing)}
-              >
-                <Image source={{ uri: listing.images?.[0] }} style={styles.cardImage} />
-                <View style={styles.cardBody}>
-                  <Text style={styles.cardTitle} numberOfLines={1}>{listing.name}</Text>
-                  <Text style={styles.cardSub} numberOfLines={1}>{listing.location}</Text>
-                  <Text style={styles.cardPrice}>₱{listing.price?.toLocaleString()}/month</Text>
-                  <View style={styles.statusContainer}>
-                    <View style={[
-                      styles.statusBadge,
-                      { backgroundColor: listing.available ? '#10b98120' : '#ef444420' }
-                    ]}>
-                      <Text style={[
-                        styles.statusText,
-                        { color: listing.available ? '#10b981' : '#ef4444' }
-                      ]}>
-                        {listing.available ? 'Available' : 'Occupied'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              </TouchableOpacity>
-              <View style={styles.cardActions}>
-                <TouchableOpacity style={styles.editButton} onPress={() => handleEditListing(listing.id)}>
-                  <Feather name="edit" size={20} color={Colors.primary} />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteListing(listing.id)}>
-                  <Feather name="trash-2" size={20} color="#ef4444" />
-                </TouchableOpacity>
+        {!isLoadingListings && listings.length > 0 && (
+          <>
+            <View style={styles.statsRow}>
+              <View style={styles.statCard}>
+                <Feather name="home" size={22} color={Colors.primary} />
+                <Text style={styles.statValue}>{listings.length}</Text>
+                <Text style={styles.statLabel}>Properties</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Feather name="message-square" size={22} color={Colors.primary} />
+                <Text style={styles.statValue}>{inquiries.length}</Text>
+                <Text style={styles.statLabel}>Inquiries</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Feather name="dollar-sign" size={22} color={Colors.primary} />
+                <Text style={styles.statValue}>--</Text>
+                <Text style={styles.statLabel}>Revenue</Text>
               </View>
             </View>
-          ))}
-          
-          {listings.length === 0 && (
-            <View style={styles.emptyState}>
-              <Feather name="home" size={48} color="#ccc" />
-              <Text style={styles.emptyStateTitle}>No Properties Listed</Text>
-              <Text style={styles.emptyStateText}>
-                Start by creating your first property listing to begin renting.
-              </Text>
-            </View>
-          )}
-        </View>
 
-        <View style={{ height: 40 }} />
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Your Properties</Text>
+            </View>
+
+            <View style={styles.listingsRow}>
+              {previewListings.map((listing) => (
+                <View key={listing.id} style={styles.card}>
+                  <TouchableOpacity 
+                    style={styles.cardClickable}
+                    onPress={() => handleShowListingOverlay(listing)}
+                  >
+                    <Image source={{ uri: listing.images?.[0] }} style={styles.cardImage} />
+                    <View style={styles.cardBody}>
+                      <Text style={styles.cardTitle} numberOfLines={1}>{listing.title}</Text>
+                      <Text style={styles.cardSub} numberOfLines={1}>{listing.city}</Text>
+                      <Text style={styles.cardPrice}>₱{listing.price?.toLocaleString()}/month</Text>
+                      <View style={styles.statusContainer}>
+                        <View style={[
+                          styles.statusBadge,
+                          { backgroundColor: listing.status === 'available' ? '#10b98120' : '#ef444420' }
+                        ]}>
+                          <Text style={[
+                            styles.statusText,
+                            { color: listing.status === 'available' ? '#10b981' : '#ef4444' }
+                          ]}>
+                            {listing.status === 'available' ? 'Available' : 'Occupied'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                  <View style={styles.cardActions}>
+                    <TouchableOpacity style={styles.editButton} onPress={() => handleEditListing(listing.id)}>
+                      <Feather name="edit" size={20} color={Colors.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteListing(listing.id)}>
+                      <Feather name="trash-2" size={20} color="#ef4444" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+              
+              {listings.length === 0 && (
+                <View style={styles.emptyState}>
+                  <Feather name="home" size={48} color="#ccc" />
+                  <Text style={styles.emptyStateTitle}>No Properties Listed</Text>
+                  <Text style={styles.emptyStateText}>
+                    Start by creating your first property listing to begin renting.
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <View style={{ height: 40 }} />
+          </>
+        )}
+
+        {!isLoadingListings && listings.length === 0 && (
+          <View style={styles.emptyState}>
+            <Feather name="home" size={48} color="#ccc" />
+            <Text style={styles.emptyStateTitle}>No Properties Listed</Text>
+            <Text style={styles.emptyStateText}>
+              Start by creating your first property listing to begin renting.
+            </Text>
+          </View>
+        )}
       </ScrollView>
 
       {/* Listing Overlay */}

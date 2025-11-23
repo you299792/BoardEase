@@ -8,14 +8,14 @@ import {
   Image,
   ActivityIndicator,
   Linking,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { boardingHouses as mockData } from '../../data/mockData'; 
 import BoardingHouseCard from '../../components/BoardingHouseCard';
-
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
+import {
+  getListings,
+} from '../../lib/supabaseClient';
 
 export default function LandlordProfile() {
   const { landlordId } = useLocalSearchParams();
@@ -47,32 +47,45 @@ export default function LandlordProfile() {
         setIsLoading(false);
         return;
       }
-      
+
       try {
-        const jsonValue = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-        const allListings = jsonValue != null ? JSON.parse(jsonValue) : mockData;
+        setIsLoading(true);
+        
+        // Fetch listings from Supabase
+        const { success, listings, error } = await getListings({ minPrice: 0, maxPrice: 999999 });
 
-        // Match landlord by email, id, phone, or name
-        const listing = allListings.find(h => 
-          h.landlord?.email === landlordId ||
-          h.landlord?.id === landlordId ||
-          h.landlord?.phone === landlordId ||
-          h.landlord?.name === landlordId
-        );
-
-        if (listing && listing.landlord) {
-          setLandlord(listing.landlord);
-          // Filter all listings by the matched landlord
-          const landlordListings = allListings.filter(h => 
-            h.landlord?.email === listing.landlord.email ||
-            h.landlord?.id === listing.landlord.id ||
-            h.landlord?.phone === listing.landlord.phone ||
-            h.landlord?.name === listing.landlord.name
+        if (success && listings) {
+          // Find landlord in listings
+          const landlordListing = listings.find(h =>
+            h.landlord_profile?.user_id === landlordId ||
+            h.landlord_profile?.users?.email === landlordId ||
+            h.landlord_profile?.users?.phone === landlordId
           );
-          setOtherListings(landlordListings);
+
+          if (landlordListing) {
+            const landlordData = {
+              id: landlordListing.landlord_profile?.user_id,
+              name: `${landlordListing.landlord_profile?.users?.first_name} ${landlordListing.landlord_profile?.users?.last_name}`,
+              email: landlordListing.landlord_profile?.users?.email,
+              phone: landlordListing.landlord_profile?.users?.phone,
+              image: landlordListing.landlord_profile?.users?.profile_image_url,
+              rating: landlordListing.landlord_profile?.rating,
+              verified: landlordListing.landlord_profile?.bank_account_verified,
+            };
+            setLandlord(landlordData);
+
+            // Filter listings by landlord
+            const landlordListings = listings.filter(h =>
+              h.landlord_profile?.user_id === landlordData.id
+            );
+            setOtherListings(landlordListings);
+          }
+        } else {
+          Alert.alert('Error', error || 'Failed to load landlord data');
         }
       } catch (e) {
-        console.error("Failed to load landlord data", e);
+        console.error('Failed to load landlord data', e);
+        Alert.alert('Error', 'Failed to load landlord data');
       } finally {
         setIsLoading(false);
       }

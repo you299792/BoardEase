@@ -15,75 +15,88 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
-
-const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
-const TENANT_MESSAGES_KEY = '@tenant_messages';
-const BOOKINGS_STORAGE_KEY = '@bookings_data';
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
+import {
+  getCurrentUser,
+  sendMessage,
+  getMessages,
+  subscribeToMessages,
+  uploadProfileImage,
+} from '../../lib/supabaseClient';
 
 export default function LandlordChat() {
-  const { tenantId, tenantName, tenantImage, property } = useLocalSearchParams();
+  const { conversationId: routeConversationId, tenantId, tenantName, tenantImage, property } = useLocalSearchParams();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [propertyPrice, setPropertyPrice] = useState(0);
-
-  const currentLandlord = {
-    id: 'landlord_walter_white_01',
-    name: 'Walter White',
-    image: 'https://lucien0maverick.wordpress.com/wp-content/uploads/2014/07/walter-white.jpg',
-  };
+  const [conversationId, setConversationId] = useState(routeConversationId || null);
+  const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
     loadConversation();
-    loadPropertyPrice();
-  }, [tenantId, property]);
-
-  const loadPropertyPrice = async () => {
-    try {
-      const json = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-      const listings = json != null ? JSON.parse(json) : [];
-      const propertyListing = listings.find(listing => listing.name === property);
-      if (propertyListing) {
-        setPropertyPrice(propertyListing.price || 0);
-      }
-    } catch (error) {
-      console.error('Failed to load property price', error);
-    }
-  };
+  }, [tenantId, property, routeConversationId]);
 
   const loadConversation = async () => {
     try {
-      const json = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-      const all = json != null ? JSON.parse(json) : [];
-      const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
+      setIsLoading(true);
 
-      const map = {};
-      all.forEach(conv => {
-        const key = contactKey(conv.tenant);
-        if (!map[key]) {
-          map[key] = { ...conv };
-          map[key].history = map[key].history || [];
-        } else {
-          const existingIds = new Set(map[key].history.map(m => m.id));
-          const merged = [...map[key].history];
-          (conv.history || []).forEach(m => { if (!existingIds.has(m.id)) merged.push(m); });
-          map[key].history = merged;
-          map[key].lastMessage = map[key].lastMessage || conv.lastMessage;
-          map[key].time = map[key].time || conv.time;
-          map[key].unread = map[key].unread || conv.unread;
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(user);
+
+      // If we have a conversationId from route, use it directly
+      if (routeConversationId) {
+        setConversationId(routeConversationId);
+
+        // Fetch messages for this conversation
+        const { success, messages: messagesData, error } = await getMessages(
+          user.id,
+          tenantId,
+          null // We have conversationId, so no need for houseId
+        );
+
+        if (success && messagesData) {
+          const transformedMessages = messagesData.map(msg => ({
+            id: msg.id,
+            sender: msg.sender_id,
+            text: msg.message_text,
+            image: msg.image_url,
+            timestamp: msg.created_at,
+            type: msg.message_type,
+          })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+          setMessages(transformedMessages);
+
+          // Subscribe to real-time messages
+          const subscription = subscribeToMessages(routeConversationId, (newMsg) => {
+            const transformedMsg = {
+              id: newMsg.id,
+              sender: newMsg.sender_id,
+              text: newMsg.message_text,
+              image: newMsg.image_url,
+              timestamp: newMsg.created_at,
+              type: newMsg.message_type,
+            };
+            setMessages(prev => [transformedMsg, ...prev]);
+          });
+
+          return () => {
+            if (subscription) subscription.unsubscribe();
+          };
         }
-      });
-
-      const deduped = Object.values(map);
-      const convo = deduped.find(c => c.tenant && contactKey(c.tenant) === (tenantId ? tenantId.toString() : ''));
-      setMessages(convo?.history || []);
+      }
     } catch (e) {
       console.error('Failed to load landlord conversation', e);
+      Alert.alert('Error', 'Failed to load conversation');
       setMessages([]);
     } finally {
       setIsLoading(false);
@@ -98,14 +111,9 @@ export default function LandlordChat() {
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            const json = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-            let all = json != null ? JSON.parse(json) : [];
-            const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
-            const tenantKey = tenantId ? tenantId.toString() : '';
-            all = all.filter(c => !(c.tenant && contactKey(c.tenant) === tenantKey));
-            await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(all));
             setMessages([]);
             router.back();
+            Alert.alert('Deleted', 'Conversation has been deleted.');
           } catch (e) {
             console.error('Failed to delete landlord conversation', e);
             Alert.alert('Error', 'Failed to delete conversation.');
@@ -131,7 +139,7 @@ export default function LandlordChat() {
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
-        await sendMessage('', result.assets[0].uri);
+        await sendLandlordMessage('', result.assets[0].uri);
       }
     } catch (err) {
       console.error('Image pick error', err);
@@ -139,126 +147,57 @@ export default function LandlordChat() {
     }
   };
 
-  const sendMessage = async (text = '', imageUri = '') => {
+  const sendLandlordMessage = async (text = '', imageUri = '') => {
     if (!text.trim() && !imageUri) return;
 
-    const messageData = {
-      id: `msg_${Date.now()}`,
-      sender: currentLandlord.id,
-      text: text.trim(),
-      image: imageUri,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      type: imageUri ? 'image' : 'text',
-    };
+    if (!conversationId || !currentUser) {
+      Alert.alert('Error', 'Conversation not loaded. Please try again.');
+      return;
+    }
 
     try {
-      // Update landlord inquiries
-      const json = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-      let all = json != null ? JSON.parse(json) : [];
+      let imageUrl = null;
 
-      const idx = all.findIndex(c => c.tenant?.id === tenantId);
-      if (idx > -1) {
-        if (!all[idx].history) all[idx].history = [];
-        all[idx].history.unshift(messageData);
-        all[idx].lastMessage = messageData.text || '📷 Image';
-        all[idx].time = 'Just now';
-        all[idx].unread = false;
-      } else {
-        all.unshift({
-          id: `inq_${Date.now()}`,
-          tenant: { id: tenantId, name: tenantName, image: tenantImage },
-          property: property || 'Property',
-          lastMessage: messageData.text || '📷 Image',
-          time: 'Just now',
-          unread: false,
-          status: 'responded',
-          history: [messageData],
-        });
+      // Upload image if provided
+      if (imageUri) {
+        const uploadResult = await uploadProfileImage(imageUri);
+        if (uploadResult.success) {
+          imageUrl = uploadResult.publicUrl;
+        }
       }
 
-      await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(all));
+      // Send message to Supabase with conversation ID
+      const { success, error } = await sendMessage(
+        conversationId,
+        currentUser.id,
+        text.trim() || null,
+        imageUrl
+      );
 
-      // Update tenant messages
-      const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-      let tenantConvos = tenantJson != null ? JSON.parse(tenantJson) : [];
-
-      const matchContact = (a, b) => {
-        if (!a || !b) return false;
-        if (a.id && b.id && a.id === b.id) return true;
-        if (a.email && b.email && a.email === b.email) return true;
-        if (a.phone && b.phone && a.phone === b.phone) return true;
-        if (a.name && b.name && a.name === b.name) return true;
-        return false;
-      };
-
-      const tIdx = tenantConvos.findIndex(c => matchContact(c.landlord, currentLandlord));
-      if (tIdx > -1) {
-        if (!tenantConvos[tIdx].history) tenantConvos[tIdx].history = [];
-        tenantConvos[tIdx].history.unshift(messageData);
-        tenantConvos[tIdx].lastMessage = messageData.text || '📷 Image';
-        tenantConvos[tIdx].time = 'Just now';
-        tenantConvos[tIdx].unread = true;
+      if (success) {
+        setNewMessage('');
+        // Message will appear through real-time subscription
       } else {
-        tenantConvos.unshift({
-          id: `convo_${Date.now()}`,
-          landlord: { id: currentLandlord.id, name: currentLandlord.name, image: currentLandlord.image },
-          houseName: property || 'Property',
-          lastMessage: messageData.text || '📷 Image',
-          time: 'Just now',
-          unread: true,
-          history: [messageData],
-        });
+        Alert.alert('Error', error || 'Failed to send message');
       }
-
-      await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(tenantConvos));
-
-      // Update UI
-      setMessages(prev => [messageData, ...prev]);
-      if (text) setNewMessage('');
-    } catch (e) {
-      console.error('Failed to send message', e);
-      Alert.alert('Error', 'Failed to send message.');
+    } catch (error) {
+      console.error('Failed to send message', error);
+      Alert.alert('Error', 'Failed to send message');
     }
   };
 
   const handleSend = useCallback(() => {
-    sendMessage(newMessage);
-  }, [newMessage]);
+    sendLandlordMessage(newMessage);
+  }, [newMessage, conversationId, currentUser]);
 
   const handleApproveBooking = async (bookingMessage) => {
     try {
       // Calculate final amount (use property price if no specific amount mentioned)
       const finalAmount = bookingMessage.amount > 0 ? bookingMessage.amount : propertyPrice;
 
-      // Create booking details
-      const bookingDetails = {
-        id: `booking_${Date.now()}`,
-        tenantId: tenantId,
-        tenantName: tenantName,
-        landlordId: currentLandlord.id,
-        landlordName: currentLandlord.name,
-        property: property,
-        propertyId: `prop_${Date.now()}`,
-        status: 'approved',
-        date: new Date().toISOString(),
-        moveInDate: bookingMessage.bookingDate || 'Not specified',
-        guests: bookingMessage.bookingGuests || '1',
-        amount: finalAmount,
-        bookedAt: new Date().toISOString(),
-        landlordEmail: 'walter.white@example.com',
-        landlordPhone: '+1 234 567 8901',
-        landlordImage: currentLandlord.image,
-      };
-
-      // Save booking to storage
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const bookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-      bookings.push(bookingDetails);
-      await AsyncStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(bookings));
-
       // Send approval message with amount details
-      const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${property} has been approved. \n\n📅 Move-in date: ${bookingDetails.moveInDate} \n👥 Guests: ${bookingDetails.guests} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()} \n\nWe'll contact you soon for the next steps and payment details.`;
-      await sendMessage(approvalMessage);
+      const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${property} has been approved. \n\n📅 Move-in date: ${bookingMessage.bookingDate || 'Not specified'} \n👥 Guests: ${bookingMessage.bookingGuests || '1'} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()} \n\nWe'll contact you soon for the next steps and payment details.`;
+      await sendLandlordMessage(approvalMessage);
 
       setShowBookingModal(false);
       setSelectedBooking(null);
@@ -272,7 +211,7 @@ export default function LandlordChat() {
 
   const handleRejectBooking = async (bookingMessage) => {
     const rejectionMessage = `❌ Booking Declined \n\nUnfortunately, your booking request for ${property} cannot be accommodated at this time. \n\nReason: ${bookingMessage.reason || 'Not available for the requested dates.'}`;
-    await sendMessage(rejectionMessage);
+    await sendLandlordMessage(rejectionMessage);
     setShowBookingModal(false);
     setSelectedBooking(null);
   };
@@ -285,7 +224,7 @@ export default function LandlordChat() {
         { text: 'Cancel', style: 'cancel' },
         { text: 'Continue', onPress: () => {
           const modificationMessage = `📝 Booking Modification Requested \n\nI'd like to discuss some changes to your booking request. Let me know what works for you.`;
-          sendMessage(modificationMessage);
+          sendLandlordMessage(modificationMessage);
           setShowBookingModal(false);
           setSelectedBooking(null);
         }}
@@ -329,20 +268,21 @@ export default function LandlordChat() {
 
   const renderMessage = ({ item }) => {
     const bookingDetails = extractBookingDetails(item);
+    const isMyMessage = currentUser && item.sender === currentUser.id;
     
     return (
-      <View style={[styles.messageBubble, item.sender === currentLandlord.id ? styles.myMessage : styles.otherMessage]}>
+      <View style={[styles.messageBubble, isMyMessage ? styles.myMessage : styles.otherMessage]}>
         {item.image ? (
           <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
             <Image source={{ uri: item.image }} style={styles.messageImage} />
           </TouchableOpacity>
         ) : (
-          <Text style={item.sender === currentLandlord.id ? styles.myMessageText : styles.otherMessageText}>
+          <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>
             {item.text}
           </Text>
         )}
         
-        {bookingDetails?.isBooking && item.sender !== currentLandlord.id && (
+        {bookingDetails?.isBooking && !isMyMessage && (
           <TouchableOpacity 
             style={styles.bookingActionButton}
             onPress={() => {

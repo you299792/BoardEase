@@ -180,12 +180,12 @@ export default function LandlordLayout() {
         <Tabs.Screen name="privacy-security" options={{ href: null }} />
         <Tabs.Screen name="financials" options={{ href: null }} />
         <Tabs.Screen name="listing-details" options={{ href: null }} />
-        // In _layout.js, add payment-methods to hidden screens
         <Tabs.Screen name="payment-method" options={{ href: null }} />
         <Tabs.Screen name="add-payment-form" options={{ href: null }} />
         <Tabs.Screen name="chat" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="privacy" options={{ href: null }} />
         <Tabs.Screen name="terms" options={{ href: null }} />
+        <Tabs.Screen name="AuthContext" options={{ href: null }} />
       </Tabs>
     </GlobalListingContext.Provider>
   );

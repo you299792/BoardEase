@@ -6,16 +6,16 @@ import {
   TouchableOpacity,
   Image,
   FlatList,
-  ActivityIndicator, 
-  Alert, 
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { messages as mockMessages } from '../../data/mockData'; 
-import { router, useFocusEffect } from 'expo-router'; 
+import { router, useFocusEffect } from 'expo-router';
 import SearchBar from '../../components/SearchBar';
-import AsyncStorage from '@react-native-async-storage/async-storage'; 
-
-const MESSAGES_STORAGE_KEY = '@tenant_messages'; 
+import {
+  getCurrentUser,
+  getConversations,
+} from '../../lib/supabaseClient'; 
 
 export default function Messages() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -23,18 +23,46 @@ export default function Messages() {
   const [isLoading, setIsLoading] = useState(true); 
 
   
+  
   const loadMessages = async () => {
     try {
-      const jsonValue = await AsyncStorage.getItem(MESSAGES_STORAGE_KEY);
-      if (jsonValue !== null) {
-        setAllMessages(JSON.parse(jsonValue));
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      // Fetch conversations from Supabase
+      const { success, conversations, error } = await getConversations(user.id);
+
+      if (success && conversations) {
+        // Transform conversations to message format
+        const messages = conversations.map(conv => ({
+          id: conv.id,
+          landlord: {
+            id: conv.landlord_id,
+            name: `${conv.landlord?.users?.first_name} ${conv.landlord?.users?.last_name}`,
+            email: conv.landlord?.users?.email,
+            phone: conv.landlord?.users?.phone,
+            image: conv.landlord?.users?.profile_image_url,
+          },
+          houseName: conv.listing?.title || 'General Inquiry',
+          houseId: conv.listing_id,
+          lastMessage: conv.last_message,
+          time: conv.last_message_time,
+        }));
+
+        setAllMessages(messages);
       } else {
-        await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify([]));
         setAllMessages([]);
       }
     } catch (e) {
-      console.error("Failed to load messages", e);
-      setAllMessages([]); 
+      console.error('Failed to load messages', e);
+      setAllMessages([]);
     } finally {
       setIsLoading(false);
     }
@@ -43,7 +71,6 @@ export default function Messages() {
   
   useFocusEffect(
     useCallback(() => {
-      setIsLoading(true);
       loadMessages();
     }, [])
   );

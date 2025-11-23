@@ -11,26 +11,31 @@ import {
   Modal,
   Dimensions,
   ActivityIndicator,
-  Linking, // ADD THIS IMPORT
+  Linking,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import MapView, { Marker } from 'react-native-maps';
-import { router, useLocalSearchParams, useNavigation } from 'expo-router'; 
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { Colors } from '../../constants/Colors';
 import PropertyImageGrid from '../../components/PropertyImageGrid';
-import { boardingHouses } from '../../data/mockData';
 import { GlobalListingContext } from './_layout';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from './AuthContext'; 
+import {
+  getCurrentUser,
+  createListing as createListingDB,
+  updateListing as updateListingDB,
+  getLandlordListings,
+} from '../../lib/supabaseClient'; 
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 export default function CreateListing() {
-  const params = useLocalSearchParams(); 
+  const params = useLocalSearchParams();
   const navigation = useNavigation();
-  const { listings, updateListing } = useContext(GlobalListingContext); 
-  const { user } = useAuth(); 
+  const { listings, updateListing } = useContext(GlobalListingContext);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [isEditing, setIsEditing] = useState(false);
   
@@ -123,8 +128,20 @@ export default function CreateListing() {
     
     router.setParams({});
   };
-  
-  
+
+  useEffect(() => {
+    initializeUser();
+  }, []);
+
+  const initializeUser = async () => {
+    try {
+      const user = await getCurrentUser();
+      setCurrentUser(user);
+    } catch (error) {
+      console.error('Failed to load user:', error);
+    }
+  };
+
   useEffect(() => {
     console.log('Params changed:', params.id);
     
@@ -445,74 +462,74 @@ export default function CreateListing() {
       .map(([key]) => amenitiesMap[key] || key);
   };
 
-  const validateAndSubmit = () => {
-    
+  const validateAndSubmit = async () => {
     if (!title.trim()) return Alert.alert('Validation', 'Title is required');
     if (!address.trim()) return Alert.alert('Validation', 'Address is required');
     if (!rent.trim() || isNaN(Number(rent))) return Alert.alert('Validation', 'Rent must be a number');
     if (!description.trim()) return Alert.alert('Validation', 'Description is required');
 
-    const amenitiesArray = getAmenitiesArray();
+    if (!currentUser) {
+      Alert.alert('Error', 'Please log in first');
+      return;
+    }
 
-    const payload = {
-      
-      images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
-      description: description,
-      location: address,
-      price: Number(rent),
-      name: title,
-      type: houseType,
-      distance: distance,
-      amenities: amenitiesArray,
-      rules: rules,
-      available: available,
-      availableFrom: availableFrom,
-      virtualTour,
-      floorPlans,
-      rating: isEditing ? undefined : 4.5, 
-      reviews: isEditing ? undefined : 0, 
-      // Include location data
-      locationData: selectedLocation,
+    setIsSubmitting(true);
 
-      
-      landlord: {
-        id: user?.email, 
-        name: user?.name || 'Landlord',
-        phone: user?.phone || 'Not Provided',
-        verified: user?.verified || true, 
-        email: user?.email || 'Not Provided',
-        image: user?.photoURL 
+    try {
+      const amenitiesArray = getAmenitiesArray();
+
+      const listingData = {
+        title,
+        description,
+        address,
+        city: address.split(',').pop()?.trim() || address,
+        price: Number(rent),
+        houseType,
+        availableFrom,
+        amenities: amenitiesArray,
+        rules,
+        images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
+        latitude: selectedLocation?.latitude || 0,
+        longitude: selectedLocation?.longitude || 0,
+      };
+
+      let result;
+      if (isEditing && params.id) {
+        result = await updateListingDB(params.id, listingData);
+        if (result.success) {
+          Alert.alert('Success', 'Listing updated successfully!', [
+            {
+              text: 'OK',
+              onPress: () => {
+                resetForm();
+                router.replace('/landlord');
+              },
+            },
+          ]);
+        } else {
+          Alert.alert('Error', result.error || 'Failed to update listing');
+        }
+      } else {
+        result = await createListingDB(listingData, currentUser.id);
+        if (result.success) {
+          Alert.alert('Success', 'Listing created successfully!', [
+            {
+              text: 'OK',
+              onPress: () => {
+                resetForm();
+                router.replace('/landlord');
+              },
+            },
+          ]);
+        } else {
+          Alert.alert('Error', result.error || 'Failed to create listing');
+        }
       }
-     
-    };
-    
-
-    if (isEditing && params.id) {
-      updateListing(params.id, payload);
-      console.log(`Updating listing ${params.id}`);
-
-      Alert.alert('Success', 'Listing updated successfully!', [
-        { 
-          text: 'OK', 
-          onPress: () => {
-            resetForm();
-            router.replace('/landlord');
-          }
-        },
-      ]);
-    } else {
-      updateListing(null, payload);
-      console.log('Listing created');
-
-      Alert.alert('Success', 'Listing created successfully!', [
-        { 
-          text: 'OK', 
-          onPress: () => {
-            resetForm();
-            router.replace('/landlord');
-          }
-        },
-      ]);
+    } catch (error) {
+      console.error('Submit error:', error);
+      Alert.alert('Error', error.message || 'Failed to save listing');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

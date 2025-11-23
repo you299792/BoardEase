@@ -1,4 +1,3 @@
-
 import React, { useContext, useState, useEffect } from 'react';
 import {
   View,
@@ -10,11 +9,16 @@ import {
   Alert,
   Dimensions,
   FlatList,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import { GlobalListingContext } from './_layout';
+import {
+  getCurrentUser,
+  deleteListing as deleteListingFromDB,
+} from '../../lib/supabaseClient';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -23,27 +27,19 @@ export default function ListingDetails() {
   const { listings, deleteListing, updateListing } = useContext(GlobalListingContext);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [listing, setListing] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  
   useEffect(() => {
     const foundListing = listings.find(l => l.id === id);
     if (foundListing) {
       setListing(foundListing);
-      
-      
-      const updatedListing = {
-        ...foundListing,
-        views: (foundListing.views || 0) + 1,
-        lastViewed: new Date().toISOString(),
-      };
-      updateListing(id, updatedListing);
     }
   }, [id, listings]);
 
   if (!listing) {
     return (
       <View style={styles.container}>
-        <Text>Listing not found</Text>
+        <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     );
   }
@@ -57,13 +53,25 @@ export default function ListingDetails() {
           text: "Cancel",
           style: "cancel"
         },
-        { 
-          text: "Delete", 
-          onPress: () => {
-            deleteListing(id);
-            router.back();
+        {
+          text: "Delete",
+          onPress: async () => {
+            setIsDeleting(true);
+            try {
+              const { success, error } = await deleteListingFromDB(id);
+              if (success) {
+                deleteListing(id);
+                router.back();
+              } else {
+                Alert.alert('Error', error || 'Failed to delete property');
+              }
+            } catch (err) {
+              Alert.alert('Error', err.message || 'Failed to delete property');
+            } finally {
+              setIsDeleting(false);
+            }
           },
-          style: "destructive" 
+          style: "destructive"
         }
       ]
     );

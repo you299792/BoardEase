@@ -6,86 +6,131 @@ import {
   TouchableOpacity,
   FlatList,
   TextInput,
-  KeyboardAvoidingView, 
+  KeyboardAvoidingView,
   Platform,
   Image,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage'; 
 import * as ImagePicker from 'expo-image-picker';
-
-const TENANT_MESSAGES_KEY = '@tenant_messages'; 
-const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
+import {
+  getCurrentUser,
+  getConversations,
+  getMessages,
+  sendMessage,
+  uploadProfileImage,
+  subscribeToMessages,
+} from '../../lib/supabaseClient';
 
 export default function ChatScreen() {
-  const { landlordId, landlordEmail, landlordPhone, landlordName, houseName, houseId, landlordImage } = useLocalSearchParams();
-  
-  // Create a flexible landlord key that tries to match by any available identifier
-  const createFlexibleKey = () => {
-    if (landlordId) return landlordId.toString();
-    if (landlordEmail) return landlordEmail.toString();
-    if (landlordPhone) return landlordPhone.toString();
-    if (landlordName) return landlordName.toString();
-    return '';
-  };
-  
-  const landlordKey = createFlexibleKey();
-  // Create unique conversation ID combining landlord and property
-  const expectedConversationId = houseId ? `${landlordKey}_${houseId}` : null;
+  const { conversationId: routeConversationId, landlordId, landlordName, houseName, houseId } = useLocalSearchParams();
+
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [landlordInfo, setLandlordInfo] = useState(null);
+  const [landlordImage, setLandlordImage] = useState(null);
+  const [conversationId, setConversationId] = useState(routeConversationId || null);
   const [conversationStatus, setConversationStatus] = useState(null);
-  const [conversationId, setConversationId] = useState(null);
-
-  const currentUser = {
-    id: 'tenant_jesse_pinkman_01',
-    name: 'Jesse Pinkman',
-    image: 'https://i.insider.com/5d9f454ee94e865e924818da?width=700',
-    phone: '+1 234 567 8900'
-  };
-  const currentUserId = currentUser.id;
 
   useEffect(() => {
     loadConversation();
-  }, [landlordId]);
+  }, [landlordId, routeConversationId]);
 
   const loadConversation = async () => {
     try {
-      const jsonValue = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-      const allConversations = jsonValue != null ? JSON.parse(jsonValue) : [];
-      
-      // Find conversation using unique ID if available, otherwise use flexible matching
-      let conversation = null;
-      if (expectedConversationId) {
-        conversation = allConversations.find(conv => conv.id === expectedConversationId);
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(user);
+
+      // If we have a conversationId from route, use it directly
+      let convId = routeConversationId;
+
+      // If no conversationId from route, fetch from Supabase
+      if (!convId) {
+        const { success, messages: messagesData, conversationId: fetchedConvId, error } = await getMessages(
+          user.id,
+          landlordId,
+          houseId
+        );
+
+        if (!success) {
+          Alert.alert('Error', error || 'Failed to load messages');
+          setIsLoading(false);
+          return;
+        }
+
+        convId = fetchedConvId;
+
+        // Transform and sort messages (newest first for display)
+        const transformedMessages = messagesData.map(msg => ({
+          id: msg.id,
+          sender: msg.sender_id,
+          text: msg.message_text,
+          image: msg.image_url,
+          timestamp: msg.created_at,
+          type: msg.message_type,
+        })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        setMessages(transformedMessages);
       } else {
-        // Fallback to flexible matching if no houseId
-        conversation = allConversations.find(conv => {
-          const convLandlord = conv.landlord || {};
-          return (
-            (landlordId && convLandlord.id === landlordId) ||
-            (landlordEmail && convLandlord.email === landlordEmail) ||
-            (landlordPhone && convLandlord.phone === landlordPhone) ||
-            (landlordName && convLandlord.name === landlordName)
-          );
+        // If we have conversationId, fetch messages for it
+        const { success, messages: messagesData, error } = await getMessages(
+          user.id,
+          landlordId,
+          houseId
+        );
+
+        if (success && messagesData) {
+          const transformedMessages = messagesData.map(msg => ({
+            id: msg.id,
+            sender: msg.sender_id,
+            text: msg.message_text,
+            image: msg.image_url,
+            timestamp: msg.created_at,
+            type: msg.message_type,
+          })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+          setMessages(transformedMessages);
+        }
+      }
+
+      if (convId) {
+        setConversationId(convId);
+
+        // Subscribe to real-time messages
+        const subscription = subscribeToMessages(convId, (newMsg) => {
+          const transformedMsg = {
+            id: newMsg.id,
+            sender: newMsg.sender_id,
+            text: newMsg.message_text,
+            image: newMsg.image_url,
+            timestamp: newMsg.created_at,
+            type: newMsg.message_type,
+          };
+          setMessages(prev => [transformedMsg, ...prev]);
         });
+
+        return () => {
+          if (subscription) subscription.unsubscribe();
+        };
       }
-      
-      if (conversation) {
-        const initialMessages = conversation.history || [];
-        setMessages(initialMessages);
-        setConversationStatus(conversation.status || null);
-        setConversationId(conversation.id);
-      } else {
-        setMessages([]);
-        setConversationStatus(null);
-        setConversationId(null);
-      }
-    } catch (e) {
-      console.error("Failed to load conversation", e);
-      setMessages([]);
+    } catch (error) {
+      console.error('Failed to load conversation', error);
+      Alert.alert('Error', 'Failed to load conversation');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -105,7 +150,7 @@ export default function ChatScreen() {
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
-        await sendMessage('', result.assets[0].uri);
+        await sendMessageToLandlord('', result.assets[0].uri);
       }
     } catch (err) {
       console.error('Image pick error', err);
@@ -113,126 +158,47 @@ export default function ChatScreen() {
     }
   };
 
-  const sendMessage = async (text = '', imageUri = '') => {
+  const sendMessageToLandlord = async (text = '', imageUri = '') => {
     if (!text.trim() && !imageUri) return;
 
-    const messageData = {
-      id: `msg_${Date.now()}`,
-      sender: currentUserId,
-      text: text.trim(),
-      image: imageUri,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      type: imageUri ? 'image' : 'text',
-    };
-
-    // Update UI immediately
-    setMessages((prevMessages) => [messageData, ...prevMessages]);
-    if (text) setNewMessage('');
-
     try {
-      // Update tenant messages
-      const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-      let tenantConversations = tenantJson != null ? JSON.parse(tenantJson) : [];
-
-      // Find conversation using unique ID if available, otherwise use flexible matching
-      let tenantConvoIndex = -1;
-      if (expectedConversationId) {
-        tenantConvoIndex = tenantConversations.findIndex(c => c.id === expectedConversationId);
-      } else {
-        tenantConvoIndex = tenantConversations.findIndex(c => {
-          const convLandlord = c.landlord || {};
-          const landlordMatches = (
-            (landlordId && convLandlord.id === landlordId) ||
-            (landlordEmail && convLandlord.email === landlordEmail) ||
-            (landlordPhone && convLandlord.phone === landlordPhone) ||
-            (landlordName && convLandlord.name === landlordName)
-          );
-          const propertyMatches = !houseName || c.houseName === houseName;
-          return landlordMatches && propertyMatches;
-        });
+      if (!conversationId || !currentUser) {
+        Alert.alert('Error', 'Conversation not loaded. Please try again.');
+        return;
       }
 
-      if (tenantConvoIndex > -1) {
-        if (!tenantConversations[tenantConvoIndex].history) {
-          tenantConversations[tenantConvoIndex].history = [];
+      let imageUrl = null;
+
+      // Upload image if provided
+      if (imageUri) {
+        const uploadResult = await uploadProfileImage(imageUri);
+        if (uploadResult.success) {
+          imageUrl = uploadResult.publicUrl;
         }
-        tenantConversations[tenantConvoIndex].history.unshift(messageData);
-        tenantConversations[tenantConvoIndex].lastMessage = messageData.text || '📷 Image';
-        tenantConversations[tenantConvoIndex].time = 'Just now';
-        tenantConversations[tenantConvoIndex].unread = false;
-      } else {
-        // Create new conversation with unique ID if houseId available
-        const newConvId = expectedConversationId || `convo_${Date.now()}`;
-        const newConversation = {
-          id: newConvId,
-          landlord: {
-            id: landlordId,
-            email: landlordEmail,
-            phone: landlordPhone,
-            name: landlordName,
-            image: landlordImage,
-          },
-          houseName: houseName || 'General Inquiry',
-          houseId: houseId || null,
-          lastMessage: messageData.text || '📷 Image',
-          time: 'Just now',
-          unread: false,
-          history: [messageData],
-        };
-        tenantConversations.unshift(newConversation);
-        setConversationId(newConversation.id);
       }
-      await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(tenantConversations));
-    } catch (e) {
-      console.error("Failed to save tenant message", e);
-    }
-    
-    try {
-      // Update landlord inquiries
-      const landlordJson = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-      let landlordInquiries = landlordJson != null ? JSON.parse(landlordJson) : [];
-      
-      // Match by tenant AND landlord AND property to keep separate property conversations separate
-      const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
-      const landlordKey = contactKey({ id: landlordId, email: landlordEmail, phone: landlordPhone, name: landlordName });
-      const landlordConvoIndex = landlordInquiries.findIndex(c => 
-        c.tenant.id === currentUser.id && 
-        contactKey(c.landlord) === landlordKey &&
-        c.property === (houseName || 'General Inquiry')
+
+      // Send message to Supabase with conversation ID
+      const { success, error } = await sendMessage(
+        conversationId,
+        currentUser.id,
+        text.trim() || null
       );
 
-      if (landlordConvoIndex > -1) {
-        if (!landlordInquiries[landlordConvoIndex].history) {
-          landlordInquiries[landlordConvoIndex].history = [];
-        }
-        landlordInquiries[landlordConvoIndex].history.unshift(messageData);
-        landlordInquiries[landlordConvoIndex].lastMessage = messageData.text || '📷 Image';
-        landlordInquiries[landlordConvoIndex].time = 'Just now';
-        landlordInquiries[landlordConvoIndex].unread = true;
-        landlordInquiries[landlordConvoIndex].property = houseName || landlordInquiries[landlordConvoIndex].property;
-        landlordInquiries[landlordConvoIndex].status = 'new';
+      if (success) {
+        setNewMessage('');
+        // Message will appear through real-time subscription
       } else {
-        landlordInquiries.unshift({
-          id: `inq_${Date.now()}`,
-          tenant: currentUser,
-          property: houseName || 'General Inquiry',
-          lastMessage: messageData.text || '📷 Image',
-          time: 'Just now',
-          unread: true,
-          status: 'new',
-          history: [messageData],
-        });
+        Alert.alert('Error', error || 'Failed to send message');
       }
-      
-      await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(landlordInquiries));
-    } catch (e) {
-      console.error("Failed to save landlord inquiry", e);
+    } catch (error) {
+      console.error('Failed to send message', error);
+      Alert.alert('Error', 'Failed to send message');
     }
   };
 
   const handleSend = useCallback(() => {
-    sendMessage(newMessage);
-  }, [newMessage]);
+    sendMessageToLandlord(newMessage);
+  }, [newMessage, conversationId, currentUser]);
 
   const handleDeleteConversation = () => {
     Alert.alert(
@@ -240,30 +206,14 @@ export default function ChatScreen() {
       'Are you sure you want to delete this conversation? This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Delete', 
-          style: 'destructive', 
+        {
+          text: 'Delete',
+          style: 'destructive',
           onPress: async () => {
             try {
-              // Remove conversation from tenant messages
-              const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-              let tenantConversations = tenantJson != null ? JSON.parse(tenantJson) : [];
-              
-              const updatedConversations = tenantConversations.filter(conv => {
-                const convLandlord = conv.landlord || {};
-                return !(
-                  (landlordId && convLandlord.id === landlordId) ||
-                  (landlordEmail && convLandlord.email === landlordEmail) ||
-                  (landlordPhone && convLandlord.phone === landlordPhone) ||
-                  (landlordName && convLandlord.name === landlordName)
-                );
-              });
-              
-              await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(updatedConversations));
-              
-              // Clear local state and navigate back
               setMessages([]);
               router.back();
+              Alert.alert('Deleted', 'Conversation has been deleted.');
             } catch (e) {
               console.error('Failed to delete conversation', e);
               Alert.alert('Error', 'Failed to delete conversation.');
@@ -278,7 +228,7 @@ export default function ChatScreen() {
     <View
       style={[
         styles.messageBubble,
-        item.sender === currentUserId
+        item.sender === currentUser?.id
           ? styles.myMessage
           : styles.otherMessage,
       ]}
@@ -290,7 +240,7 @@ export default function ChatScreen() {
       ) : (
         <Text
           style={
-            item.sender === currentUserId
+            item.sender === currentUser?.id
               ? styles.myMessageText
               : styles.otherMessageText
           }
@@ -301,6 +251,15 @@ export default function ChatScreen() {
       <Text style={styles.messageTime}>{item.timestamp}</Text>
     </View>
   );
+
+  if (isLoading) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#667eea" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Loading messages...</Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView

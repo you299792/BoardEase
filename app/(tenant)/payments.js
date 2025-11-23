@@ -9,15 +9,18 @@ import {
   RefreshControl,
   Modal,
   TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const BOOKINGS_STORAGE_KEY = '@bookings_data';
-const PAYMENTS_STORAGE_KEY = '@payments_data';
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
+import {
+  getCurrentUser,
+  getTenantPayments,
+  recordPayment,
+  getTenantBookings,
+  getTenantProfile,
+} from '../../lib/supabaseClient';
 
 export default function FinancialsScreen() {
   const [selectedPeriod, setSelectedPeriod] = useState('monthly');
@@ -31,13 +34,8 @@ export default function FinancialsScreen() {
     accountNumber: '',
     accountName: '',
   });
-
-  const currentUser = {
-    id: 'tenant_jesse_pinkman_01',
-    name: 'Jesse Pinkman',
-    email: 'jessepinkmanyo@gmail.com',
-    phone: '+1 234 567 8900',
-  };
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -45,19 +43,62 @@ export default function FinancialsScreen() {
 
   const loadData = async () => {
     try {
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(user);
+
       // Load bookings
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-      const userBookings = allBookings.filter(booking => booking.tenantId === currentUser.id);
-      setBookings(userBookings);
+      const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(user.id);
+      if (bookingsSuccess) {
+        const transformedBookings = bookingsData.map(booking => ({
+          id: booking.id,
+          tenantId: booking.tenant_profile_id,
+          landlordId: booking.listings?.landlord_profile?.user_id,
+          landlordName: `${booking.listings?.landlord_profile?.users?.first_name} ${booking.listings?.landlord_profile?.users?.last_name}`,
+          property: booking.listings?.title,
+          amount: booking.total_amount,
+          status: booking.booking_status,
+          moveInDate: booking.check_in_date,
+          paymentStatus: booking.payment_status || 'pending',
+          paidAmount: booking.paid_amount,
+        }));
+        setBookings(transformedBookings);
+      }
 
       // Load payments
-      const paymentsJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-      const allPayments = paymentsJson ? JSON.parse(paymentsJson) : [];
-      const userPayments = allPayments.filter(payment => payment.tenantId === currentUser.id);
-      setPayments(userPayments);
+      const { success: paymentsSuccess, payments: paymentsData } = await getTenantPayments(user.id);
+      if (paymentsSuccess) {
+        const transformedPayments = paymentsData.map(payment => ({
+          id: payment.id,
+          tenantId: payment.tenant_profile_id,
+          tenantName: user.first_name,
+          landlordName: payment.bookings?.listings?.landlord_profile?.users?.first_name,
+          property: payment.bookings?.listings?.title,
+          amount: payment.amount,
+          type: payment.payment_type,
+          status: payment.payment_status,
+          method: payment.payment_method,
+          reference: payment.reference_number,
+          paidDate: payment.payment_date,
+          timestamp: payment.created_at,
+          description: `${payment.payment_type} Payment`,
+          bookingId: payment.booking_id,
+        }));
+        setPayments(transformedPayments);
+      }
     } catch (error) {
       console.error('Failed to load data', error);
+      Alert.alert('Error', 'Failed to load financial data');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -154,62 +195,51 @@ export default function FinancialsScreen() {
     try {
       // Generate payment reference
       const paymentReference = `PAY-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
-      // Create payment record
-      const paymentRecord = {
-        id: `payment_${Date.now()}`,
-        tenantId: currentUser.id,
-        tenantName: currentUser.name,
-        landlordName: selectedPayment.landlord,
-        property: selectedPayment.property,
-        amount: selectedPayment.amount,
-        type: selectedPayment.type,
-        status: 'completed',
-        method: paymentMethod,
-        accountNumber: paymentDetails.accountNumber,
-        accountName: paymentDetails.accountName,
-        reference: paymentReference,
-        paidDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        description: selectedPayment.description || `${getPaymentType(selectedPayment.type)} Payment`,
+
+      // Record payment in Supabase
+      const paymentData = {
+        tenantProfileId: currentUser.id,
         bookingId: selectedPayment.bookingId,
+        amount: selectedPayment.amount,
+        paymentType: selectedPayment.type,
+        paymentMethod: paymentMethod,
+        referenceNumber: paymentReference,
+        paymentStatus: 'completed',
+        paymentDate: new Date().toISOString().split('T')[0],
       };
 
-      // Update payments storage
-      const paymentsJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-      const allPayments = paymentsJson ? JSON.parse(paymentsJson) : [];
-      allPayments.push(paymentRecord);
-      await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(allPayments));
+      const { success, error, paymentId } = await recordPayment(paymentData);
 
-      // If this was a booking payment, update booking status
-      if (selectedPayment.bookingId) {
-        const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-        const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-        const updatedBookings = allBookings.map(booking => 
-          booking.id === selectedPayment.bookingId 
-            ? { ...booking, paymentStatus: 'paid', paidAmount: selectedPayment.amount }
-            : booking
+      if (success) {
+        // Reload data
+        await loadData();
+
+        // Close modal and show success message
+        setShowPaymentModal(false);
+        setSelectedPayment(null);
+
+        Alert.alert(
+          'Payment Successful!',
+          `Payment of ₱${selectedPayment.amount.toLocaleString()} completed successfully.\n\nReference: ${paymentReference}`,
+          [
+            { text: 'OK', style: 'default' },
+            {
+              text: 'View Receipt',
+              onPress: () => handleViewReceipt({
+                amount: selectedPayment.amount,
+                property: selectedPayment.property,
+                landlordName: selectedPayment.landlord,
+                method: paymentMethod,
+                reference: paymentReference,
+                paidDate: new Date().toISOString().split('T')[0],
+                status: 'completed',
+              })
+            }
+          ]
         );
-        await AsyncStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(updatedBookings));
+      } else {
+        Alert.alert('Error', error || 'Failed to process payment');
       }
-
-      // Close modal and reload data
-      setShowPaymentModal(false);
-      setSelectedPayment(null);
-      await loadData();
-
-      // Show success message with receipt
-      Alert.alert(
-        'Payment Successful!',
-        `Payment of ₱${selectedPayment.amount.toLocaleString()} completed successfully.\n\nReference: ${paymentReference}`,
-        [
-          { text: 'OK', style: 'default' },
-          { 
-            text: 'View Receipt', 
-            onPress: () => handleViewReceipt(paymentRecord)
-          }
-        ]
-      );
     } catch (error) {
       console.error('Failed to process payment', error);
       Alert.alert('Error', 'Failed to process payment. Please try again.');
@@ -335,6 +365,30 @@ export default function FinancialsScreen() {
       default: return 'card';
     }
   };
+
+  if (isLoading) {
+    return (
+      <>
+        <Stack.Screen
+          options={{
+            title: 'Payments & Financials',
+            headerShown: true,
+            headerStyle: {
+              backgroundColor: Colors.primary,
+            },
+            headerTintColor: '#fff',
+            headerTitleStyle: {
+              fontWeight: 'bold',
+            },
+          }}
+        />
+        <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+          <ActivityIndicator size="large" color="#667eea" />
+          <Text style={{ marginTop: 10, color: '#666' }}>Loading payments...</Text>
+        </View>
+      </>
+    );
+  }
 
   return (
     <>
