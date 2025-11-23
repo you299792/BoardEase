@@ -16,12 +16,17 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { supabase } from '../../lib/supabaseClient';
 import {
   getCurrentUser,
   sendMessage,
   getMessages,
   subscribeToMessages,
   uploadProfileImage,
+  getUserProfile,
+  uploadMessageImage,
+  getListing,
+  createBooking,
 } from '../../lib/supabaseClient';
 
 export default function LandlordChat() {
@@ -32,6 +37,9 @@ export default function LandlordChat() {
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [propertyPrice, setPropertyPrice] = useState(0);
+  const [listingId, setListingId] = useState(null);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
+  const [landlordProfileId, setLandlordProfileId] = useState(null);
   const [conversationId, setConversationId] = useState(routeConversationId || null);
   const [currentUser, setCurrentUser] = useState(null);
 
@@ -53,47 +61,89 @@ export default function LandlordChat() {
 
       setCurrentUser(user);
 
-      // If we have a conversationId from route, use it directly
-      if (routeConversationId) {
-        setConversationId(routeConversationId);
+      // Fetch landlord profile to get landlord_profile.id
+      const { data: landlordProfile } = await supabase
+        .from('landlord_profile')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
 
-        // Fetch messages for this conversation
-        const { success, messages: messagesData, error } = await getMessages(
-          user.id,
-          tenantId,
-          null // We have conversationId, so no need for houseId
-        );
+      if (landlordProfile?.id) {
+        setLandlordProfileId(landlordProfile.id);
+      }
 
-        if (success && messagesData) {
-          const transformedMessages = messagesData.map(msg => ({
-            id: msg.id,
-            sender: msg.sender_id,
-            text: msg.message_text,
-            image: msg.image_url,
-            timestamp: msg.created_at,
-            type: msg.message_type,
-          })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      // Use conversationId from route params
+      const convId = routeConversationId;
 
-          setMessages(transformedMessages);
+      if (!convId) {
+        Alert.alert('Error', 'Conversation ID is missing');
+        setIsLoading(false);
+        return;
+      }
 
-          // Subscribe to real-time messages
-          const subscription = subscribeToMessages(routeConversationId, (newMsg) => {
-            const transformedMsg = {
-              id: newMsg.id,
-              sender: newMsg.sender_id,
-              text: newMsg.message_text,
-              image: newMsg.image_url,
-              timestamp: newMsg.created_at,
-              type: newMsg.message_type,
-            };
-            setMessages(prev => [transformedMsg, ...prev]);
-          });
+      setConversationId(convId);
 
-          return () => {
-            if (subscription) subscription.unsubscribe();
-          };
+      // Fetch conversation details to get listing_id and tenant_id
+      const { data: conversationData, error: convDataError } = await supabase
+        .from('conversations')
+        .select('listing_id, tenant_id')
+        .eq('id', convId)
+        .single();
+
+      if (conversationData?.listing_id) {
+        setListingId(conversationData.listing_id);
+        // Fetch listing to get price
+        const { success: listingSuccess, listing } = await getListing(conversationData.listing_id);
+        if (listingSuccess && listing) {
+          setPropertyPrice(listing.price_per_month || 0);
         }
       }
+
+      if (conversationData?.tenant_id) {
+        setTenantProfileId(conversationData.tenant_id);
+      }
+
+      // Fetch messages for this conversation
+      const { success, messages: messagesData, error } = await getMessages(convId);
+
+      if (!success || !messagesData) {
+        Alert.alert('Error', error || 'Failed to load messages');
+        setIsLoading(false);
+        return;
+      }
+
+      // Transform messages to include sender profile data
+      const transformedMessages = messagesData.map(msg => ({
+        id: msg.id,
+        sender_id: msg.sender_id,
+        sender: msg.sender,
+        receiver: msg.receiver,
+        text: msg.message_text,
+        image: msg.media_url,
+        timestamp: msg.created_at,
+        type: msg.message_type,
+      })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      setMessages(transformedMessages);
+
+      // Subscribe to real-time messages
+      const subscription = subscribeToMessages(convId, (newMsg) => {
+        const transformedMsg = {
+          id: newMsg.id,
+          sender_id: newMsg.sender_id,
+          sender: newMsg.sender,
+          receiver: newMsg.receiver,
+          text: newMsg.message_text,
+          image: newMsg.media_url,
+          timestamp: newMsg.created_at,
+          type: newMsg.message_type,
+        };
+        setMessages(prev => [transformedMsg, ...prev]);
+      });
+
+      return () => {
+        if (subscription) subscription.unsubscribe();
+      };
     } catch (e) {
       console.error('Failed to load landlord conversation', e);
       Alert.alert('Error', 'Failed to load conversation');
@@ -132,7 +182,7 @@ export default function LandlordChat() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.8,
@@ -156,15 +206,43 @@ export default function LandlordChat() {
     }
 
     try {
+      // Fetch user's full profile to get image
+      const { success: profileSuccess, user: userProfile } = await getUserProfile(currentUser.id);
+      
+      // Upload message image if provided
       let imageUrl = null;
-
-      // Upload image if provided
       if (imageUri) {
-        const uploadResult = await uploadProfileImage(imageUri);
+        const uploadResult = await uploadMessageImage(imageUri, currentUser.id);
         if (uploadResult.success) {
           imageUrl = uploadResult.publicUrl;
+        } else {
+          Alert.alert('Error', 'Failed to upload image');
+          return;
         }
       }
+
+      // Clear input first (so user sees it's been sent)
+      setNewMessage('');
+
+      // Create optimistic message object for immediate display
+      const optimisticMessage = {
+        id: `temp-${Date.now()}`,
+        sender_id: currentUser.id,
+        sender: {
+          id: currentUser.id,
+          first_name: userProfile?.first_name || currentUser.user_metadata?.first_name || 'You',
+          last_name: userProfile?.last_name || currentUser.user_metadata?.last_name || '',
+          profile_image_url: userProfile?.profile_image_url || currentUser.user_metadata?.profile_image_url,
+        },
+        receiver: null,
+        text: text.trim() || null,
+        image: imageUrl || null,
+        timestamp: new Date().toISOString(),
+        type: imageUrl ? 'image' : 'text',
+      };
+
+      // Show message immediately (optimistic update)
+      setMessages([optimisticMessage, ...messages]);
 
       // Send message to Supabase with conversation ID
       const { success, error } = await sendMessage(
@@ -174,14 +252,16 @@ export default function LandlordChat() {
         imageUrl
       );
 
-      if (success) {
-        setNewMessage('');
-        // Message will appear through real-time subscription
-      } else {
+      if (!success) {
+        // Remove optimistic message if send failed
+        setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
         Alert.alert('Error', error || 'Failed to send message');
       }
+      // On success, real-time subscription will replace the optimistic message with the actual one
     } catch (error) {
       console.error('Failed to send message', error);
+      // Remove optimistic message on error
+      setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
       Alert.alert('Error', 'Failed to send message');
     }
   };
@@ -194,6 +274,27 @@ export default function LandlordChat() {
     try {
       // Calculate final amount (use property price if no specific amount mentioned)
       const finalAmount = bookingMessage.amount > 0 ? bookingMessage.amount : propertyPrice;
+
+      // Create booking record in database
+      if (listingId && tenantProfileId && landlordProfileId) {
+        const bookingData = {
+          listingId: listingId,
+          tenantId: tenantProfileId,
+          landlordId: landlordProfileId,
+          moveInDate: bookingMessage.bookingDate || new Date().toISOString().split('T')[0],
+          moveOutDate: null,
+          numberOfGuests: parseInt(bookingMessage.bookingGuests) || 1,
+          specialRequests: bookingMessage.text || '',
+        };
+
+        // Create the booking
+        const bookingResult = await createBooking(bookingData);
+        if (!bookingResult.success) {
+          console.warn('Failed to create booking record:', bookingResult.error);
+        } else {
+          console.log('Booking created successfully:', bookingResult.booking);
+        }
+      }
 
       // Send approval message with amount details
       const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${property} has been approved. \n\n📅 Move-in date: ${bookingMessage.bookingDate || 'Not specified'} \n👥 Guests: ${bookingMessage.bookingGuests || '1'} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()} \n\nWe'll contact you soon for the next steps and payment details.`;
@@ -268,33 +369,65 @@ export default function LandlordChat() {
 
   const renderMessage = ({ item }) => {
     const bookingDetails = extractBookingDetails(item);
-    const isMyMessage = currentUser && item.sender === currentUser.id;
-    
+    const isMyMessage = currentUser && item.sender_id === currentUser.id;
+    const senderProfile = item.sender;
+    const senderAvatar = senderProfile?.profile_image_url;
+
     return (
-      <View style={[styles.messageBubble, isMyMessage ? styles.myMessage : styles.otherMessage]}>
-        {item.image ? (
-          <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
-            <Image source={{ uri: item.image }} style={styles.messageImage} />
-          </TouchableOpacity>
-        ) : (
-          <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>
-            {item.text}
+      <View
+        style={[
+          styles.messageContainer,
+          isMyMessage ? styles.myMessageContainer : styles.otherMessageContainer,
+        ]}
+      >
+        {!isMyMessage && senderAvatar && (
+          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+        )}
+        {!isMyMessage && !senderAvatar && (
+          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
+            <Ionicons name="person-circle" size={32} color="#ccc" />
+          </View>
+        )}
+
+        <View style={[
+          styles.messageBubble,
+          isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble
+        ]}>
+          {item.image ? (
+            <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
+              <Image source={{ uri: item.image }} style={styles.messageImage} />
+            </TouchableOpacity>
+          ) : (
+            <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>
+              {item.text}
+            </Text>
+          )}
+
+          {bookingDetails?.isBooking && !isMyMessage && (
+            <TouchableOpacity 
+              style={styles.bookingActionButton}
+              onPress={() => {
+                setSelectedBooking(bookingDetails);
+                setShowBookingModal(true);
+              }}
+            >
+              <Text style={styles.bookingActionText}>Manage Booking</Text>
+            </TouchableOpacity>
+          )}
+
+          <Text style={[styles.messageTime, isMyMessage ? styles.myMessageTime : styles.otherMessageTime]}>
+            {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
+        </View>
+
+        {isMyMessage && senderAvatar && (
+          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
         )}
-        
-        {bookingDetails?.isBooking && !isMyMessage && (
-          <TouchableOpacity 
-            style={styles.bookingActionButton}
-            onPress={() => {
-              setSelectedBooking(bookingDetails);
-              setShowBookingModal(true);
-            }}
-          >
-            <Text style={styles.bookingActionText}>Manage Booking</Text>
-          </TouchableOpacity>
+        {isMyMessage && !senderAvatar && (
+          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
+            <Ionicons name="person-circle" size={32} color="#ccc" />
+          </View>
         )}
-        
-        <Text style={styles.messageTime}>{item.timestamp}</Text>
       </View>
     );
   };
@@ -359,7 +492,15 @@ export default function LandlordChat() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Manage Booking Request</Text>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Manage Booking Request</Text>
+              <TouchableOpacity 
+                style={styles.modalCloseButton}
+                onPress={() => setShowBookingModal(false)}
+              >
+                <Ionicons name="close" size={24} color="#333" />
+              </TouchableOpacity>
+            </View>
             <Text style={styles.modalSubtitle}>
               {tenantName} wants to book {property}
             </Text>
@@ -428,12 +569,39 @@ const styles = StyleSheet.create({
   headerInfo: { flex: 1 },
   headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#333' },
   headerSubtitle: { fontSize: 14, color: '#666' },
+  messageContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginVertical: 6,
+    gap: 6,
+  },
+  myMessageContainer: {
+    justifyContent: 'flex-end',
+  },
+  otherMessageContainer: {
+    justifyContent: 'flex-start',
+  },
+  senderAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#e5e7eb',
+  },
+  defaultAvatar: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   messageBubble: { 
     padding: 12, 
     borderRadius: 18, 
-    marginVertical: 6, 
-    maxWidth: '80%',
+    maxWidth: '70%',
     minWidth: 120,
+  },
+  myMessageBubble: {
+    backgroundColor: '#667eea',
+  },
+  otherMessageBubble: {
+    backgroundColor: '#e5e7eb',
   },
   myMessage: { alignSelf: 'flex-end', backgroundColor: '#667eea' },
   otherMessage: { alignSelf: 'flex-start', backgroundColor: '#e5e7eb' },
@@ -450,6 +618,12 @@ const styles = StyleSheet.create({
     color: 'rgba(0,0,0,0.5)', 
     alignSelf: 'flex-end', 
     marginTop: 6 
+  },
+  myMessageTime: {
+    color: 'rgba(255,255,255,0.7)',
+  },
+  otherMessageTime: {
+    color: 'rgba(0,0,0,0.5)',
   },
   bookingActionButton: {
     backgroundColor: '#f59e0b',
@@ -508,11 +682,21 @@ const styles = StyleSheet.create({
     margin: 20,
     width: '90%',
   },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   modalTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#333',
-    marginBottom: 8,
+    flex: 1,
+  },
+  modalCloseButton: {
+    padding: 8,
+    marginRight: -8,
   },
   modalSubtitle: {
     fontSize: 16,
