@@ -181,10 +181,22 @@ export default function LandlordPortal() {
         if (success) {
           const listingInquiries = dbInquiries.filter(inq => inq.listing_id === listingId);
           setInquiries(listingInquiries);
-          
-          // Load reviews from selected listing if embedded
-          if (selectedListing?.reviews) {
-            setReviews(selectedListing.reviews);
+        }
+        
+        // Get landlord profile ID
+        const { data: profile } = await supabase
+          .from('landlord_profile')
+          .select('id')
+          .eq('user_id', currentUser.id)
+          .single()
+        
+        if (profile?.id) {
+          // Fetch reviews for all landlord listings
+          const { success: reviewsSuccess, reviews: dbReviews } = await getLandlordReviews(profile.id);
+          if (reviewsSuccess) {
+            // Filter reviews to only show those for this specific listing
+            const listingReviews = dbReviews.filter(review => review.reviewed_item_id === listingId);
+            setReviews(listingReviews);
           }
         }
       }
@@ -324,19 +336,32 @@ export default function LandlordPortal() {
   };
 
   // Function to render individual review
-  const renderReview = ({ item }) => (
-    <View style={styles.reviewCard}>
-      <View style={styles.reviewHeader}>
-        <Image source={{ uri: item.userImage }} style={styles.reviewerImage} />
-        <View style={styles.reviewerInfo}>
-          <Text style={styles.reviewerName}>{item.user}</Text>
-          {renderStars(item.rating)}
+  const renderReview = ({ item }) => {
+    const reviewerName = item.users ? `${item.users.first_name || ''} ${item.users.last_name || ''}`.trim() : 'Anonymous';
+    const reviewerImage = item.users?.profile_image_url || PLACEHOLDER_IMAGE;
+    const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
+    
+    return (
+      <View style={styles.reviewCard}>
+        <View style={styles.reviewHeader}>
+          <Image source={{ uri: reviewerImage }} style={styles.reviewerImage} />
+          <View style={styles.reviewerInfo}>
+            <Text style={styles.reviewerName}>{reviewerName}</Text>
+            {renderStars(item.rating)}
+          </View>
+          <Text style={styles.reviewDate}>{reviewDate}</Text>
         </View>
-        <Text style={styles.reviewDate}>{item.date}</Text>
+        <Text style={styles.reviewTitle}>{item.title}</Text>
+        <Text style={styles.reviewComment}>{item.review_text}</Text>
+        {item.is_verified_booking && (
+          <View style={styles.verifiedBadge}>
+            <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
+            <Text style={styles.verifiedText}>Verified Booking</Text>
+          </View>
+        )}
       </View>
-      <Text style={styles.reviewComment}>{item.comment}</Text>
-    </View>
-  );
+    );
+  };
 
   // Function to render inquiry
   const renderInquiry = ({ item }) => (
@@ -462,19 +487,32 @@ export default function LandlordPortal() {
           {/* Reviews List */}
           <FlatList
             data={reviews}
-            renderItem={({item}) => (
-              <View style={styles.reviewCard}>
-                <View style={styles.reviewHeader}>
-                  <Image source={{ uri: item.userImage }} style={styles.reviewerImage} />
-                  <View style={styles.reviewerInfo}>
-                    <Text style={styles.reviewerName}>{item.user}</Text>
-                    {renderStars(item.rating)}
+            renderItem={({item}) => {
+              const reviewerName = item.users ? `${item.users.first_name || ''} ${item.users.last_name || ''}`.trim() : 'Anonymous';
+              const reviewerImage = item.users?.profile_image_url || PLACEHOLDER_IMAGE;
+              const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
+              
+              return (
+                <View style={styles.reviewCard}>
+                  <View style={styles.reviewHeader}>
+                    <Image source={{ uri: reviewerImage }} style={styles.reviewerImage} />
+                    <View style={styles.reviewerInfo}>
+                      <Text style={styles.reviewerName}>{reviewerName}</Text>
+                      {renderStars(item.rating)}
+                    </View>
+                    <Text style={styles.reviewDate}>{reviewDate}</Text>
                   </View>
-                  <Text style={styles.reviewDate}>{item.date}</Text>
+                  <Text style={styles.reviewTitle}>{item.title}</Text>
+                  <Text style={styles.reviewComment}>{item.review_text}</Text>
+                  {item.is_verified_booking && (
+                    <View style={styles.verifiedBadge}>
+                      <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
+                      <Text style={styles.verifiedText}>Verified Booking</Text>
+                    </View>
+                  )}
                 </View>
-                <Text style={styles.reviewComment}>{item.comment}</Text>
-              </View>
-            )}
+              );
+            }}
             keyExtractor={item => item.id ?? Math.random().toString()}
             showsVerticalScrollIndicator={false}
             style={styles.allReviewsList}
