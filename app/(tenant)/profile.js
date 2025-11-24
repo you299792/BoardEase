@@ -325,7 +325,7 @@ export default function Profile() {
             disabled={!isEditing}
           >
             <Image
-              source={{ uri: userData?.profile_image_url || 'https://via.placeholder.com/150' }}
+              source={{ uri: userData?.image || 'https://via.placeholder.com/150' }}
               style={styles.profileImage}
             />
             {isEditing && (
