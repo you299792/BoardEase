@@ -15,6 +15,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import BoardingHouseCard from '../../components/BoardingHouseCard';
 import {
   getListings,
+  getLandlordProfile as fetchLandlordProfile,
 } from '../../lib/supabaseClient';
 
 export default function LandlordProfile() {
@@ -43,49 +44,45 @@ export default function LandlordProfile() {
 
   useEffect(() => {
     const fetchLandlordData = async () => {
-      if (!landlordId) {
-        setIsLoading(false);
-        return;
-      }
-
       try {
         setIsLoading(true);
-        
-        // Fetch listings from Supabase
-        const { success, listings, error } = await getListings({ minPrice: 0, maxPrice: 999999 });
+        if (!landlordId) {
+          throw new Error("Landlord ID is missing.");
+        }
 
-        if (success && listings) {
-          // Find landlord in listings
-          const landlordListing = listings.find(h =>
-            h.landlord_profile?.user_id === landlordId ||
-            h.landlord_profile?.users?.email === landlordId ||
-            h.landlord_profile?.users?.phone === landlordId
-          );
+        // Directly fetch the landlord's profile and their listings
+        const { success, profile, error } = await fetchLandlordProfile(landlordId);
 
-          if (landlordListing) {
-            const landlordData = {
-              id: landlordListing.landlord_profile?.user_id,
-              name: `${landlordListing.landlord_profile?.users?.first_name} ${landlordListing.landlord_profile?.users?.last_name}`,
-              email: landlordListing.landlord_profile?.users?.email,
-              phone: landlordListing.landlord_profile?.users?.phone,
-              image: landlordListing.landlord_profile?.users?.profile_image_url,
-              rating: landlordListing.landlord_profile?.rating,
-              verified: landlordListing.landlord_profile?.bank_account_verified,
-            };
-            setLandlord(landlordData);
+        if (success && profile) {
+          const landlordData = {
+            id: profile.user_id,
+            name: `${profile.users?.first_name || ''} ${profile.users?.last_name || ''}`.trim(),
+            email: profile.users?.email,
+            phone: profile.users?.phone,
+            image: profile.users?.profile_image_url,
+            rating: profile.rating,
+            verified: profile.bank_account_verified,
+            joinDate: profile.users?.created_at ? new Date(profile.users.created_at).getFullYear() : null,
+            bio: profile.users?.bio,
+          };
+          setLandlord(landlordData);
 
-            // Filter listings by landlord
-            const landlordListings = listings.filter(h =>
-              h.landlord_profile?.user_id === landlordData.id
-            );
-            setOtherListings(landlordListings);
-          }
+          // The listings are now directly available on the profile object
+          const transformedListings = (profile.listings || []).map(listing => ({
+            ...listing,
+            name: listing.title,
+            location: listing.city,
+            price: listing.price_per_month,
+            type: listing.room_type,
+          }));
+          setOtherListings(transformedListings);
         } else {
-          Alert.alert('Error', error || 'Failed to load landlord data');
+          throw new Error(error || 'Failed to load landlord data');
         }
       } catch (e) {
         console.error('Failed to load landlord data', e);
-        Alert.alert('Error', 'Failed to load landlord data');
+        Alert.alert('Error', e.message || 'An unexpected error occurred.');
+        setLandlord(null); // Ensure no stale data is shown
       } finally {
         setIsLoading(false);
       }
@@ -94,11 +91,11 @@ export default function LandlordProfile() {
     fetchLandlordData();
   }, [landlordId]);
 
-  
   if (isLoading) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color="#667eea" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Loading landlord profile...</Text>
       </View>
     );
   }
@@ -111,8 +108,9 @@ export default function LandlordProfile() {
             <Ionicons name="arrow-back" size={24} color="#333" />
           </TouchableOpacity>
           <Text style={styles.title}>Landlord Profile</Text>
+          <View style={{ width: 40 }} />
         </View>
-        <Text style={{fontSize: 18, color: '#666'}}>Landlord not found</Text>
+        <Text style={{ marginTop: 20, fontSize: 16, color: '#666' }}>Could not find landlord profile.</Text>
       </View>
     );
   }
