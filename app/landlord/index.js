@@ -23,6 +23,7 @@ import {
   getLandlordListings,
   getLandlordInquiries,
   deleteListing as deleteListingFromDB,
+  supabase,
 } from '../../lib/supabaseClient';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -45,6 +46,7 @@ export default function LandlordPortal() {
 
   // imagesToShow mirrors the selectedListing.images but lets us replace broken urls with a placeholder
   const [imagesToShow, setImagesToShow] = useState([]);
+  const [isTogglingAvailability, setIsTogglingAvailability] = useState(false);
 
   const dims = useWindowDimensions();
 
@@ -157,6 +159,60 @@ export default function LandlordPortal() {
     } catch (error) {
       console.error('Failed to load listing details', error);
     }
+  };
+
+  // Toggle availability: flips available <-> occupied for a listing
+  const toggleAvailability = (listing) => {
+    const isAvailable = listing.available !== undefined ? listing.available : (listing.status === 'available');
+    const newAvailable = !isAvailable;
+
+    const confirmMessage = newAvailable
+      ? 'Mark this property as Available?'
+      : 'Mark this property as Occupied?';
+
+    Alert.alert(
+      newAvailable ? 'Mark Available' : 'Mark Occupied',
+      confirmMessage,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: newAvailable ? 'Mark Available' : 'Mark Occupied',
+          onPress: async () => {
+            try {
+              setIsTogglingAvailability(true);
+              const { data, error } = await supabase
+                .from('listings')
+                .update({
+                  available: newAvailable,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', listing.id)
+                .select()
+                .single();
+
+              if (error) {
+                console.error('Toggle availability error:', error);
+                Alert.alert('Error', error.message || 'Failed to update availability');
+                return;
+              }
+
+              // Update local UI state
+              setListings(prev => prev.map(l => l.id === listing.id ? { ...l, available: newAvailable } : l));
+              if (selectedListing && selectedListing.id === listing.id) {
+                setSelectedListing(prev => prev ? { ...prev, available: newAvailable } : prev);
+              }
+
+              Alert.alert('Success', `Property marked as ${newAvailable ? 'Available' : 'Occupied'}`);
+            } catch (err) {
+              console.error('Toggle availability exception:', err);
+              Alert.alert('Error', err.message || 'Failed to update availability');
+            } finally {
+              setIsTogglingAvailability(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Function to handle image scroll
@@ -384,6 +440,8 @@ export default function LandlordPortal() {
   const renderListingOverlay = () => {
     if (!selectedListing) return null;
 
+    const isAvailable = selectedListing.available !== undefined ? selectedListing.available : (selectedListing.status === 'available');
+
     return (
       <Modal
         visible={showListingOverlay}
@@ -543,18 +601,18 @@ export default function LandlordPortal() {
                 <Text style={styles.sectionTitle}>Availability Status</Text>
                 <View style={[
                   styles.availabilityBadge,
-                  { backgroundColor: selectedListing.available ? '#10b98120' : '#ef444420' }
+                  { backgroundColor: isAvailable ? '#10b98120' : '#ef444420' }
                 ]}>
                   <Ionicons 
-                    name={selectedListing.available ? "checkmark-circle" : "close-circle"} 
+                    name={isAvailable ? "checkmark-circle" : "close-circle"} 
                     size={20} 
-                    color={selectedListing.available ? "#10b981" : "#ef4444"} 
+                    color={isAvailable ? "#10b981" : "#ef4444"} 
                   />
                   <Text style={[
                     styles.availabilityText,
-                    { color: selectedListing.available ? "#10b981" : "#ef4444" }
+                    { color: isAvailable ? "#10b981" : "#ef4444" }
                   ]}>
-                    {selectedListing.available ? 'Available for Rent' : 'Currently Occupied'}
+                    {isAvailable ? 'Available for Rent' : 'Currently Occupied'}
                   </Text>
                 </View>
                 {selectedListing.availableFrom && (
@@ -611,11 +669,21 @@ export default function LandlordPortal() {
               </TouchableOpacity>
 
               <TouchableOpacity 
-                style={[styles.actionButton, styles.inquiriesButton]}
-                onPress={() => setShowInquiriesModal(true)}
+                style={[
+                  styles.actionButton, 
+                  isAvailable ? styles.occupiedButton : styles.availableButton
+                ]}
+                onPress={() => toggleAvailability(selectedListing)}
+                disabled={isTogglingAvailability}
               >
-                <Ionicons name="chatbubble" size={20} color="white" />
-                <Text style={styles.actionButtonText}>Inquiries</Text>
+                {isTogglingAvailability ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <>
+                    <Ionicons name={isAvailable ? "close-circle" : "checkmark-circle"} size={20} color="white" />
+                    <Text style={styles.actionButtonText}>{isAvailable ? 'Mark Occupied' : 'Mark Available'}</Text>
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -766,42 +834,54 @@ export default function LandlordPortal() {
             </View>
 
             <View style={styles.listingsRow}>
-              {previewListings.map((listing) => (
-                <View key={listing.id} style={styles.card}>
-                  <TouchableOpacity 
-                    style={styles.cardClickable}
-                    onPress={() => handleShowListingOverlay(listing)}
-                  >
-                    <Image source={{ uri: listing.images?.[0] || PLACEHOLDER_IMAGE }} style={styles.cardImage} />
-                    <View style={styles.cardBody}>
-                      <Text style={styles.cardTitle} numberOfLines={1}>{listing.title}</Text>
-                      <Text style={styles.cardSub} numberOfLines={1}>{listing.city}</Text>
-                      <Text style={styles.cardPrice}>₱{listing.price?.toLocaleString()}/month</Text>
-                      <View style={styles.statusContainer}>
-                        <View style={[
-                          styles.statusBadge,
-                          { backgroundColor: listing.status === 'available' ? '#10b98120' : '#ef444420' }
-                        ]}>
-                          <Text style={[
-                            styles.statusText,
-                            { color: listing.status === 'available' ? '#10b981' : '#ef4444' }
+              {previewListings.map((listing) => {
+                const isAvailable = listing.available !== undefined ? listing.available : (listing.status === 'available');
+
+                return (
+                  <View key={listing.id} style={styles.card}>
+                    <TouchableOpacity 
+                      style={styles.cardClickable}
+                      onPress={() => handleShowListingOverlay(listing)}
+                    >
+                      <Image source={{ uri: listing.images?.[0] || PLACEHOLDER_IMAGE }} style={styles.cardImage} />
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardTitle} numberOfLines={1}>{listing.title}</Text>
+                        <Text style={styles.cardSub} numberOfLines={1}>{listing.city}</Text>
+                        <Text style={styles.cardPrice}>₱{listing.price?.toLocaleString()}/month</Text>
+                        <View style={styles.statusContainer}>
+                          <View style={[
+                            styles.statusBadge,
+                            { backgroundColor: isAvailable ? '#10b98120' : '#ef444420' }
                           ]}>
-                            {listing.status === 'available' ? 'Available' : 'Occupied'}
-                          </Text>
+                            <Text style={[
+                              styles.statusText,
+                              { color: isAvailable ? '#10b981' : '#ef4444' }
+                            ]}>
+                              {isAvailable ? 'Available' : 'Occupied'}
+                            </Text>
+                          </View>
                         </View>
                       </View>
+                    </TouchableOpacity>
+                    <View style={styles.cardActions}>
+                      <TouchableOpacity style={styles.editButton} onPress={() => handleEditListing(listing.id)}>
+                        <Feather name="edit" size={20} color={Colors.primary} />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity style={[styles.deleteButton, { marginBottom: 8 }]} onPress={() => handleDeleteListing(listing.id)}>
+                        <Feather name="trash-2" size={20} color="#ef4444" />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.toggleButton}
+                        onPress={() => toggleAvailability(listing)}
+                      >
+                        <Ionicons name={isAvailable ? "close-circle" : "checkmark-circle"} size={20} color={isAvailable ? "#ef4444" : "#10b981"} />
+                      </TouchableOpacity>
                     </View>
-                  </TouchableOpacity>
-                  <View style={styles.cardActions}>
-                    <TouchableOpacity style={styles.editButton} onPress={() => handleEditListing(listing.id)}>
-                      <Feather name="edit" size={20} color={Colors.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteListing(listing.id)}>
-                      <Feather name="trash-2" size={20} color="#ef4444" />
-                    </TouchableOpacity>
                   </View>
-                </View>
-              ))}
+                );
+              })}
               
               {listings.length === 0 && (
                 <View style={styles.emptyState}>
@@ -951,6 +1031,12 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     backgroundColor: '#fee2e2',
+  },
+  toggleButton: {
+    padding: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyState: {
     backgroundColor: '#fff',
@@ -1308,6 +1394,13 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
+  },
+  // Buttons for availability toggles
+  availableButton: {
+    backgroundColor: '#10b981',
+  },
+  occupiedButton: {
+    backgroundColor: '#ef4444',
   },
   // Star Container
   starContainer: {
