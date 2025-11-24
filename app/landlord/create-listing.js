@@ -56,6 +56,10 @@ export default function CreateListing() {
   const [totalRooms, setTotalRooms] = useState('');
   const [availableRooms, setAvailableRooms] = useState('');
   const [postalCode, setPostalCode] = useState('');
+  const [bedrooms, setBedrooms] = useState('');
+  const [bathrooms, setBathrooms] = useState('');
+  const [size, setSize] = useState(''); // For Sq. Ft.
+  const [minStay, setMinStay] = useState(''); // For Min Stay in days
   const [availableFrom, setAvailableFrom] = useState('');
   const [amenities, setAmenities] = useState({
     wifi: false,
@@ -110,6 +114,10 @@ export default function CreateListing() {
     setTotalRooms('');
     setAvailableRooms('');
     setPostalCode('');
+    setBedrooms('');
+    setBathrooms('');
+    setSize('');
+    setMinStay('');
     setAvailableFrom('');
     setAmenities({
       wifi: false,
@@ -182,6 +190,10 @@ export default function CreateListing() {
           setTotalRooms(String(existingListing.total_rooms || ''));
           setAvailableRooms(String(existingListing.available_rooms || ''));
           setPostalCode(existingListing.postal_code || '');
+          setBedrooms(String(existingListing.bedrooms || ''));
+          setBathrooms(String(existingListing.bathrooms || ''));
+          setSize(String(existingListing.size || ''));
+          setMinStay(String(existingListing.min_stay || ''));
           setAvailable(existingListing.available !== false);
           setAvailableFrom(existingListing.availableFrom ?? '');
           
@@ -530,6 +542,10 @@ export default function CreateListing() {
         totalRooms: parseInt(totalRooms) || null,
         availableRooms: parseInt(availableRooms) || null,
         postalCode: postalCode.trim() || null,
+        bedrooms: parseInt(bedrooms) || null,
+        bathrooms: parseInt(bathrooms) || null,
+        size: parseInt(size) || null,
+        minStay: parseInt(minStay) || null,
         rules,
         images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
         latitude: selectedLocation?.latitude || 0,
@@ -714,6 +730,40 @@ export default function CreateListing() {
 
         <Text style={styles.label}>Max Guests per Room</Text>
         <TextInput style={styles.input} placeholder="e.g., 2" keyboardType="number-pad" value={maxGuests} onChangeText={setMaxGuests} />
+
+        <View style={styles.rowInputs}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={styles.label}>Bedrooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 3"
+              keyboardType="number-pad"
+              value={bedrooms}
+              onChangeText={setBedrooms}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Bathrooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 2"
+              keyboardType="number-pad"
+              value={bathrooms}
+              onChangeText={setBathrooms}
+            />
+          </View>
+        </View>
+
+        <View style={styles.rowInputs}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={styles.label}>Size (Sq. Ft.)</Text>
+            <TextInput style={styles.input} placeholder="e.g., 500" keyboardType="number-pad" value={size} onChangeText={setSize} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Min. Stay (Days)</Text>
+            <TextInput style={styles.input} placeholder="e.g., 30" keyboardType="number-pad" value={minStay} onChangeText={setMinStay} />
+          </View>
+        </View>
 
 
         <Text style={styles.label}>House Type</Text>
