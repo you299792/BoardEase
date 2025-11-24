@@ -134,7 +134,7 @@ export default function LandlordProfile() {
         <View style={styles.profileHeader}>
           <View style={styles.avatarContainer}>
             <Image
-              source={{ uri: landlord.photoURL || landlord.image || 'https://via.placeholder.com/150' }}
+              source={{ uri: landlord.image || 'https://via.placeholder.com/150' }}
               style={styles.avatar}
             />
           </View>
