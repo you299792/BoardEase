@@ -52,6 +52,10 @@ export default function CreateListing() {
   const [newRule, setNewRule] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [available, setAvailable] = useState(true);
+  const [maxGuests, setMaxGuests] = useState('');
+  const [totalRooms, setTotalRooms] = useState('');
+  const [availableRooms, setAvailableRooms] = useState('');
+  const [postalCode, setPostalCode] = useState('');
   const [availableFrom, setAvailableFrom] = useState('');
   const [amenities, setAmenities] = useState({
     wifi: false,
@@ -102,6 +106,10 @@ export default function CreateListing() {
     setRules([]);
     setNewRule('');
     setAvailable(true);
+    setMaxGuests('');
+    setTotalRooms('');
+    setAvailableRooms('');
+    setPostalCode('');
     setAvailableFrom('');
     setAmenities({
       wifi: false,
@@ -123,8 +131,6 @@ export default function CreateListing() {
     // Reset location
     setSelectedLocation(null);
     setMapAddress('');
-    // clear router params if supported
-    try { router.setParams?.({}); } catch (e) { /* ignore */ }
   };
 
   useEffect(() => {
@@ -172,6 +178,10 @@ export default function CreateListing() {
           setHouseType(existingListing.type ?? existingListing.houseType ?? 'Single Room');
           setDistance(existingListing.distance ?? '');
           setRules(existingListing.rules ?? []);
+          setMaxGuests(String(existingListing.max_guests || ''));
+          setTotalRooms(String(existingListing.total_rooms || ''));
+          setAvailableRooms(String(existingListing.available_rooms || ''));
+          setPostalCode(existingListing.postal_code || '');
           setAvailable(existingListing.available !== false);
           setAvailableFrom(existingListing.availableFrom ?? '');
           
@@ -516,6 +526,10 @@ export default function CreateListing() {
         distance: distance?.trim() || null, // include distance so it's saved
         availableFrom,
         amenities: amenitiesArray,
+        maxGuests: parseInt(maxGuests) || 1,
+        totalRooms: parseInt(totalRooms) || null,
+        availableRooms: parseInt(availableRooms) || null,
+        postalCode: postalCode.trim() || null,
         rules,
         images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
         latitude: selectedLocation?.latitude || 0,
@@ -581,7 +595,6 @@ export default function CreateListing() {
   };
 
   const handleCancel = () => {
-    resetForm();
     // Check if we can go back in the navigation stack
     try {
       if (router.canGoBack()) {
@@ -675,6 +688,33 @@ export default function CreateListing() {
             <TextInput style={styles.input} placeholder="e.g., 1.2 km from XU" value={distance} onChangeText={setDistance} />
           </View>
         </View>
+
+        <View style={styles.rowInputs}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={styles.label}>Total Rooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 10"
+              keyboardType="number-pad"
+              value={totalRooms}
+              onChangeText={setTotalRooms}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Available Rooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 2"
+              keyboardType="number-pad"
+              value={availableRooms}
+              onChangeText={setAvailableRooms}
+            />
+          </View>
+        </View>
+
+        <Text style={styles.label}>Max Guests per Room</Text>
+        <TextInput style={styles.input} placeholder="e.g., 2" keyboardType="number-pad" value={maxGuests} onChangeText={setMaxGuests} />
+
 
         <Text style={styles.label}>House Type</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.typeScroll}>
