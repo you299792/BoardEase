@@ -644,33 +644,36 @@ export default function LandlordPortal() {
               )}
             </ScrollView>
 
-            {/* Bottom Action Bar - Landlord Focused */}
+            {/* Bottom Action Bar - minimal change:
+                Stats and Edit are compact on the left; availability toggle is smaller and positioned to the right */}
             <View style={styles.bottomActionBar}>
-              <TouchableOpacity 
-                style={[styles.actionButton, styles.statsButton]}
-                onPress={() => {
-                  // View detailed statistics
-                  Alert.alert('Statistics', 'Detailed analytics coming soon!');
-                }}
-              >
-                <Ionicons name="analytics" size={20} color="white" />
-                <Text style={styles.actionButtonText}>View Stats</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.actionButton, styles.editButton]}
-                onPress={() => {
-                  handleCloseListingOverlay();
-                  handleEditListing(selectedListing.id);
-                }}
-              >
-                <Ionicons name="create" size={20} color="white" />
-                <Text style={styles.actionButtonText}>Edit</Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity 
+                  style={[styles.smallButton, styles.statsButton]}
+                  onPress={() => {
+                    // View detailed statistics
+                    Alert.alert('Statistics', 'Detailed analytics coming soon!');
+                  }}
+                >
+                  <Ionicons name="analytics" size={14} color="white" />
+                  <Text style={styles.smallButtonText}>Stats</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={[styles.smallButton, styles.editButtonSmall]}
+                  onPress={() => {
+                    handleCloseListingOverlay();
+                    handleEditListing(selectedListing.id);
+                  }}
+                >
+                  <Ionicons name="create" size={14} color="white" />
+                  <Text style={styles.smallButtonText}>Edit</Text>
+                </TouchableOpacity>
+              </View>
 
               <TouchableOpacity 
                 style={[
-                  styles.actionButton, 
+                  styles.toggleSmall, 
                   isAvailable ? styles.occupiedButton : styles.availableButton
                 ]}
                 onPress={() => toggleAvailability(selectedListing)}
@@ -680,8 +683,8 @@ export default function LandlordPortal() {
                   <ActivityIndicator color="white" />
                 ) : (
                   <>
-                    <Ionicons name={isAvailable ? "close-circle" : "checkmark-circle"} size={20} color="white" />
-                    <Text style={styles.actionButtonText}>{isAvailable ? 'Mark Occupied' : 'Mark Available'}</Text>
+                    <Ionicons name={isAvailable ? "close-circle" : "checkmark-circle"} size={16} color="white" />
+                    <Text style={[styles.smallToggleText, { marginLeft: 8 }]}>{isAvailable ? 'Occupied' : 'Available'}</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -1375,25 +1378,51 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 8,
   },
-  actionButton: {
-    flex: 1,
+  // small compact button used for Stats and Edit
+  smallButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    minWidth: 64,
+  },
+  smallButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   statsButton: {
     backgroundColor: '#8b5cf6',
   },
-  inquiriesButton: {
-    backgroundColor: '#10b981',
+  editButtonSmall: {
+    backgroundColor: '#667eea',
+    marginLeft: 8,
+  },
+  // compact toggle placed on the right
+  toggleSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    minWidth: 110,
+  },
+  smallToggleText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
   },
   actionButtonText: {
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
+  },
+  inquiriesButton: {
+    backgroundColor: '#10b981',
   },
   // Buttons for availability toggles
   availableButton: {
