@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   getCurrentUser,
   getLandlordInquiries,
+  supabase,
 } from '../../lib/supabaseClient'; 
 export default function InquiriesScreen() {
   const [messages, setMessages] = useState([]);
@@ -33,18 +34,21 @@ export default function InquiriesScreen() {
             conversationId: inq.conversation_id,
             tenantId: inq.tenant_id,
             tenant: {
-              name: `${inq.tenant?.first_name} ${inq.tenant?.last_name}`,
+              id: inq.tenant?.id,
+              name: `${inq.tenant?.first_name || ''} ${inq.tenant?.last_name || ''}`.trim(),
               email: inq.tenant?.email,
               phone: inq.tenant?.phone,
               image: inq.tenant?.profile_image_url,
             },
-            houseName: inq.listing?.title,
+            houseName: inq.listing?.title || 'Property',
+            property: inq.listing?.title || 'Property', // duplicate for compatibility
             listing_id: inq.listing_id,
-            type: inq.inquiry_type,
-            status: inq.status,
+            type: inq.subject || 'inquiry',
+            status: inq.subject || 'inquiry',
             lastMessage: inq.message,
-            time: inq.created_at,
-            unread: !inq.read,
+            time: inq.created_at ? new Date(inq.created_at).toLocaleDateString() : 'N/A',
+            unread: inq.unread_count > 0,
+            unreadCount: inq.unread_count || 0,
           }));
           setMessages(formattedMessages);
         } else {
@@ -65,6 +69,52 @@ export default function InquiriesScreen() {
       loadInquiries();
     }, [])
   );
+
+  // Real-time subscription to conversations for unread updates
+  useEffect(() => {
+    let subscription;
+
+    const setupSubscription = async () => {
+      const user = await getCurrentUser();
+      if (!user) return;
+
+      // Get landlord profile to listen to conversations
+      const { data: landlordProfile } = await supabase
+        .from('landlord_profile')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!landlordProfile) return;
+
+      // Subscribe to conversations table for unread count changes
+      subscription = supabase
+        .channel(`conversations:${landlordProfile.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'conversations',
+            filter: `landlord_id=eq.${landlordProfile.id}`,
+          },
+          (payload) => {
+            console.log('[Inquiries] Conversation update:', payload);
+            // Reload inquiries when any conversation changes
+            loadInquiries();
+          }
+        )
+        .subscribe();
+    };
+
+    setupSubscription();
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
+  }, []);
 
   const getStatusColor = (status) => {
     switch (status) {

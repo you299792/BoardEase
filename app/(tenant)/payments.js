@@ -14,6 +14,7 @@ import {
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
+import { supabase } from '../../lib/supabaseClient';
 import {
   getCurrentUser,
   getTenantPayments,
@@ -55,30 +56,43 @@ export default function FinancialsScreen() {
 
       setCurrentUser(user);
 
-      // Load bookings
-      const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(user.id);
+      // Get tenant profile
+      const { data: tenantProfile, error: profileError } = await supabase
+        .from('tenant_profile')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!tenantProfile) {
+        Alert.alert('Error', 'Tenant profile not found');
+        setIsLoading(false);
+        return;
+      }
+
+      // Load bookings using tenant profile ID
+      const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(tenantProfile.id);
       if (bookingsSuccess) {
         const transformedBookings = bookingsData.map(booking => ({
           id: booking.id,
-          tenantId: booking.tenant_profile_id,
+          tenantId: booking.tenant_id,
           landlordId: booking.listings?.landlord_profile?.user_id,
           landlordName: `${booking.listings?.landlord_profile?.users?.first_name} ${booking.listings?.landlord_profile?.users?.last_name}`,
           property: booking.listings?.title,
           amount: booking.total_amount,
-          status: booking.booking_status,
-          moveInDate: booking.check_in_date,
+          status: booking.status,
+          moveInDate: booking.move_in_date,
           paymentStatus: booking.payment_status || 'pending',
           paidAmount: booking.paid_amount,
         }));
         setBookings(transformedBookings);
       }
 
-      // Load payments
-      const { success: paymentsSuccess, payments: paymentsData } = await getTenantPayments(user.id);
+      // Load payments using tenant profile ID
+      const { success: paymentsSuccess, payments: paymentsData } = await getTenantPayments(tenantProfile.id);
       if (paymentsSuccess) {
         const transformedPayments = paymentsData.map(payment => ({
           id: payment.id,
-          tenantId: payment.tenant_profile_id,
+          tenantId: payment.tenant_id,
           tenantName: user.first_name,
           landlordName: payment.bookings?.listings?.landlord_profile?.users?.first_name,
           property: payment.bookings?.listings?.title,
