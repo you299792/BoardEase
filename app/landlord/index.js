@@ -11,6 +11,7 @@ import {
   FlatList,
   Dimensions,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -25,6 +26,7 @@ import {
 } from '../../lib/supabaseClient';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+const PLACEHOLDER_IMAGE = 'https://via.placeholder.com/800x600?text=No+Image';
 
 export default function LandlordPortal() {
   const { listings: contextListings, deleteListing } = useContext(GlobalListingContext);
@@ -41,31 +43,10 @@ export default function LandlordPortal() {
   const [showImageModal, setShowImageModal] = useState(false);
   const [showInquiriesModal, setShowInquiriesModal] = useState(false);
 
-  const handleDeleteListing = (id) => {
-    Alert.alert(
-      "Delete Property",
-      "Are you sure you want to delete this property? This action cannot be undone.",
-      [
-        {
-          text: "Cancel",
-          style: "cancel"
-        },
-        { 
-          text: "Delete", 
-          onPress: async () => {
-            const { success, error } = await deleteListingFromDB(id);
-            if (success) {
-              setListings(listings.filter(l => l.id !== id));
-              Alert.alert('Success', 'Property deleted successfully');
-            } else {
-              Alert.alert('Error', error || 'Failed to delete property');
-            }
-          },
-          style: "destructive" 
-        }
-      ]
-    );
-  };
+  // imagesToShow mirrors the selectedListing.images but lets us replace broken urls with a placeholder
+  const [imagesToShow, setImagesToShow] = useState([]);
+
+  const dims = useWindowDimensions();
 
   useEffect(() => {
     loadData();
@@ -100,18 +81,62 @@ export default function LandlordPortal() {
     }
   };
 
+  const handleDeleteListing = (id) => {
+    Alert.alert(
+      "Delete Property",
+      "Are you sure you want to delete this property? This action cannot be undone.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel"
+        },
+        { 
+          text: "Delete", 
+          onPress: async () => {
+            const { success, error } = await deleteListingFromDB(id);
+            if (success) {
+              setListings(listings.filter(l => l.id !== id));
+              Alert.alert('Success', 'Property deleted successfully');
+            } else {
+              Alert.alert('Error', error || 'Failed to delete property');
+            }
+          },
+          style: "destructive" 
+        }
+      ]
+    );
+  };
+
+  const handleEditListing = (id) => {
+    // Navigate to the create-listing screen with the listing ID to edit it
+    router.push(`/landlord/create-listing?id=${id}`);
+  };
+
   const handleShowListingOverlay = async (listing) => {
+    console.log('Opening listing, images:', listing?.images);
     setSelectedListing(listing);
     setActiveImageIndex(0);
     setShowListingOverlay(true);
+    // initialize imagesToShow with listing images or placeholder
+    setImagesToShow((listing?.images && listing.images.length > 0) ? listing.images : [PLACEHOLDER_IMAGE]);
     await loadListingDetails(listing.id);
   };
+
+  useEffect(() => {
+    // When selectedListing changes, sync imagesToShow (keeps modal and overlay in sync)
+    if (selectedListing) {
+      setImagesToShow((selectedListing?.images && selectedListing.images.length > 0) ? selectedListing.images : [PLACEHOLDER_IMAGE]);
+    } else {
+      setImagesToShow([]);
+    }
+  }, [selectedListing]);
 
   const handleCloseListingOverlay = () => {
     setShowListingOverlay(false);
     setSelectedListing(null);
     setReviews([]);
     setInquiries([]);
+    setImagesToShow([]);
   };
 
   const loadListingDetails = async (listingId) => {
@@ -137,18 +162,16 @@ export default function LandlordPortal() {
   // Function to handle image scroll
   const handleImageScroll = (event) => {
     const contentOffsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(contentOffsetX / screenWidth);
+    const index = Math.round(contentOffsetX / dims.width);
     setActiveImageIndex(index);
   };
 
-  
   const calculateAverageRating = () => {
     if (reviews.length === 0) return 0;
     const total = reviews.reduce((sum, review) => sum + review.rating, 0);
     return (total / reviews.length).toFixed(1);
   };
 
-  
   const renderStars = (rating, size = 16) => {
     return (
       <View style={styles.starContainer}>
@@ -334,7 +357,7 @@ export default function LandlordPortal() {
           </View>
           
           <Text style={styles.inquiriesSubtitle}>
-            {inquiries.length} inquiries for {selectedListing?.name}
+            {inquiries.length} inquiries for {selectedListing?.name || selectedListing?.title}
           </Text>
 
           {/* Inquiries List */}
@@ -383,16 +406,17 @@ export default function LandlordPortal() {
 
             <ScrollView style={styles.overlayScrollView} showsVerticalScrollIndicator={false}>
               {/* Image Carousel */}
-              {selectedListing.images && selectedListing.images.length > 0 && (
+              {imagesToShow && imagesToShow.length > 0 && (
                 <View style={styles.imageSection}>
                   <ScrollView
+                    key={selectedListing?.id ?? 'images'}
                     horizontal
                     pagingEnabled
                     showsHorizontalScrollIndicator={false}
                     onScroll={handleImageScroll}
                     scrollEventThrottle={16}
                   >
-                    {selectedListing.images.map((image, index) => (
+                    {imagesToShow.map((image, index) => (
                       <TouchableOpacity 
                         key={index}
                         onPress={() => {
@@ -401,17 +425,24 @@ export default function LandlordPortal() {
                         }}
                       >
                         <Image
-                          source={{ uri: image }}
-                          style={styles.houseImage}
+                          source={{ uri: image || PLACEHOLDER_IMAGE }}
+                          style={[styles.houseImage, { width: dims.width }]}
+                          resizeMode="cover"
+                          onError={() => {
+                            // replace broken image with placeholder
+                            const newImgs = [...imagesToShow];
+                            newImgs[index] = PLACEHOLDER_IMAGE;
+                            setImagesToShow(newImgs);
+                          }}
                         />
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
                   
                   {/* Image Indicators */}
-                  {selectedListing.images.length > 1 && (
+                  {imagesToShow.length > 1 && (
                     <View style={styles.imageIndicators}>
-                      {selectedListing.images.map((_, index) => (
+                      {imagesToShow.map((_, index) => (
                         <View
                           key={index}
                           style={[
@@ -630,7 +661,7 @@ export default function LandlordPortal() {
                   latitude: selectedListing.locationData.latitude,
                   longitude: selectedListing.locationData.longitude,
                 }}
-                title={selectedListing.name}
+                title={selectedListing.name || selectedListing.title}
                 description={selectedListing.location}
                 pinColor="#667eea"
               />
@@ -668,12 +699,17 @@ export default function LandlordPortal() {
           scrollEventThrottle={16}
           style={styles.imageModalScrollView}
         >
-          {selectedListing?.images.map((image, index) => (
+          {(imagesToShow || []).map((image, index) => (
             <View key={index} style={styles.fullScreenImageContainer}>
               <Image
-                source={{ uri: image }}
+                source={{ uri: image || PLACEHOLDER_IMAGE }}
                 style={styles.fullScreenImage}
                 resizeMode="contain"
+                onError={() => {
+                  const newImgs = [...imagesToShow];
+                  newImgs[index] = PLACEHOLDER_IMAGE;
+                  setImagesToShow(newImgs);
+                }}
               />
             </View>
           ))}
@@ -682,7 +718,7 @@ export default function LandlordPortal() {
         {/* Image counter */}
         <View style={styles.imageCounter}>
           <Text style={styles.imageCounterText}>
-            {activeImageIndex + 1} / {selectedListing?.images.length}
+            {activeImageIndex + 1} / {imagesToShow?.length || 0}
           </Text>
         </View>
       </View>
@@ -736,7 +772,7 @@ export default function LandlordPortal() {
                     style={styles.cardClickable}
                     onPress={() => handleShowListingOverlay(listing)}
                   >
-                    <Image source={{ uri: listing.images?.[0] }} style={styles.cardImage} />
+                    <Image source={{ uri: listing.images?.[0] || PLACEHOLDER_IMAGE }} style={styles.cardImage} />
                     <View style={styles.cardBody}>
                       <Text style={styles.cardTitle} numberOfLines={1}>{listing.title}</Text>
                       <Text style={styles.cardSub} numberOfLines={1}>{listing.city}</Text>
@@ -992,7 +1028,6 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   houseImage: {
-    width: screenWidth,
     height: 300,
   },
   imageIndicators: {

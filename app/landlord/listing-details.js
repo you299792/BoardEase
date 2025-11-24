@@ -77,9 +77,32 @@ export default function ListingDetails() {
     );
   };
 
-  const handleEditListing = () => {
-    router.push(`/landlord/create-listing?id=${id}`);
-  };
+ const handleEditListing = (id) => {
+  if (!id) {
+    console.warn('handleEditListing called without id');
+    return;
+  }
+
+  // Optionally find the listing object if you want to prefill the editor via context/state
+  const listing = listings.find((l) => l.id === id);
+  if (!listing) {
+    console.warn('Listing not found for edit:', id);
+  }
+
+  // Close overlay if open
+  if (showListingOverlay) {
+    setShowListingOverlay(false);
+  }
+
+  // Navigate to your edit screen.
+  // Use the same route pattern you use elsewhere — listing-details uses:
+  // router.push(`/landlord/create-listing?id=${id}`)
+  // so we'll reuse that to open the editor with the id query param:
+  router.push(`/landlord/create-listing?id=${id}`);
+
+  // If you prefer a dedicated edit route, change the push target accordingly:
+  // router.push(`/landlord/edit-listing/${id}`);
+};
 
   const handleToggleStatus = () => {
     const newStatus = listing.status === 'available' ? 'occupied' : 'available';
