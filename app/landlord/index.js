@@ -696,30 +696,30 @@ export default function LandlordPortal() {
                 </TouchableOpacity>
               </View>
 
-              {/* Property Details */}
+              {/* Property Details - FIXED: horizontal compact cards (icon + value + label) */}
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Property Details</Text>
-                <View style={styles.detailsGrid}>
-                  <View style={styles.detailItem}>
-                    <Ionicons name="bed" size={20} color="#667eea" />
-                    <Text style={styles.detailValue}>{selectedListing.bedrooms || 'N/A'}</Text>
-                    <Text style={styles.detailLabel}>Bedrooms</Text>
-                  </View>
-                  <View style={styles.detailItem}>
-                    <Ionicons name="water" size={20} color="#667eea" />
-                    <Text style={styles.detailValue}>{selectedListing.bathrooms || 'N/A'}</Text>
-                    <Text style={styles.detailLabel}>Bathrooms</Text>
-                  </View>
-                  <View style={styles.detailItem}>
-                    <Ionicons name="people" size={20} color="#667eea" />
-                    <Text style={styles.detailValue}>{selectedListing.capacity || 'N/A'}</Text>
-                    <Text style={styles.detailLabel}>Capacity</Text>
-                  </View>
-                  <View style={styles.detailItem}>
-                    <Ionicons name="expand" size={20} color="#667eea" />
-                    <Text style={styles.detailValue}>{selectedListing.size || 'N/A'}</Text>
-                    <Text style={styles.detailLabel}>Sq Ft</Text>
-                  </View>
+
+                <View style={styles.propertyGrid}>
+                  {([
+                    { key: 'bedrooms', icon: 'bed-outline', label: 'Bedrooms', value: selectedListing.bedrooms ?? 'N/A' },
+                    { key: 'bathrooms', icon: 'water-outline', label: 'Bathrooms', value: selectedListing.bathrooms ?? 'N/A' },
+                    { key: 'capacity', icon: 'people-outline', label: 'Capacity', value: selectedListing.capacity ?? 'N/A' },
+                    { key: 'size', icon: 'resize-outline', label: 'Sq Ft', value: selectedListing.size ?? 'N/A' },
+                    { key: 'type', icon: 'home-outline', label: 'Type', value: selectedListing.house_type ?? selectedListing.type ?? 'N/A' },
+                    { key: 'min_stay', icon: 'calendar-outline', label: 'Min Stay', value: (selectedListing.min_stay ?? selectedListing.minimum_stay) ? `${selectedListing.min_stay ?? selectedListing.minimum_stay}d` : 'N/A' },
+                  ]).map(item => (
+                    <View key={item.key} style={styles.detailCard}>
+                      <View style={styles.detailIconWrap}>
+                        <Ionicons name={item.icon} size={20} color="#667eea" />
+                      </View>
+
+                      <View style={styles.detailTextWrap}>
+                        <Text style={styles.detailValue} numberOfLines={1}>{item.value}</Text>
+                        <Text style={styles.detailLabel} numberOfLines={1}>{item.label}</Text>
+                      </View>
+                    </View>
+                  ))}
                 </View>
               </View>
 
@@ -1035,7 +1035,7 @@ const styles = StyleSheet.create({
   // sections
   section: { padding: 20, borderBottomWidth: 1, borderBottomColor: '#f5f5f5' },
   titleSection: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
-  houseName: { fontSize: 24, fontWeight: 'bold', color: '#333' },
+  houseName: { fontSize: 24, fontWeight: 'bold', color: '#333', flex: 1, marginRight: 16 },
   housePrice: { fontSize: 24, fontWeight: 'bold', color: '#667eea' },
   locationSection: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 6 },
   locationText: { fontSize: 16, color: '#666', flex: 1 },
@@ -1056,6 +1056,47 @@ const styles = StyleSheet.create({
   quickActions: { flexDirection: 'row', padding: 20, gap: 12 },
   quickActionButton: { flex: 1, alignItems: 'center', padding: 12, backgroundColor: '#f8f9fa', borderRadius: 12, borderWidth: 1, borderColor: '#e5e5e5' },
   quickActionText: { marginTop: 4, fontSize: 12, color: '#667eea', fontWeight: '500', textAlign: 'center' },
+
+  // ---------------------- FIXED PROPERTY DETAILS STYLES ----------------------
+  propertyGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  detailCard: {
+    width: '48%',
+    minWidth: 140,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  detailIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: '#eef2ff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  detailTextWrap: {
+    flex: 1,
+  },
+  detailValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111',
+  },
+  detailLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  // ---------------------- END PROPERTY DETAILS ----------------------
 
   // amenities
   amenitiesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
