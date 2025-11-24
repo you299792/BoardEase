@@ -24,6 +24,7 @@ import {
   getLandlordListings,
   getLandlordInquiries,
   deleteListing as deleteListingFromDB,
+  getLandlordReviews,
   supabase,
 } from '../../lib/supabaseClient';
 import ListingStatsModal from '../../components/ListingStatsModal';
@@ -74,6 +75,22 @@ export default function LandlordPortal() {
 
       if (user) {
         setIsLoadingListings(true);
+        
+        // Get landlord profile ID
+        const { data: profile, error: profileError } = await supabase
+          .from('landlord_profile')
+          .select('id')
+          .eq('user_id', user.id)
+          .single()
+        
+        if (profileError) {
+          console.error('Failed to get landlord profile:', profileError)
+          return
+        }
+        
+        const landlordProfileId = profile?.id
+        
+        // Get listings
         const { success, listings: dbListings, error } = await getLandlordListings(user.id);
         
         if (success) {
@@ -81,6 +98,14 @@ export default function LandlordPortal() {
         } else {
           Alert.alert('Error', error || 'Failed to load listings');
           setListings([]);
+        }
+        
+        // Get reviews for all listings
+        if (landlordProfileId) {
+          const { success: reviewsSuccess, reviews: dbReviews } = await getLandlordReviews(landlordProfileId);
+          if (reviewsSuccess) {
+            setReviews(dbReviews || []);
+          }
         }
       }
     } catch (error) {
@@ -156,10 +181,22 @@ export default function LandlordPortal() {
         if (success) {
           const listingInquiries = dbInquiries.filter(inq => inq.listing_id === listingId);
           setInquiries(listingInquiries);
-          
-          // Load reviews from selected listing if embedded
-          if (selectedListing?.reviews) {
-            setReviews(selectedListing.reviews);
+        }
+        
+        // Get landlord profile ID
+        const { data: profile } = await supabase
+          .from('landlord_profile')
+          .select('id')
+          .eq('user_id', currentUser.id)
+          .single()
+        
+        if (profile?.id) {
+          // Fetch reviews for all landlord listings
+          const { success: reviewsSuccess, reviews: dbReviews } = await getLandlordReviews(profile.id);
+          if (reviewsSuccess) {
+            // Filter reviews to only show those for this specific listing
+            const listingReviews = dbReviews.filter(review => review.reviewed_item_id === listingId);
+            setReviews(listingReviews);
           }
         }
       }
@@ -298,7 +335,104 @@ export default function LandlordPortal() {
     );
   };
 
-  // Render All Reviews modal (kept from original implementation)
+  // Function to render individual review
+  const renderReview = ({ item }) => {
+    const reviewerName = item.users ? `${item.users.first_name || ''} ${item.users.last_name || ''}`.trim() : 'Anonymous';
+    const reviewerImage = item.users?.profile_image_url || PLACEHOLDER_IMAGE;
+    const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
+    
+    return (
+      <View style={styles.reviewCard}>
+        <View style={styles.reviewHeader}>
+          <Image source={{ uri: reviewerImage }} style={styles.reviewerImage} />
+          <View style={styles.reviewerInfo}>
+            <Text style={styles.reviewerName}>{reviewerName}</Text>
+            {renderStars(item.rating)}
+          </View>
+          <Text style={styles.reviewDate}>{reviewDate}</Text>
+        </View>
+        <Text style={styles.reviewTitle}>{item.title}</Text>
+        <Text style={styles.reviewComment}>{item.review_text}</Text>
+        {item.is_verified_booking && (
+          <View style={styles.verifiedBadge}>
+            <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
+            <Text style={styles.verifiedText}>Verified Booking</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  // Function to render inquiry
+  const renderInquiry = ({ item }) => (
+    <View style={styles.inquiryCard}>
+      <View style={styles.inquiryHeader}>
+        <Image source={{ uri: item.tenant?.image }} style={styles.inquirerImage} />
+        <View style={styles.inquirerInfo}>
+          <Text style={styles.inquirerName}>{item.tenant?.name}</Text>
+          <Text style={styles.inquiryType}>{item.type === 'booking' ? 'Booking Request' : 'General Inquiry'}</Text>
+        </View>
+        <Text style={styles.inquiryTime}>{item.time}</Text>
+      </View>
+      <Text style={styles.inquiryMessage}>{item.lastMessage}</Text>
+      <View style={styles.inquiryActions}>
+        <TouchableOpacity style={styles.replyButton}>
+          <Ionicons name="chatbubble-ellipses" size={16} color="white" />
+          <Text style={styles.replyButtonText}>Reply</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.viewChatButton}>
+          <Ionicons name="eye" size={16} color="#667eea" />
+          <Text style={styles.viewChatButtonText}>View Chat</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  // Function to render amenities
+  const renderAmenities = (amenities) => {
+    if (!amenities || amenities.length === 0) {
+      return (
+        <Text style={styles.noAmenitiesText}>No amenities listed</Text>
+      );
+    }
+
+    return (
+      <View style={styles.amenitiesGrid}>
+        {amenities.map((amenity, index) => (
+          <View key={index} style={styles.amenityItem}>
+            <Ionicons name="checkmark-circle" size={20} color="#10b981" />
+            <Text style={styles.amenityText}>{amenity}</Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
+  // Function to render property statistics
+  const renderPropertyStats = (listing) => {
+    const stats = [
+      { label: 'Views', value: '1.2K', icon: 'eye', color: '#667eea' },
+      { label: 'Inquiries', value: inquiries.length, icon: 'chatbubble', color: '#10b981' },
+      { label: 'Bookings', value: '8', icon: 'calendar', color: '#f59e0b' },
+      { label: 'Occupancy', value: '89%', icon: 'home', color: '#8b5cf6' },
+    ];
+
+    return (
+      <View style={styles.statsGrid}>
+        {stats.map((stat, index) => (
+          <View key={index} style={styles.statItem}>
+            <View style={[styles.statIcon, { backgroundColor: `${stat.color}20` }]}>
+              <Ionicons name={stat.icon} size={20} color={stat.color} />
+            </View>
+            <Text style={styles.statValue}>{stat.value}</Text>
+            <Text style={styles.statLabel}>{stat.label}</Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
+  // Function to render all reviews modal
   const renderAllReviewsModal = () => (
     <Modal
       visible={showAllReviewsModal}
@@ -353,19 +487,32 @@ export default function LandlordPortal() {
           {/* Reviews List */}
           <FlatList
             data={reviews}
-            renderItem={({item}) => (
-              <View style={styles.reviewCard}>
-                <View style={styles.reviewHeader}>
-                  <Image source={{ uri: item.userImage }} style={styles.reviewerImage} />
-                  <View style={styles.reviewerInfo}>
-                    <Text style={styles.reviewerName}>{item.user}</Text>
-                    {renderStars(item.rating)}
+            renderItem={({item}) => {
+              const reviewerName = item.users ? `${item.users.first_name || ''} ${item.users.last_name || ''}`.trim() : 'Anonymous';
+              const reviewerImage = item.users?.profile_image_url || PLACEHOLDER_IMAGE;
+              const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
+              
+              return (
+                <View style={styles.reviewCard}>
+                  <View style={styles.reviewHeader}>
+                    <Image source={{ uri: reviewerImage }} style={styles.reviewerImage} />
+                    <View style={styles.reviewerInfo}>
+                      <Text style={styles.reviewerName}>{reviewerName}</Text>
+                      {renderStars(item.rating)}
+                    </View>
+                    <Text style={styles.reviewDate}>{reviewDate}</Text>
                   </View>
-                  <Text style={styles.reviewDate}>{item.date}</Text>
+                  <Text style={styles.reviewTitle}>{item.title}</Text>
+                  <Text style={styles.reviewComment}>{item.review_text}</Text>
+                  {item.is_verified_booking && (
+                    <View style={styles.verifiedBadge}>
+                      <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
+                      <Text style={styles.verifiedText}>Verified Booking</Text>
+                    </View>
+                  )}
                 </View>
-                <Text style={styles.reviewComment}>{item.comment}</Text>
-              </View>
-            )}
+              );
+            }}
             keyExtractor={item => item.id ?? Math.random().toString()}
             showsVerticalScrollIndicator={false}
             style={styles.allReviewsList}

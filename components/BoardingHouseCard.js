@@ -3,6 +3,7 @@ import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getListingReviews } from '../lib/supabaseClient';
 
 const FAVORITES_STORAGE_KEY = '@tenant_favorites';
 const REVIEWS_STORAGE_KEY = '@boarding_house_reviews';
@@ -29,19 +30,22 @@ const BoardingHouseCard = ({ house, onPress }) => {
 
   const loadAverageRating = async () => {
     try {
-      const reviewsJson = await AsyncStorage.getItem(REVIEWS_STORAGE_KEY);
-      const allReviews = reviewsJson ? JSON.parse(reviewsJson) : [];
+      // Fetch reviews from database
+      const { success, reviews } = await getListingReviews(house.id);
       
-      // Filter reviews for this specific house
-      const houseReviews = allReviews.filter(review => review.houseId === house.id);
-      setReviewCount(houseReviews.length);
-      
-      if (houseReviews.length === 0) {
-        setAverageRating(0);
+      if (success && reviews) {
+        setReviewCount(reviews.length);
+        
+        if (reviews.length === 0) {
+          setAverageRating(0);
+        } else {
+          const total = reviews.reduce((sum, review) => sum + review.rating, 0);
+          const average = (total / reviews.length).toFixed(1);
+          setAverageRating(parseFloat(average));
+        }
       } else {
-        const total = houseReviews.reduce((sum, review) => sum + review.rating, 0);
-        const average = (total / houseReviews.length).toFixed(1);
-        setAverageRating(parseFloat(average));
+        setAverageRating(0);
+        setReviewCount(0);
       }
     } catch (error) {
       console.error('Failed to load average rating', error);

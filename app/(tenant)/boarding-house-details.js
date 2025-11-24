@@ -29,6 +29,7 @@ import {
   sendInterestMessage,
   sendMessage,
   createConversation,
+  getListingReviews,
 } from '../../lib/supabaseClient';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -168,9 +169,14 @@ export default function BoardingHouseDetails() {
   // Function to load reviews
   const loadReviews = async () => {
     try {
-      // Reviews are loaded from the listing data (house.total_reviews)
-      // Detailed reviews would be fetched separately if needed
-      // For now, we show the listing's review data
+      if (!house) return;
+
+      // Fetch reviews for this listing
+      const { success, reviews: reviewsData } = await getListingReviews(house.id);
+
+      if (success && reviewsData) {
+        setReviews(reviewsData);
+      }
     } catch (error) {
       console.error('Failed to load reviews', error);
     }
@@ -231,9 +237,12 @@ export default function BoardingHouseDetails() {
       }
 
       const reviewData = {
-        listingId: house.id,
-        reviewerName: currentUser.first_name,
+        reviewedItemType: 'listing',
+        reviewedItemId: house.id,
+        reviewerId: currentUser.id,
+        bookingId: null,
         rating: userRating,
+        title: `Review of ${getHouseName()}`,
         reviewText: userReview,
       };
 
@@ -347,19 +356,32 @@ export default function BoardingHouseDetails() {
   };
 
   // Function to render individual review
-  const renderReview = ({ item }) => (
-    <View style={styles.reviewCard}>
-      <View style={styles.reviewHeader}>
-        <Image source={{ uri: item.userImage }} style={styles.reviewerImage} />
-        <View style={styles.reviewerInfo}>
-          <Text style={styles.reviewerName}>{item.user}</Text>
-          {renderStars(item.rating)}
+  const renderReview = ({ item }) => {
+    const reviewerName = item.users ? `${item.users.first_name || ''} ${item.users.last_name || ''}`.trim() : 'Anonymous';
+    const reviewerImage = item.users?.profile_image_url || 'https://via.placeholder.com/40?text=User';
+    const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
+    
+    return (
+      <View style={styles.reviewCard}>
+        <View style={styles.reviewHeader}>
+          <Image source={{ uri: reviewerImage }} style={styles.reviewerImage} />
+          <View style={styles.reviewerInfo}>
+            <Text style={styles.reviewerName}>{reviewerName}</Text>
+            {renderStars(item.rating)}
+          </View>
+          <Text style={styles.reviewDate}>{reviewDate}</Text>
         </View>
-        <Text style={styles.reviewDate}>{item.date}</Text>
+        <Text style={styles.reviewTitle}>{item.title}</Text>
+        <Text style={styles.reviewComment}>{item.review_text}</Text>
+        {item.is_verified_booking && (
+          <View style={styles.verifiedBadge}>
+            <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
+            <Text style={styles.verifiedText}>Verified Booking</Text>
+          </View>
+        )}
       </View>
-      <Text style={styles.reviewComment}>{item.comment}</Text>
-    </View>
-  );
+    );
+  };
 
   // Function to render all reviews modal
   const renderAllReviewsModal = () => (
