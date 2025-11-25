@@ -23,6 +23,7 @@ import {
   getCurrentUser,
   getLandlordProfile,
   updateLandlordProfile,
+  getLandlordListings,
 } from '../../lib/supabaseClient';
 
 export default function LandlordProfile() {
@@ -38,6 +39,7 @@ export default function LandlordProfile() {
   const [company, setCompany] = useState('');
   const [yearsExperience, setYearsExperience] = useState('');
   const [photoURL, setPhotoURL] = useState('');
+  const [propertyCount, setPropertyCount] = useState(0);
   
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [smsNotifications, setSmsNotifications] = useState(true);
@@ -71,6 +73,12 @@ export default function LandlordProfile() {
           setCompany(profile.company_name || '');
           setYearsExperience(String(profile.years_experience || 0));
         }
+        
+        // Fetch the number of listings this landlord has posted
+        const { success: listingsSuccess, listings } = await getLandlordListings(user.id);
+        if (listingsSuccess && listings) {
+          setPropertyCount(listings.length);
+        }
       }
     } catch (error) {
       console.error('Failed to load profile:', error);
@@ -80,7 +88,7 @@ export default function LandlordProfile() {
   };
 
   const stats = [
-    { label: 'Properties', value: '5', icon: 'business' },
+    { label: 'Properties', value: String(propertyCount), icon: 'business' },
     { label: 'Years Experience', value: yearsExperience, icon: 'trophy' },
     { label: 'Response Rate', value: '95%', icon: 'speedometer' },
   ];
@@ -250,6 +258,13 @@ export default function LandlordProfile() {
                   value={company}
                   onChangeText={setCompany}
                   placeholder="Company name"
+                />
+                <TextInput
+                  style={styles.editCompanyInput}
+                  value={yearsExperience}
+                  onChangeText={setYearsExperience}
+                  placeholder="Years of experience"
+                  keyboardType="numeric"
                 />
               </>
             ) : (
