@@ -608,12 +608,12 @@ export default function LandlordPortal() {
             </TouchableOpacity>
           </View>
           
-          {selectedListing?.locationData && (
+          {(selectedListing?.latitude && selectedListing?.longitude) ? (
             <MapView
               style={styles.fullMap}
               region={{
-                latitude: selectedListing.locationData.latitude,
-                longitude: selectedListing.locationData.longitude,
+                latitude: selectedListing.latitude,
+                longitude: selectedListing.longitude,
                 latitudeDelta: 0.01,
                 longitudeDelta: 0.01,
               }}
@@ -622,14 +622,19 @@ export default function LandlordPortal() {
             >
               <Marker
                 coordinate={{
-                  latitude: selectedListing.locationData.latitude,
-                  longitude: selectedListing.locationData.longitude,
+                  latitude: selectedListing.latitude,
+                  longitude: selectedListing.longitude,
                 }}
-                title={selectedListing.name || selectedListing.title}
-                description={selectedListing.location}
+                title={selectedListing.title}
+                description={`${selectedListing.address}, ${selectedListing.city}`}
                 pinColor="#667eea"
               />
             </MapView>
+          ) : (
+            <View style={styles.noLocationContainer}>
+              <Ionicons name="location-outline" size={48} color="#ccc" />
+              <Text style={styles.noLocationText}>Location data not available</Text>
+            </View>
           )}
         </View>
       </View>
@@ -795,7 +800,7 @@ export default function LandlordPortal() {
                 <View style={styles.statsGrid}>
                   <View style={styles.statItem}>
                     <Ionicons name="eye" size={20} color="#667eea" />
-                    <Text style={styles.statValue}>1.2K</Text>
+                    <Text style={styles.statValue}>{selectedListing.total_views || 0}</Text>
                     <Text style={styles.statLabel}>Views</Text>
                   </View>
                   <View style={styles.statItem}>
@@ -805,13 +810,13 @@ export default function LandlordPortal() {
                   </View>
                   <View style={styles.statItem}>
                     <Ionicons name="calendar" size={20} color="#f59e0b" />
-                    <Text style={styles.statValue}>8</Text>
+                    <Text style={styles.statValue}>{selectedListing.total_bookings || 0}</Text>
                     <Text style={styles.statLabel}>Bookings</Text>
                   </View>
                   <View style={styles.statItem}>
-                    <Ionicons name="home" size={20} color="#8b5cf6" />
-                    <Text style={styles.statValue}>89%</Text>
-                    <Text style={styles.statLabel}>Occupancy</Text>
+                    <Ionicons name="star" size={20} color="#fbbf24" />
+                    <Text style={styles.statValue}>{selectedListing.rating?.toFixed(1) || '0'}</Text>
+                    <Text style={styles.statLabel}>Rating</Text>
                   </View>
                 </View>
               </View>
@@ -851,10 +856,10 @@ export default function LandlordPortal() {
                   {([
                     { key: 'bedrooms', icon: 'bed-outline', label: 'Bedrooms', value: selectedListing.bedrooms ?? 'N/A' },
                     { key: 'bathrooms', icon: 'water-outline', label: 'Bathrooms', value: selectedListing.bathrooms ?? 'N/A' },
-                    { key: 'capacity', icon: 'people-outline', label: 'Capacity', value: selectedListing.capacity ?? 'N/A' },
-                    { key: 'size', icon: 'resize-outline', label: 'Sq Ft', value: selectedListing.size ?? 'N/A' },
-                    { key: 'type', icon: 'home-outline', label: 'Type', value: selectedListing.house_type ?? selectedListing.type ?? 'N/A' },
-                    { key: 'min_stay', icon: 'calendar-outline', label: 'Min Stay', value: (selectedListing.min_stay ?? selectedListing.minimum_stay) ? `${selectedListing.min_stay ?? selectedListing.minimum_stay}d` : 'N/A' },
+                    { key: 'capacity', icon: 'people-outline', label: 'Capacity', value: selectedListing.max_guests ?? 'N/A' },
+                    { key: 'size', icon: 'resize-outline', label: 'Size (sqft)', value: selectedListing.property_size ?? 'N/A' },
+                    { key: 'rooms', icon: 'home-outline', label: 'Total Rooms', value: selectedListing.total_rooms ?? 'N/A' },
+                    { key: 'available', icon: 'checkmark-circle-outline', label: 'Available', value: selectedListing.available_rooms ?? 'N/A' },
                   ]).map(item => (
                     <View key={item.key} style={styles.detailCard}>
                       <View style={styles.detailIconWrap}>
