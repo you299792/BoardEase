@@ -159,6 +159,10 @@ export default function CreateListing() {
     const loadForEdit = async () => {
       const paramId = params?.id;
       if (paramId && paramId !== 'undefined') {
+        setIsEditing(true);
+        setHeading('Edit Property Listing');
+        setSubmitText('Update Listing');
+        
         // Try to find listing in context first
         let existingListing = listings?.find(b => String(b.id) === String(paramId));
 
@@ -248,9 +252,6 @@ export default function CreateListing() {
           // Photos / images
           setPhotos(existingListing.images || existingListing.photos || []);
 
-          setIsEditing(true);
-          setHeading('Edit Property Listing');
-          setSubmitText('Update Listing');
           return;
         } else {
           // If we couldn't find the listing yet, prepare form for edit state
@@ -509,13 +510,21 @@ export default function CreateListing() {
       .map(([key]) => amenitiesMap[key] || key);
   };
 
+  const handleRentChange = (text) => {
+    // allow only numbers and one dot
+    let sanitized = text.replace(/[^0-9.]/g, '');
+    const parts = sanitized.split('.');
+    if (parts.length > 2) {
+      sanitized = parts[0] + '.' + parts.slice(1).join('');
+    }
+    setRent(sanitized);
+  };
+
   const validateAndSubmit = async () => {
     if (!title.trim()) return Alert.alert('Validation', 'Title is required');
     if (!address.trim()) return Alert.alert('Validation', 'Address is required');
-    // sanitize rent input (remove commas & currency symbols)
-    const rentSanitized = (rent ?? '').toString().replace(/[,₱\s]/g, '');
-    const parsedPrice = parseFloat(rentSanitized);
-    if (!rentSanitized || Number.isNaN(parsedPrice)) return Alert.alert('Validation', 'Rent must be a number');
+    const parsedPrice = parseFloat(rent);
+    if (rent === '' || Number.isNaN(parsedPrice)) return Alert.alert('Validation', 'Rent must be a number');
     if (!description.trim()) return Alert.alert('Validation', 'Description is required');
 
     if (!currentUser) {
@@ -571,8 +580,12 @@ export default function CreateListing() {
               text: 'OK',
               onPress: () => {
                 resetForm();
-                // Go back to landlord dashboard (replace so back stack is clean)
-                router.replace('/landlord');
+                // Go back to the previous screen if possible, otherwise to the dashboard
+                if (router.canGoBack()) {
+                  router.back();
+                } else {
+                  router.replace('/landlord');
+                }
               },
             },
           ]);
@@ -696,7 +709,7 @@ export default function CreateListing() {
               placeholder="0"
               keyboardType="numeric"
               value={rent}
-              onChangeText={(text) => setRent(text)}
+              onChangeText={handleRentChange}
             />
           </View>
           <View style={{ flex: 1 }}>
