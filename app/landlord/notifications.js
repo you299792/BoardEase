@@ -13,8 +13,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import {
   getCurrentUser,
-  getLandlordBookings,
-  getLandlordInquiries,
+  getNotifications,
+  markNotificationAsRead,
+  subscribeToNotifications,
 } from '../../lib/supabaseClient';
 
 export default function NotificationsScreen() {
@@ -22,9 +23,16 @@ export default function NotificationsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
+  const [subscription, setSubscription] = useState(null);
 
   useEffect(() => {
     loadNotifications();
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
   }, []);
 
   useFocusEffect(
@@ -40,40 +48,21 @@ export default function NotificationsScreen() {
       setCurrentUser(user);
 
       if (user) {
-        const notifications = [];
-
-        const { success: bookingsSuccess, bookings } = await getLandlordBookings(user.id);
-        if (bookingsSuccess && bookings) {
-          bookings.forEach(booking => {
-            notifications.push({
-              id: `booking_${booking.id}`,
-              type: 'booking',
-              title: 'New Booking',
-              message: `New booking from ${booking.tenant?.first_name}`,
-              timestamp: booking.created_at,
-              icon: 'calendar',
-            });
-          });
+        const { success, notifications } = await getNotifications(user.id);
+        if (success) {
+          setNotificationList(notifications || []);
+        } else {
+          setNotificationList([]);
         }
 
-        const { success: inquiriesSuccess, inquiries } = await getLandlordInquiries(user.id);
-        if (inquiriesSuccess && inquiries) {
-          inquiries.forEach(inq => {
-            notifications.push({
-              id: `inquiry_${inq.id}`,
-              type: 'inquiry',
-              title: 'New Inquiry',
-              message: `Inquiry from ${inq.tenant?.first_name} for ${inq.listing?.title}`,
-              timestamp: inq.created_at,
-              icon: 'chatbubble',
-            });
-          });
+        // Subscribe to new notifications for real-time updates
+        if (subscription) {
+          subscription.unsubscribe();
         }
-
-        const sorted = notifications.sort((a, b) =>
-          new Date(b.timestamp) - new Date(a.timestamp)
-        );
-        setNotificationList(sorted);
+        const newSubscription = subscribeToNotifications(user.id, (newNotification) => {
+          setNotificationList(prev => [newNotification, ...prev]);
+        });
+        setSubscription(newSubscription);
       }
     } catch (error) {
       console.error('Failed to load notifications', error);
@@ -81,12 +70,6 @@ export default function NotificationsScreen() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await loadNotifications();
-    setRefreshing(false);
   };
 
   const getTimeAgo = (timestamp) => {
@@ -104,21 +87,95 @@ export default function NotificationsScreen() {
     return notifTime.toLocaleDateString();
   };
 
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadNotifications();
+    setRefreshing(false);
+  };
+
+  const getNotificationIcon = (notificationType) => {
+    switch (notificationType) {
+      case 'booking_request':
+        return 'calendar';
+      case 'booking_approved':
+        return 'checkmark-circle';
+      case 'payment_due':
+        return 'wallet';
+      case 'payment_completed':
+        return 'checkmark-done';
+      case 'message':
+        return 'chatbubble';
+      case 'review':
+        return 'star';
+      case 'listing_inquiry':
+        return 'help-circle';
+      default:
+        return 'notifications';
+    }
+  };
+
+  const getNotificationColor = (notificationType) => {
+    switch (notificationType) {
+      case 'booking_request':
+        return '#667eea';
+      case 'booking_approved':
+        return '#48bb78';
+      case 'payment_due':
+        return '#f6ad55';
+      case 'payment_completed':
+        return '#48bb78';
+      case 'message':
+        return '#4299e1';
+      case 'review':
+        return '#ed8936';
+      default:
+        return '#667eea';
+    }
+  };
+
+  const handleNotificationPress = async (notification) => {
+    // Mark as read if not already read
+    if (!notification.is_read) {
+      await markNotificationAsRead(notification.id);
+      // Update local state
+      setNotificationList(prev => 
+        prev.map(item => 
+          item.id === notification.id ? { ...item, is_read: true } : item
+        )
+      );
+    }
+
+    // Navigate based on notification type
+    if (notification.action_url) {
+      router.push(notification.action_url);
+    }
+  };
+
   const renderNotificationItem = ({ item }) => (
-    <TouchableOpacity style={styles.notificationCard}>
+    <TouchableOpacity 
+      style={[
+        styles.notificationCard,
+        !item.is_read && styles.unreadCard
+      ]}
+      onPress={() => handleNotificationPress(item)}
+    >
       <View style={styles.notificationContent}>
-        <Ionicons
-          name={item.icon || 'notifications'}
-          size={24}
-          color="#667eea"
-          style={styles.icon}
-        />
+        <View style={[styles.iconContainer, { backgroundColor: getNotificationColor(item.notification_type) + '20' }]}>
+          <Ionicons
+            name={getNotificationIcon(item.notification_type)}
+            size={20}
+            color={getNotificationColor(item.notification_type)}
+          />
+        </View>
         <View style={styles.textContainer}>
-          <Text style={styles.notificationTitle}>{item.title}</Text>
+          <View style={styles.headerRow}>
+            <Text style={styles.notificationTitle}>{item.title}</Text>
+            {!item.is_read && <View style={styles.unreadDot} />}
+          </View>
           <Text style={styles.notificationMessage} numberOfLines={2}>
             {item.message}
           </Text>
-          <Text style={styles.timestamp}>{getTimeAgo(item.timestamp)}</Text>
+          <Text style={styles.timestamp}>{getTimeAgo(item.created_at)}</Text>
         </View>
       </View>
     </TouchableOpacity>
@@ -127,13 +184,28 @@ export default function NotificationsScreen() {
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#667eea" />
+        <View style={styles.header}>
+          <Text style={styles.title}>Notifications</Text>
+        </View>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#667eea" />
+        </View>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Notifications</Text>
+        {notificationList.length > 0 && (
+          <Text style={styles.subtitle}>
+            {notificationList.filter(item => !item.is_read).length} unread
+          </Text>
+        )}
+      </View>
+
       <FlatList
         data={notificationList}
         renderItem={renderNotificationItem}
@@ -161,34 +233,79 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f6f7fb',
   },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 20,
+    backgroundColor: 'white',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e5e5',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#666',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   notificationCard: {
     backgroundColor: 'white',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    marginBottom: 2,
+  },
+  unreadCard: {
+    backgroundColor: '#f0f4ff',
   },
   notificationContent: {
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
-  icon: {
+  iconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
     marginRight: 12,
-    marginTop: 4,
+    marginTop: 2,
   },
   textContainer: {
     flex: 1,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   notificationTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: '#333',
-    marginBottom: 4,
+    flex: 1,
+  },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#667eea',
+    marginLeft: 8,
   },
   notificationMessage: {
     fontSize: 14,
     color: '#666',
     marginBottom: 6,
+    lineHeight: 20,
   },
   timestamp: {
     fontSize: 12,
