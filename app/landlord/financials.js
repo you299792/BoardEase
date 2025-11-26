@@ -18,8 +18,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system'; // <--- Added for file creation
-import * as Sharing from 'expo-sharing';       // <--- Added for sharing/saving
+import * as FileSystem from 'expo-file-system/legacy'; // <--- FIXED: Using legacy import
+import * as Sharing from 'expo-sharing';
 import {
   supabase,
   getCurrentUser,
@@ -28,9 +28,7 @@ import {
 } from '../../lib/supabaseClient';
 
 // Constants for AsyncStorage keys
-const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
-const TENANT_MESSAGES_KEY = '@tenant_messages';
-const PAYMENTS_STORAGE_KEY = '@payments_data';
+const PAYMENTS_STORAGE_KEY = '@payments_data_v1';
 
 export default function FinancialsScreen() {
   const [selectedPeriod, setSelectedPeriod] = useState('monthly');
@@ -39,7 +37,6 @@ export default function FinancialsScreen() {
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
   const [listings, setListings] = useState([]); 
-  const [revenue, setRevenue] = useState({});
   const [currentUser, setCurrentUser] = useState(null);
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
@@ -79,7 +76,10 @@ export default function FinancialsScreen() {
           setBookings(dbBookings || []);
         }
 
-        // 3. Load Revenue/Payments DIRECTLY
+        // 3. Load Payments (Hybrid: DB + Local Storage)
+        let allPayments = [];
+
+        // A. Try loading from Supabase DB
         const { data: dbPayments, error: paymentsError } = await supabase
           .from('payments')
           .select('*')
@@ -87,21 +87,33 @@ export default function FinancialsScreen() {
           .order('created_at', { ascending: false });
 
         if (!paymentsError && dbPayments) {
-          const mappedPayments = dbPayments.map(p => ({
+          const mappedDbPayments = dbPayments.map(p => ({
             ...p,
+            // Map DB columns to UI fields
             tenantName: p.tenant_name || p.tenantName || 'Unknown Tenant',
             property: p.property_title || p.property || 'Unknown Property',
             amount: p.amount || 0,
-            status: p.status || 'pending',
+            status: p.status || 'completed',
             date: p.payment_date || p.created_at,
             paidDate: p.payment_date,
-            type: p.payment_type || p.type || 'rent'
+            type: p.payment_type || p.type || 'rent',
+            isLocal: false
           }));
-          setPayments(mappedPayments);
-        } else {
-          console.warn('Could not fetch payments directly:', paymentsError?.message);
-          setPayments([]);
+          allPayments = [...mappedDbPayments];
         }
+
+        // B. Load Local Payments (Offline/Fallback)
+        const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+        if (localData) {
+          const localPayments = JSON.parse(localData);
+          // Add local payments to the list
+          allPayments = [...allPayments, ...localPayments];
+        }
+
+        // Sort combined list by date (newest first)
+        allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+        
+        setPayments(allPayments);
       }
     } catch (error) {
       console.error('Failed to load data', error);
@@ -121,13 +133,12 @@ export default function FinancialsScreen() {
     }
   };
 
-  // Calculate financial data from actual data
+  // Calculate financial data
   const calculateFinancialData = () => {
     const completedPayments = payments.filter(p => p.status === 'completed');
     const pendingPayments = payments.filter(p => p.status === 'pending');
     
-    const totalEarnings = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
+    const totalEarnings = completedPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
     
     const totalProperties = listings.length;
     
@@ -139,7 +150,7 @@ export default function FinancialsScreen() {
 
     const rentPayments = completedPayments.filter(p => p.type === 'rent');
     const averageRent = rentPayments.length > 0 
-      ? rentPayments.reduce((sum, payment) => sum + payment.amount, 0) / rentPayments.length 
+      ? rentPayments.reduce((sum, payment) => sum + parseFloat(payment.amount), 0) / rentPayments.length 
       : 0;
 
     const currentMonth = new Date().getMonth();
@@ -149,17 +160,17 @@ export default function FinancialsScreen() {
         const paymentDate = new Date(payment.paidDate || payment.date);
         return paymentDate.getMonth() === currentMonth && paymentDate.getFullYear() === currentYear;
       })
-      .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+      .reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
 
     return {
       totalEarnings,
-      pendingPayments: pendingAmount,
+      pendingPaymentsCount: pendingPayments.length,
+      pendingPaymentsAmount: pendingPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0),
       totalProperties,
       occupancyRate,
       averageRent: Math.round(averageRent),
       monthlyEarnings,
       completedPayments: completedPayments.length,
-      pendingPaymentsCount: pendingPayments.length,
     };
   };
   
@@ -198,10 +209,9 @@ export default function FinancialsScreen() {
       type: payment.type || 'rent',
       method: payment.method || 'manual',
       reference: payment.reference,
-    }))
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
+    }));
 
-  const pendingPayments = payments
+  const pendingPaymentsList = payments
     .filter(payment => payment.status === 'pending')
     .map(payment => ({
       id: payment.id,
@@ -234,6 +244,8 @@ export default function FinancialsScreen() {
       return;
     }
 
+    const amountFloat = parseFloat(paymentForm.amount);
+
     try {
       const { data, error } = await supabase
         .from('payments')
@@ -242,7 +254,7 @@ export default function FinancialsScreen() {
             landlord_id: currentUser?.id,
             tenant_name: paymentForm.tenantName,
             property_title: paymentForm.property,
-            amount: parseFloat(paymentForm.amount),
+            amount: amountFloat,
             payment_type: paymentForm.type,
             status: 'completed',
             payment_date: paymentForm.date,
@@ -253,27 +265,36 @@ export default function FinancialsScreen() {
         .select();
 
       if (error) {
-        console.warn('Supabase insert failed (table might be missing):', error);
-        const newPayment = {
-          id: `payment_${Date.now()}`,
+        console.warn('Supabase insert failed, saving locally:', error);
+        
+        const newLocalPayment = {
+          id: `local_${Date.now()}`,
           landlordId: currentUser?.id,
           tenantName: paymentForm.tenantName,
           property: paymentForm.property,
-          amount: parseFloat(paymentForm.amount),
+          amount: amountFloat,
           type: paymentForm.type,
-          status: 'completed',
+          status: 'completed', 
           date: new Date().toISOString().split('T')[0],
           paidDate: paymentForm.date,
           method: 'manual',
-          reference: `MAN-${Date.now()}`,
+          reference: `LOC-${Date.now()}`,
+          isLocal: true
         };
-        setPayments(prev => [newPayment, ...prev]);
-      } else if (data) {
-        await loadData();
-      }
 
+        const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+        const existingPayments = existingJson ? JSON.parse(existingJson) : [];
+        
+        existingPayments.push(newLocalPayment);
+        
+        await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existingPayments));
+        
+        Alert.alert('Saved Locally', 'Database unreachble. Payment saved to local storage.');
+      } 
+
+      await loadData();
       setShowRecordPaymentModal(false);
-      Alert.alert('Success', `Payment of ₱${parseFloat(paymentForm.amount).toLocaleString()} recorded!`);
+
     } catch (error) {
       console.error('Failed to record payment', error);
       Alert.alert('Error', 'Failed to record payment.');
@@ -297,7 +318,7 @@ export default function FinancialsScreen() {
     );
   };
 
-  // --- FIXED EXPORT FUNCTIONALITY ---
+  // --- EXPORT FUNCTIONALITY ---
   const handleExportData = async () => {
     if (payments.length === 0 && bookings.length === 0) {
       Alert.alert('No Data', 'You have no data to export.');
@@ -311,11 +332,13 @@ export default function FinancialsScreen() {
       // 2. Construct CSV Rows
       paymentHistory.forEach(item => {
         const date = item.date ? new Date(item.date).toISOString().split('T')[0] : 'N/A';
-        // Handle values that might contain commas by wrapping in quotes
+        const tenant = (item.tenant || '').replace(/"/g, '""');
+        const property = (item.property || '').replace(/"/g, '""');
+        
         const row = [
           date,
-          `"${item.tenant || ''}"`,
-          `"${item.property || ''}"`,
+          `"${tenant}"`,
+          `"${property}"`,
           item.amount || 0,
           item.type || 'rent',
           item.status || 'pending',
@@ -325,16 +348,16 @@ export default function FinancialsScreen() {
         csv += row + '\n';
       });
 
-      // 3. Define File Path (Cache Directory)
+      // 3. Define File Path
       const fileName = `financial_report_${new Date().getTime()}.csv`;
       const fileUri = FileSystem.documentDirectory + fileName;
 
-      // 4. Write File
+      // 4. Write File - FIXED: Use literal string 'utf8' and imported FileSystem/legacy
       await FileSystem.writeAsStringAsync(fileUri, csv, {
-        encoding: FileSystem.EncodingType.UTF8,
+        encoding: 'utf8',
       });
 
-      // 5. Share File
+      // 5. Share/Save File
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(fileUri, {
           mimeType: 'text/csv',
@@ -466,7 +489,7 @@ export default function FinancialsScreen() {
               <View style={[styles.statIcon, { backgroundColor: '#fef3c7' }]}>
                 <Ionicons name="time" size={24} color="#f59e0b" />
               </View>
-              <Text style={styles.statValue}>₱{financialData.pendingPayments.toLocaleString()}</Text>
+              <Text style={styles.statValue}>₱{financialData.pendingPaymentsAmount.toLocaleString()}</Text>
               <Text style={styles.statLabel}>Pending Payments</Text>
             </View>
             <View style={styles.statCard}>
@@ -509,18 +532,18 @@ export default function FinancialsScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Pending Payments</Text>
-            <Text style={styles.seeAllText}>{pendingPayments.length} pending</Text>
+            <Text style={styles.seeAllText}>{pendingPaymentsList.length} pending</Text>
           </View>
           
           <View style={styles.paymentsList}>
-            {pendingPayments.length === 0 ? (
+            {pendingPaymentsList.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="checkmark-circle" size={32} color="#10b981" />
                 <Text style={styles.emptyStateText}>No pending payments</Text>
                 <Text style={styles.emptyStateSubtext}>All payments are up to date!</Text>
               </View>
             ) : (
-              pendingPayments.map((payment) => (
+              pendingPaymentsList.map((payment) => (
                 <View key={payment.id} style={styles.paymentItem}>
                   <View style={styles.paymentInfo}>
                     <View style={styles.paymentHeader}>
