@@ -16,6 +16,7 @@ import {
   getNotifications,
   markNotificationAsRead,
   subscribeToNotifications,
+  supabase,
 } from '../../lib/supabaseClient';
 
 export default function Notifications() {
@@ -113,32 +114,75 @@ export default function Notifications() {
       console.error('Failed to mark notification as read', error);
     }
 
-    // Handle action based on type
-    switch (notification.actionType) {
-      case 'view_listing':
-        router.push({
-          pathname: '/(tenant)/boarding-house-details',
-          params: { id: notification.listingId }
-        });
-        break;
+    // Handle message notifications - fetch conversation and navigate to chat
+    if (notification.type === 'message') {
+      try {
+        let conversationId = null;
+        
+        // Try to parse conversation ID from actionData first
+        if (notification.actionData && notification.actionData.conversationId) {
+          conversationId = notification.actionData.conversationId;
+        }
+        
+        // If no conversation ID, query the messages table to find the conversation
+        if (!conversationId && currentUser?.id) {
+          // Find the most recent conversation involving this tenant
+          const { data: messages, error: msgError } = await supabase
+            .from('messages')
+            .select('conversation_id')
+            .eq('receiver_id', currentUser.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
 
-      case 'view_booking':
-        router.push('/(tenant)/bookings');
-        break;
+          if (!msgError && messages && messages.length > 0) {
+            conversationId = messages[0].conversation_id;
+          }
 
-      case 'view_payment':
-        router.push('/(tenant)/payments');
-        break;
+          // If still no conversation, try querying conversations directly
+          if (!conversationId) {
+            const { data: conversations, error: convError } = await supabase
+              .from('conversations')
+              .select('id')
+              .eq('tenant_id', currentUser.id)
+              .order('updated_at', { ascending: false })
+              .limit(1);
 
-      case 'view_message':
-        router.push({
-          pathname: '/(tenant)/chat',
-          params: notification.actionData
-        });
-        break;
+            if (!convError && conversations && conversations.length > 0) {
+              conversationId = conversations[0].id;
+            }
+          }
+        }
 
-      default:
-        break;
+        if (conversationId) {
+          router.push({
+            pathname: '/(tenant)/chat',
+            params: { conversationId }
+          });
+        } else {
+          Alert.alert('Error', 'Could not load conversation');
+        }
+      } catch (error) {
+        console.error('Error handling message notification:', error);
+        Alert.alert('Error', 'Failed to open chat');
+      }
+    } else {
+      // For other notification types, navigate based on type
+      switch (notification.type) {
+        case 'booking_approved':
+        case 'booking_rejected':
+        case 'booking_request':
+          router.push('/(tenant)/bookings');
+          break;
+        case 'payment_due':
+        case 'payment_completed':
+          router.push('/(tenant)/payments');
+          break;
+        case 'review':
+          router.push('/(tenant)/bookings');
+          break;
+        default:
+          break;
+      }
     }
   };
 
@@ -178,22 +222,24 @@ export default function Notifications() {
 
   const getNotificationIcon = (type) => {
     switch (type) {
-      case 'new_listing':
-        return { name: 'home', color: '#3b82f6' };
+      case 'booking_request':
+        return { name: 'calendar', color: '#667eea' };
       case 'booking_approved':
         return { name: 'checkmark-circle', color: '#10b981' };
+      case 'booking_rejected':
+        return { name: 'close-circle', color: '#ef4444' };
       case 'booking_cancelled':
         return { name: 'close-circle', color: '#ef4444' };
-      case 'payment_confirmed':
-        return { name: 'card', color: '#10b981' };
-      case 'payment_reminder':
-        return { name: 'time', color: '#f59e0b' };
-      case 'new_message':
-        return { name: 'chatbubble', color: '#8b5cf6' };
-      case 'price_drop':
-        return { name: 'trending-down', color: '#10b981' };
-      case 'favorite_available':
-        return { name: 'heart', color: '#ef4444' };
+      case 'payment_due':
+        return { name: 'wallet', color: '#f6ad55' };
+      case 'payment_completed':
+        return { name: 'checkmark-done', color: '#48bb78' };
+      case 'message':
+        return { name: 'chatbubble', color: '#4299e1' };
+      case 'review':
+        return { name: 'star', color: '#ed8936' };
+      case 'listing_inquiry':
+        return { name: 'help-circle', color: '#667eea' };
       default:
         return { name: 'notifications', color: '#667eea' };
     }
@@ -230,87 +276,65 @@ export default function Notifications() {
 
     return (
       <TouchableOpacity
-        style={[styles.notificationCard, !item.read && styles.unreadNotification]}
+        style={[
+          styles.notificationCard,
+          !item.read && styles.unreadCard
+        ]}
         onPress={() => handleNotificationPress(item)}
       >
         <View style={styles.notificationContent}>
-          <View style={[styles.iconContainer, { backgroundColor: `${icon.color}15` }]}>
-            <Ionicons name={icon.name} size={24} color={icon.color} />
+          <View style={[styles.iconContainer, { backgroundColor: icon.color + '20' }]}>
+            <Ionicons
+              name={icon.name}
+              size={20}
+              color={icon.color}
+            />
           </View>
-
-          <View style={styles.notificationText}>
-            <Text style={styles.notificationTitle}>{item.title}</Text>
+          <View style={styles.textContainer}>
+            <View style={styles.headerRow}>
+              <Text style={styles.notificationTitle}>{item.title}</Text>
+              {!item.read && <View style={styles.unreadDot} />}
+            </View>
             <Text style={styles.notificationMessage} numberOfLines={2}>
               {item.message}
             </Text>
-            <Text style={styles.notificationTime}>{getTimeAgo(item.timestamp)}</Text>
+            <Text style={styles.timestamp}>{getTimeAgo(item.timestamp)}</Text>
           </View>
         </View>
-
-        {!item.read && <View style={styles.unreadDot} />}
       </TouchableOpacity>
     );
   };
 
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Notifications</Text>
+        <Text style={styles.title}>Notifications</Text>
+        {notificationList.length > 0 && (
           <Text style={styles.subtitle}>
             {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
           </Text>
-        </View>
-        <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={markAllAsRead}
-            disabled={unreadCount === 0}
-          >
-            <Text style={[styles.headerButtonText, unreadCount === 0 && styles.disabledText]}>
-              Mark all read
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={clearAllNotifications}
-            disabled={notificationList.length === 0}
-          >
-            <Ionicons
-              name="trash-outline"
-              size={20}
-              color={notificationList.length === 0 ? '#ccc' : '#ef4444'}
-            />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <View style={styles.content}>
-        {notificationList.length > 0 ? (
-          <FlatList
-            data={notificationList}
-            renderItem={renderNotificationItem}
-            keyExtractor={(item) => item.id}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                colors={['#667eea']}
-              />
-            }
-            contentContainerStyle={styles.listContent}
-          />
-        ) : (
-          <View style={styles.emptyState}>
-            <Ionicons name="notifications-off" size={64} color="#ccc" />
-            <Text style={styles.emptyStateTitle}>No Notifications</Text>
-            <Text style={styles.emptyStateText}>
-              You're all caught up! New notifications will appear here.
-            </Text>
-          </View>
         )}
       </View>
+
+      <FlatList
+        data={notificationList}
+        renderItem={renderNotificationItem}
+        keyExtractor={(item) => item.id}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+          />
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Ionicons name="notifications-off-outline" size={48} color="#ccc" />
+            <Text style={styles.emptyStateTitle}>No Notifications</Text>
+            <Text style={styles.emptyStateText}>You're all caught up!</Text>
+          </View>
+        }
+      />
     </View>
   );
 }
@@ -318,124 +342,100 @@ export default function Notifications() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f6f7fb',
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 20,
     backgroundColor: 'white',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e5e5',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
     color: '#333',
+    marginBottom: 4,
   },
   subtitle: {
     fontSize: 14,
-    color: '#667eea',
-    marginTop: 4,
+    color: '#666',
   },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  headerButton: {
-    padding: 8,
-  },
-  headerButtonText: {
-    color: '#667eea',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  disabledText: {
-    color: '#ccc',
-  },
-  content: {
+  loadingContainer: {
     flex: 1,
-  },
-  listContent: {
-    padding: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   notificationCard: {
     backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 3,
-    position: 'relative',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    marginBottom: 2,
   },
-  unreadNotification: {
-    borderLeftWidth: 4,
-    borderLeftColor: '#667eea',
-    backgroundColor: '#f8faff',
+  unreadCard: {
+    backgroundColor: '#f0f4ff',
   },
   notificationContent: {
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
   iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
+    marginTop: 2,
   },
-  notificationText: {
+  textContainer: {
     flex: 1,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   notificationTitle: {
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '600',
     color: '#333',
-    marginBottom: 4,
-  },
-  notificationMessage: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 20,
-    marginBottom: 6,
-  },
-  notificationTime: {
-    fontSize: 12,
-    color: '#999',
+    flex: 1,
   },
   unreadDot: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
     width: 8,
     height: 8,
     borderRadius: 4,
     backgroundColor: '#667eea',
+    marginLeft: 8,
+  },
+  notificationMessage: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 6,
+    lineHeight: 20,
+  },
+  timestamp: {
+    fontSize: 12,
+    color: '#999',
   },
   emptyState: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 60,
+    paddingVertical: 100,
   },
   emptyStateTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: '#666',
-    marginTop: 16,
-    marginBottom: 8,
+    marginTop: 12,
   },
   emptyStateText: {
     fontSize: 14,
     color: '#999',
-    textAlign: 'center',
-    lineHeight: 20,
-    paddingHorizontal: 40,
+    marginTop: 8,
   },
 });
