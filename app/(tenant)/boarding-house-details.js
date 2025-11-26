@@ -80,13 +80,37 @@ export default function BoardingHouseDetails() {
     longitude: house?.longitude,
   });
 
-  const getLandlord = () => house?.landlord_profile?.users || {
-    id: 'unknown',
-    first_name: 'Unknown',
-    last_name: 'Landlord',
-    phone: 'Not available',
-    email: 'Not available',
-    profile_image_url: '',
+  const getLandlord = () => {
+    const landlordUsers = house?.landlord_profile?.users;
+    const landlordProfile = house?.landlord_profile;
+    
+    if (landlordUsers) {
+      return {
+        id: landlordUsers.id,
+        first_name: landlordUsers.first_name || 'Unknown',
+        last_name: landlordUsers.last_name || 'Landlord',
+        name: `${landlordUsers.first_name || ''} ${landlordUsers.last_name || ''}`.trim() || 'Unknown Landlord',
+        phone: landlordProfile?.phone || 'Not available',
+        email: landlordUsers.email || 'Not available',
+        profile_image_url: landlordUsers.profile_image_url,
+        bio: landlordUsers.bio,
+        verified: landlordProfile?.bank_account_verified || false,
+        rating: landlordProfile?.rating || 0,
+        company_name: landlordProfile?.company_name,
+      };
+    }
+    
+    return {
+      id: 'unknown',
+      first_name: 'Unknown',
+      last_name: 'Landlord',
+      name: 'Unknown Landlord',
+      phone: 'Not available',
+      email: 'Not available',
+      profile_image_url: '',
+      verified: false,
+      rating: 0,
+    };
   };
 
   useEffect(() => {
@@ -153,6 +177,12 @@ export default function BoardingHouseDetails() {
           address: listing.address,
           max_guests: listing.max_guests,
           landlord_profile: listing.landlord_profile,
+          // Property details
+          bedrooms: listing.bedrooms,
+          bathrooms: listing.bathrooms,
+          property_size: listing.property_size,
+          total_rooms: listing.total_rooms,
+          available_rooms: listing.available_rooms,
         };
         setHouse(transformedListing);
       } else {
@@ -187,11 +217,18 @@ export default function BoardingHouseDetails() {
     try {
       if (!tenantProfileId || !house) return;
 
-      // Check if listing is in tenant's favorites by trying to fetch favorites
-      // This is a simple check - in real implementation would query database
-      setIsFavorite(false); // Default to not favorite
+      // Fetch favorites from database
+      const { data, error } = await supabase
+        .from('favorites')
+        .select('id')
+        .eq('tenant_id', tenantProfileId)
+        .eq('listing_id', house.id)
+        .single();
+
+      setIsFavorite(!!data && !error);
     } catch (error) {
-      console.error('Failed to check favorite status', error);
+      // Not in favorites (expected error when not found)
+      setIsFavorite(false);
     }
   };
 
@@ -631,7 +668,7 @@ export default function BoardingHouseDetails() {
         house.id
       );
 
-      if (!convSuccess || !conversation) {
+      if (!convSuccess || !conversation || !conversation.id) {
         Alert.alert('Error', convError || 'Failed to create conversation');
         return;
       }
@@ -963,6 +1000,55 @@ export default function BoardingHouseDetails() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Description</Text>
           <Text style={styles.descriptionText}>{getHouseDescription()}</Text>
+        </View>
+
+        {/* Property Details */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Property Details</Text>
+          <View style={styles.propertyDetailsGrid}>
+            {house?.bedrooms !== undefined && house?.bedrooms !== null && (
+              <View style={styles.detailCard}>
+                <Ionicons name="bed" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.bedrooms}</Text>
+                <Text style={styles.detailLabel}>Bedrooms</Text>
+              </View>
+            )}
+            {house?.bathrooms !== undefined && house?.bathrooms !== null && (
+              <View style={styles.detailCard}>
+                <Ionicons name="water" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.bathrooms}</Text>
+                <Text style={styles.detailLabel}>Bathrooms</Text>
+              </View>
+            )}
+            {house?.max_guests && (
+              <View style={styles.detailCard}>
+                <Ionicons name="people" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.max_guests}</Text>
+                <Text style={styles.detailLabel}>Capacity</Text>
+              </View>
+            )}
+            {house?.property_size && (
+              <View style={styles.detailCard}>
+                <Ionicons name="resize" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.property_size}</Text>
+                <Text style={styles.detailLabel}>Sq. Ft</Text>
+              </View>
+            )}
+            {house?.total_rooms && (
+              <View style={styles.detailCard}>
+                <Ionicons name="home" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.total_rooms}</Text>
+                <Text style={styles.detailLabel}>Total Rooms</Text>
+              </View>
+            )}
+            {house?.available_rooms !== undefined && house?.available_rooms !== null && (
+              <View style={styles.detailCard}>
+                <Ionicons name="checkmark-done" size={24} color="#10b981" />
+                <Text style={styles.detailValue}>{house.available_rooms}</Text>
+                <Text style={styles.detailLabel}>Available</Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* Amenities */}
@@ -1779,6 +1865,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#333',
     flex: 1,
+  },
+  propertyDetailsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 12,
+  },
+  detailCard: {
+    width: '31%',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  detailValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 8,
+  },
+  detailLabel: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 4,
+    textAlign: 'center',
   },
   rulesList: {
     gap: 12,
