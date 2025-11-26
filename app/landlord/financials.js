@@ -20,7 +20,7 @@ import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sharing from 'expo-sharing';
-import * as Print from 'expo-print'; // Required for PDF
+import * as Print from 'expo-print';
 import ViewShot, { captureRef } from 'react-native-view-shot';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
@@ -43,7 +43,6 @@ export default function FinancialsScreen() {
   
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
   
-  // State for Single Receipt Export (PNG)
   const [receiptData, setReceiptData] = useState(null);
 
   const [paymentForm, setPaymentForm] = useState({
@@ -90,7 +89,6 @@ export default function FinancialsScreen() {
         const { success: bookingsSuccess, bookings: dbBookings } = await getLandlordBookings(user.id);
         if (bookingsSuccess) setBookings(dbBookings || []);
 
-        // Fetch from DB
         const { data: dbPayments, error: paymentsError } = await supabase
           .from('payments')
           .select('*')
@@ -192,7 +190,6 @@ export default function FinancialsScreen() {
 
   const pendingPaymentsList = payments.filter(payment => payment.status === 'pending');
 
-  // --- SINGLE RECEIPT CAPTURE (PNG) ---
   const captureSingleReceipt = async () => {
     try {
       const uri = await captureRef(singleReceiptRef, {
@@ -218,7 +215,6 @@ export default function FinancialsScreen() {
     }
   };
 
-  // --- EXPORT ALL AS PDF (MATCHING BOARDEASE IMAGE FORMAT) ---
   const handleExportData = async () => {
     if (payments.length === 0) {
       Alert.alert('No Data', 'You have no data to export.');
@@ -227,9 +223,8 @@ export default function FinancialsScreen() {
 
     try {
       const landlordName = getLandlordName();
-      
-      // We iterate over history and create a page/block for each record
-      // mimicking the exact styling of the PNG
+      const logoUrl = "YOUR_IMAGE_URL_HERE"; 
+
       const recordsHtml = paymentHistory.map(item => `
         <div class="receipt-card">
           <div class="header">
@@ -239,11 +234,8 @@ export default function FinancialsScreen() {
             </div>
             <div class="tagline">Finding your perfect boarding house in CDO</div>
           </div>
-          
           <div class="thick-divider"></div>
-          
           <div class="records-title">Records:</div>
-          
           <div class="record-row"><span class="label">Date:</span><span class="value">${formatDate(item.date)}</span></div>
           <div class="record-row"><span class="label">Tenant:</span><span class="value">${item.tenant}</span></div>
           <div class="record-row"><span class="label">Property:</span><span class="value">${item.property}</span></div>
@@ -252,12 +244,8 @@ export default function FinancialsScreen() {
           <div class="record-row"><span class="label">Status:</span><span class="value">${item.status}</span></div>
           <div class="record-row"><span class="label">Method:</span><span class="value">${item.method}</span></div>
           <div class="record-row"><span class="label">Reference:</span><span class="value">${item.reference}</span></div>
-
           <div class="thick-divider" style="margin-top:30px;"></div>
-
-          <div class="footer">
-            Approved by: ${landlordName}
-          </div>
+          <div class="footer">Approved by: ${landlordName}</div>
         </div>
         <div style="page-break-after: always;"></div>
       `).join('');
@@ -270,57 +258,25 @@ export default function FinancialsScreen() {
             <style>
               @page { margin: 0; }
               body { font-family: 'Helvetica', sans-serif; background-color: #f5f5f5; padding: 20px; }
-              
-              /* Matches 'exportContainer' style */
-              .receipt-card {
-                background-color: white;
-                width: 100%;
-                max-width: 600px;
-                margin: 0 auto 20px auto;
-                padding: 40px;
-                box-sizing: border-box;
-                border: 1px solid #ddd;
-              }
-
-              /* Matches 'logoRow' and 'logoText' */
+              .receipt-card { background-color: white; width: 100%; max-width: 600px; margin: 0 auto 20px auto; padding: 40px; box-sizing: border-box; border: 1px solid #ddd; }
               .header { text-align: center; margin-bottom: 20px; }
               .logo-row { display: flex; align-items: center; justify-content: center; }
               .logo-text { font-size: 40px; font-weight: bold; color: #000; }
-              
-              /* Matches 'tagline' */
               .tagline { font-size: 16px; color: #555; margin-top: 8px; font-style: italic; text-align: center; }
-              
-              /* Matches 'divider' (thick black line) */
               .thick-divider { height: 3px; background-color: #000; margin: 20px 0; }
-              
-              /* Matches 'recordsTitle' */
               .records-title { font-size: 32px; font-weight: bold; color: #000; margin-bottom: 20px; }
-              
-              /* Matches 'recordRow', 'recordLabel', 'recordValue' */
               .record-row { display: flex; margin-bottom: 8px; font-size: 18px; }
               .label { width: 150px; font-weight: 600; color: #000; }
               .value { flex: 1; color: #333; }
-              
-              /* Matches 'exportFooter' and 'approvedText' */
               .footer { text-align: right; font-size: 18px; font-weight: 500; color: #000; }
             </style>
           </head>
-          <body>
-            ${recordsHtml}
-          </body>
+          <body>${recordsHtml}</body>
         </html>
       `;
 
-      // Generate PDF
       const { uri } = await Print.printToFileAsync({ html: htmlContent });
-
-      // Share PDF
-      await Sharing.shareAsync(uri, { 
-        UTI: '.pdf', 
-        mimeType: 'application/pdf',
-        dialogTitle: 'Export Financial Records'
-      });
-
+      await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf', dialogTitle: 'Export Financial Records' });
     } catch (error) {
       console.error('Export PDF failed:', error);
       Alert.alert('Export Failed', 'Could not generate PDF.');
@@ -328,11 +284,12 @@ export default function FinancialsScreen() {
   };
 
   const handleRecordPayment = () => {
+    const firstProp = listings.length > 0 ? listings[0] : null;
     setPaymentForm({
       date: new Date().toISOString().split('T')[0],
       tenantName: '',
-      property: listings.length > 0 ? (listings[0].title || listings[0].name) : '',
-      amount: '',
+      property: firstProp ? (firstProp.title || firstProp.name) : '',
+      amount: firstProp ? (firstProp.price || firstProp.rent || '').toString() : '',
       type: 'rent',
       status: 'completed',
       method: 'Cash',
@@ -349,7 +306,6 @@ export default function FinancialsScreen() {
     const amountFloat = parseFloat(paymentForm.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 
-    // Optimistic Update
     const newUiPayment = {
       id: `temp_${Date.now()}`, 
       tenantName: paymentForm.tenantName,
@@ -417,7 +373,6 @@ export default function FinancialsScreen() {
      Alert.alert('Success', `Payment reminder sent to ${tenantName}`);
   };
 
-  // Helpers
   const getStatusColor = (status) => (status === 'completed' ? '#10b981' : '#f59e0b');
   const getStatusText = (status) => (status === 'completed' ? 'Paid' : 'Pending');
   const formatDate = (dateStr) => {
@@ -491,7 +446,7 @@ export default function FinancialsScreen() {
 
         {/* History List */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recent History</Text>
+          <Text style={styles.sectionTitle}>Recent Records</Text>
           {paymentHistory.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>No records found.</Text>
@@ -514,7 +469,6 @@ export default function FinancialsScreen() {
       </ScrollView>
 
       {/* --- HIDDEN VIEW: SINGLE RECEIPT EXPORT (PNG) --- */}
-      {/* This view mirrors the BoardEase image structure using React Native Views */}
       {receiptData && (
         <View style={{ position: 'absolute', left: -10000, top: 0, opacity: 1, backgroundColor: 'white' }} pointerEvents="none">
           <ViewShot ref={singleReceiptRef} options={{ format: "png", quality: 1.0 }} style={{ backgroundColor: 'white' }}>
@@ -530,7 +484,7 @@ export default function FinancialsScreen() {
 
               <View style={styles.divider} />
 
-              <Text style={styles.recordsTitle}>Records:</Text>
+              <Text style={styles.recordsTitle}>Payment Receipt</Text>
               
               <View style={styles.recordsList}>
                 <View style={styles.recordBlock}>
@@ -560,7 +514,7 @@ export default function FinancialsScreen() {
       <Modal visible={showRecordPaymentModal} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-             <ScrollView showsVerticalScrollIndicator={false}>
+             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                <Text style={styles.modalTitle}>Record Payment</Text>
 
                <View style={styles.formSection}>
@@ -573,11 +527,11 @@ export default function FinancialsScreen() {
                  <TextInput style={styles.textInput} value={paymentForm.tenantName} placeholder="Name" onChangeText={t => setPaymentForm(p => ({...p, tenantName: t}))} />
                </View>
 
-               {/* Property Selector */}
+               {/* Property Selector (Auto-fills Amount) */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Property</Text>
                  {listings.length > 0 ? (
-                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 8}}>
+                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 8}} keyboardShouldPersistTaps="handled">
                      {listings.map((item, idx) => {
                         const propName = item.title || item.name || `Prop ${idx}`;
                         const isActive = paymentForm.property === propName;
@@ -585,7 +539,14 @@ export default function FinancialsScreen() {
                           <TouchableOpacity 
                             key={item.id || idx} 
                             style={[styles.propertyChip, isActive && styles.propertyChipActive]} 
-                            onPress={() => setPaymentForm(p => ({...p, property: propName}))}
+                            onPress={() => {
+                                const price = item.price || item.rent || '';
+                                setPaymentForm(p => ({
+                                    ...p, 
+                                    property: propName,
+                                    amount: price.toString()
+                                }));
+                            }}
                           >
                             <Text style={[styles.propertyChipText, isActive && styles.propertyChipTextActive]}>{propName}</Text>
                           </TouchableOpacity>
@@ -597,9 +558,16 @@ export default function FinancialsScreen() {
                  )}
                </View>
 
+               {/* READ-ONLY AMOUNT FIELD */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Amount (₱)</Text>
-                 <TextInput style={styles.textInput} value={paymentForm.amount} keyboardType="numeric" placeholder="0.00" onChangeText={t => setPaymentForm(p => ({...p, amount: t}))} />
+                 <TextInput 
+                    style={[styles.textInput, {backgroundColor: '#f0f0f0', color: '#555'}]} 
+                    value={String(paymentForm.amount)} 
+                    editable={false}
+                    selectTextOnFocus={false}
+                    placeholder="0.00" 
+                 />
                </View>
 
                {/* Payment Type */}
@@ -731,4 +699,5 @@ const styles = StyleSheet.create({
 
   confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center' },
   confirmButtonText: { color: 'white', fontWeight: '600' },
+  periodSelector: { flexDirection: 'row', marginBottom: 20 }, 
 });
