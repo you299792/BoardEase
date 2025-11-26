@@ -16,6 +16,7 @@ import {
   getNotifications,
   markNotificationAsRead,
   subscribeToNotifications,
+  supabase,
 } from '../../lib/supabaseClient';
 
 export default function NotificationsScreen() {
@@ -99,6 +100,10 @@ export default function NotificationsScreen() {
         return 'calendar';
       case 'booking_approved':
         return 'checkmark-circle';
+      case 'booking_cancelled':
+        return 'close-circle';
+      case 'booking_rejected':
+        return 'close-circle';
       case 'payment_due':
         return 'wallet';
       case 'payment_completed':
@@ -120,6 +125,10 @@ export default function NotificationsScreen() {
         return '#667eea';
       case 'booking_approved':
         return '#48bb78';
+      case 'booking_cancelled':
+        return '#f56565';
+      case 'booking_rejected':
+        return '#f56565';
       case 'payment_due':
         return '#f6ad55';
       case 'payment_completed':
@@ -145,8 +154,65 @@ export default function NotificationsScreen() {
       );
     }
 
-    // Navigate based on notification type
-    if (notification.action_url) {
+    // Handle message notifications - fetch conversation and navigate to chat
+    if (notification.notification_type === 'message') {
+      try {
+        let conversationId = null;
+        
+        // Try to parse conversation ID from action_url first
+        if (notification.action_url) {
+          // Check if it's a direct chat route with conversationId
+          if (notification.action_url.includes('conversationId')) {
+            const match = notification.action_url.match(/conversationId[=?:]([\w-]+)/);
+            if (match) {
+              conversationId = match[1];
+            }
+          }
+        }
+
+        // If no conversation ID found, query the messages table to find the conversation
+        if (!conversationId && currentUser?.id) {
+          // Find the most recent conversation involving this landlord
+          const { data: messages, error: msgError } = await supabase
+            .from('messages')
+            .select('conversation_id')
+            .eq('receiver_id', currentUser.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (!msgError && messages && messages.length > 0) {
+            conversationId = messages[0].conversation_id;
+          }
+
+          // If still no conversation, try querying conversations directly
+          if (!conversationId) {
+            const { data: conversations, error: convError } = await supabase
+              .from('conversations')
+              .select('id')
+              .eq('landlord_id', currentUser.id)
+              .order('updated_at', { ascending: false })
+              .limit(1);
+
+            if (!convError && conversations && conversations.length > 0) {
+              conversationId = conversations[0].id;
+            }
+          }
+        }
+
+        if (conversationId) {
+          router.push({
+            pathname: '/landlord/chat',
+            params: { conversationId }
+          });
+        } else {
+          Alert.alert('Error', 'Could not load conversation');
+        }
+      } catch (error) {
+        console.error('Error handling message notification:', error);
+        Alert.alert('Error', 'Failed to open chat');
+      }
+    } else if (notification.action_url) {
+      // For other notification types, use the action_url
       router.push(notification.action_url);
     }
   };
