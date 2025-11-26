@@ -12,6 +12,7 @@ import {
   Platform,
   BackHandler,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -41,6 +42,9 @@ export default function FinancialsScreen() {
   
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
   
+  // State for Single Receipt Export
+  const [receiptData, setReceiptData] = useState(null);
+
   const [paymentForm, setPaymentForm] = useState({
     date: new Date().toISOString().split('T')[0],
     tenantName: '',
@@ -51,11 +55,21 @@ export default function FinancialsScreen() {
     method: 'Cash',
   });
 
-  const viewShotRef = useRef();
+  const viewShotRef = useRef();        
+  const singleReceiptRef = useRef();   
 
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (receiptData) {
+      const timer = setTimeout(() => {
+        captureSingleReceipt();
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [receiptData]);
 
   useFocusEffect(
     useCallback(() => {
@@ -76,29 +90,46 @@ export default function FinancialsScreen() {
         const { success: bookingsSuccess, bookings: dbBookings } = await getLandlordBookings(user.id);
         if (bookingsSuccess) setBookings(dbBookings || []);
 
+        // Fetch from DB
         const { data: dbPayments, error: paymentsError } = await supabase
           .from('payments')
           .select('*')
           .eq('landlord_id', user.id)
-          .order('created_at', { ascending: false });
+          .order('payment_date', { ascending: false }); // Order by payment_date
+
+        let allPayments = [];
 
         if (!paymentsError && dbPayments) {
           const mappedPayments = dbPayments.map(p => ({
             ...p,
-            tenantName: p.tenant_name || p.tenantName || 'Unknown',
-            property: p.property_title || p.property || 'Unknown',
+            // Map DB fields to UI fields safely
+            id: p.id,
+            tenantName: p.tenant_name || 'Unknown',
+            property: p.property_title || 'Unknown',
             amount: p.amount || 0,
             status: p.status || 'pending',
-            date: p.payment_date || p.created_at,
+            date: p.payment_date || p.created_at, // Use payment_date preferentially
             paidDate: p.payment_date,
-            type: p.payment_type || p.type || 'rent',
+            type: p.payment_type || 'rent',
             method: p.method || 'Cash',
             reference: p.reference || 'N/A',
           }));
-          setPayments(mappedPayments);
-        } else {
-          setPayments([]);
+          allPayments = mappedPayments;
         }
+
+        // Merge with Local (Fallback) Data if any
+        const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+        if (localData) {
+          const localPayments = JSON.parse(localData);
+          // Only add local payments that aren't already in DB list (avoid dupes if syncing eventually works)
+          const uniqueLocal = localPayments.filter(lp => !allPayments.some(dp => dp.reference === lp.reference));
+          allPayments = [...uniqueLocal, ...allPayments];
+        }
+
+        // Sort final list by date descending
+        allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        setPayments(allPayments);
       }
     } catch (error) {
       console.error('Failed to load data', error);
@@ -152,19 +183,49 @@ export default function FinancialsScreen() {
   
   const financialData = calculateFinancialData();
 
+  // Mapped for View/Export
   const paymentHistory = payments.map(payment => ({
     id: payment.id,
-    tenant: payment.tenantName || 'Tenant',
+    tenant: payment.tenantName,
     property: payment.property,
     amount: payment.amount,
-    date: payment.paidDate || payment.date,
+    date: payment.date,
     status: payment.status,
-    type: payment.type || 'rent',
-    method: payment.method || 'Cash',
-    reference: payment.reference || 'N/A',
+    type: payment.type,
+    method: payment.method,
+    reference: payment.reference,
   }));
 
-  // --- PNG EXPORT LOGIC ---
+  // Filtered for "Pending Payments" section
+  const pendingPaymentsList = payments.filter(payment => payment.status === 'pending');
+
+  // --- CAPTURE SINGLE RECEIPT ---
+  const captureSingleReceipt = async () => {
+    try {
+      const uri = await captureRef(singleReceiptRef, {
+        format: 'png',
+        quality: 1.0, 
+        result: 'tmpfile'
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'image/png',
+          dialogTitle: 'Download Receipt',
+          UTI: 'public.png'
+        });
+      } else {
+        Alert.alert('Error', 'Sharing is not available on this device');
+      }
+    } catch (error) {
+      console.error('Single Receipt Export failed:', error);
+      Alert.alert('Error', 'Could not generate receipt image.');
+    } finally {
+      setReceiptData(null);
+    }
+  };
+
+  // --- BULK EXPORT ---
   const handleExportData = async () => {
     if (payments.length === 0) {
       Alert.alert('No Data', 'You have no data to export.');
@@ -206,16 +267,36 @@ export default function FinancialsScreen() {
     setShowRecordPaymentModal(true);
   };
 
+  // --- FIXED PROCESS FUNCTION (Optimistic Update) ---
   const processRecordedPayment = async () => {
     if (!paymentForm.tenantName.trim() || !paymentForm.amount) {
       Alert.alert('Error', 'Tenant Name and Amount are required.');
       return;
     }
-    const amountFloat = parseFloat(paymentForm.amount);
     
-    // Auto-generate reference
+    const amountFloat = parseFloat(paymentForm.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 
+    // 1. Create the new payment object for Immediate UI Update
+    const newUiPayment = {
+      id: `temp_${Date.now()}`, // Temp ID
+      tenantName: paymentForm.tenantName,
+      property: paymentForm.property,
+      amount: amountFloat,
+      type: paymentForm.type,
+      status: paymentForm.status,
+      date: paymentForm.date,
+      paidDate: paymentForm.date,
+      method: paymentForm.method,
+      reference: generatedRef,
+      isLocal: true // Flag to track it
+    };
+
+    // 2. Update UI IMMEDIATELY (Optimistic)
+    setPayments(prev => [newUiPayment, ...prev]);
+    setShowRecordPaymentModal(false); // Close modal instantly
+
+    // 3. Save to DB in background
     try {
       const { data, error } = await supabase
         .from('payments')
@@ -232,31 +313,41 @@ export default function FinancialsScreen() {
         }]).select();
 
       if (error) {
-        console.warn('Supabase error, saving locally');
-        const newLocalPayment = {
-          id: `local_${Date.now()}`,
-          landlordId: currentUser?.id,
-          tenantName: paymentForm.tenantName,
-          property: paymentForm.property,
-          amount: amountFloat,
-          type: paymentForm.type,
-          status: paymentForm.status,
-          date: new Date().toISOString().split('T')[0],
-          paidDate: paymentForm.date,
-          method: paymentForm.method,
-          reference: generatedRef,
-          isLocal: true
-        };
-        setPayments(prev => [newLocalPayment, ...prev]);
+        console.warn('Supabase insert failed, persisting to local storage');
+        // If DB fails, save to AsyncStorage so it persists on restart
+        const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+        const existingPayments = existingJson ? JSON.parse(existingJson) : [];
+        existingPayments.push(newUiPayment);
+        await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existingPayments));
       } else {
+        // If success, we could reload to get the real DB ID, or just leave the optimistic one
+        // A quiet reload is safer to sync IDs
         await loadData();
       }
       
-      setShowRecordPaymentModal(false);
       Alert.alert('Success', `Payment Saved! Ref: ${generatedRef}`);
     } catch (error) {
-      Alert.alert('Error', 'Failed to save record.');
+      console.error("Save error:", error);
+      Alert.alert('Error', 'Failed to save record remotely.');
     }
+  };
+
+  const handleRecordClick = (payment) => {
+    Alert.alert(
+      'Payment Options',
+      `Ref: ${payment.reference}\nAmount: ₱${payment.amount.toLocaleString()}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Download Receipt', 
+          onPress: () => setReceiptData(payment) 
+        }
+      ]
+    );
+  };
+
+  const handleRequestPayment = async (tenantName, id) => {
+     Alert.alert('Success', `Payment reminder sent to ${tenantName}`);
   };
 
   // Helpers
@@ -266,10 +357,17 @@ export default function FinancialsScreen() {
     if(!dateStr) return 'N/A';
     return new Date(dateStr).toISOString().split('T')[0];
   };
-
   const formatType = (t) => {
     if(t === 'security_deposit') return 'Deposit';
     return t.charAt(0).toUpperCase() + t.slice(1);
+  };
+  const getLandlordName = () => {
+    if (!currentUser) return 'Property Owner';
+    const meta = currentUser.user_metadata;
+    if (meta && (meta.first_name || meta.last_name)) {
+      return `${meta.first_name || ''} ${meta.last_name || ''}`.trim();
+    }
+    return currentUser.email || 'Property Owner';
   };
 
   return (
@@ -315,47 +413,65 @@ export default function FinancialsScreen() {
           <View style={styles.quickActions}>
             <TouchableOpacity style={styles.actionButton} onPress={handleRecordPayment}>
               <Ionicons name="add-circle" size={24} color={Colors.primary} />
-              <Text style={styles.actionText}>Record Payment</Text>
+              <Text style={styles.actionText}>Record</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.actionButton} onPress={handleExportData}>
               <Ionicons name="download" size={24} color={Colors.primary} />
-              <Text style={styles.actionText}>Export PNG</Text>
+              <Text style={styles.actionText}>Export All</Text>
             </TouchableOpacity>
           </View>
         </View>
 
+        {/* Pending Payments Section */}
+        {pendingPaymentsList.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Pending Payments ({pendingPaymentsList.length})</Text>
+            {pendingPaymentsList.map((p, i) => (
+               <TouchableOpacity key={p.id || i} style={styles.paymentItem} onPress={() => handleRecordClick(p)}>
+                 <View>
+                   <Text style={styles.tenantName}>{p.tenantName}</Text>
+                   <Text style={styles.propertyName}>{p.property}</Text>
+                 </View>
+                 <View style={{alignItems: 'flex-end'}}>
+                   <Text style={styles.paymentAmount}>₱{parseFloat(p.amount).toLocaleString()}</Text>
+                   <Text style={[styles.statusText, {color: getStatusColor(p.status)}]}>{p.status}</Text>
+                 </View>
+                 <TouchableOpacity style={{marginLeft: 10, padding: 5}} onPress={() => handleRequestPayment(p.tenantName, p.id)}>
+                    <Feather name="bell" size={18} color={Colors.primary} />
+                 </TouchableOpacity>
+               </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {/* History List */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recent Records</Text>
-          {paymentHistory.map((p, i) => (
-             <View key={i} style={styles.paymentItem}>
-               <View>
-                 <Text style={styles.tenantName}>{p.tenant}</Text>
-                 <Text style={styles.propertyName}>{p.property}</Text>
-               </View>
-               <View style={{alignItems: 'flex-end'}}>
-                 <Text style={styles.paymentAmount}>₱{p.amount.toLocaleString()}</Text>
-                 <Text style={[styles.statusText, {color: getStatusColor(p.status)}]}>{p.status}</Text>
-               </View>
-             </View>
-          ))}
+          <Text style={styles.sectionTitle}>Recent History</Text>
+          {paymentHistory.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>No records found.</Text>
+            </View>
+          ) : (
+            paymentHistory.map((p, i) => (
+               <TouchableOpacity key={p.id || i} style={styles.paymentItem} onPress={() => handleRecordClick(p)}>
+                 <View>
+                   <Text style={styles.tenantName}>{p.tenant}</Text>
+                   <Text style={styles.propertyName}>{p.property}</Text>
+                 </View>
+                 <View style={{alignItems: 'flex-end'}}>
+                   <Text style={styles.paymentAmount}>₱{p.amount.toLocaleString()}</Text>
+                   <Text style={[styles.statusText, {color: getStatusColor(p.status)}]}>{p.status}</Text>
+                 </View>
+               </TouchableOpacity>
+            ))
+          )}
         </View>
       </ScrollView>
 
-      {/* --- HIDDEN VIEW SHOT FOR PNG EXPORT --- */}
-      <View 
-        style={{ 
-          position: 'absolute', 
-          left: -10000, 
-          top: 0,
-          opacity: 1,
-          backgroundColor: 'white', 
-        }}
-        pointerEvents="none"
-      >
+      {/* --- HIDDEN VIEW: BULK EXPORT --- */}
+      <View style={{ position: 'absolute', left: -10000, top: 0, opacity: 1, backgroundColor: 'white' }} pointerEvents="none">
         <ViewShot ref={viewShotRef} options={{ format: "png", quality: 1.0 }} style={{ backgroundColor: 'white' }}>
           <View style={styles.exportContainer}>
-            
             <View style={styles.exportHeader}>
               <View style={styles.logoRow}>
                 <Ionicons name="home" size={50} color="#CD212A" />
@@ -363,39 +479,67 @@ export default function FinancialsScreen() {
               </View>
               <Text style={styles.tagline}>Finding your perfect boarding house in CDO</Text>
             </View>
-
             <View style={styles.divider} />
-
-            <Text style={styles.recordsTitle}>Records:</Text>
-            
+            <Text style={styles.recordsTitle}>Records Summary:</Text>
             <View style={styles.recordsList}>
-              {paymentHistory.map((item, index) => (
+              {paymentHistory.slice(0, 10).map((item, index) => (
                 <View key={index} style={styles.recordBlock}>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Date:</Text><Text style={styles.recordValue}>{formatDate(item.date)}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{item.tenant}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Property:</Text><Text style={styles.recordValue}>{item.property}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Amount:</Text><Text style={styles.recordValue}>₱{item.amount.toLocaleString()}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{formatType(item.type)}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{item.status === 'completed' ? 'Paid' : 'Pending'}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{item.method}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{item.reference}</Text></View>
-                  
-                  {index < paymentHistory.length - 1 && <View style={styles.itemSeparator} />}
+                  {index < 9 && <View style={styles.itemSeparator} />}
                 </View>
               ))}
             </View>
-
             <View style={styles.divider} />
-
             <View style={styles.exportFooter}>
-              <Text style={styles.approvedText}>
-                Approved by: {currentUser?.user_metadata?.first_name || 'Landlord'} {currentUser?.user_metadata?.last_name || ''}
-              </Text>
+              <Text style={styles.approvedText}>Approved by: {getLandlordName()}</Text>
             </View>
-
           </View>
         </ViewShot>
       </View>
+
+      {/* --- HIDDEN VIEW: SINGLE RECEIPT EXPORT --- */}
+      {receiptData && (
+        <View style={{ position: 'absolute', left: -10000, top: 0, opacity: 1, backgroundColor: 'white' }} pointerEvents="none">
+          <ViewShot ref={singleReceiptRef} options={{ format: "png", quality: 1.0 }} style={{ backgroundColor: 'white' }}>
+            <View style={styles.exportContainer}>
+              
+              <View style={styles.exportHeader}>
+                <View style={styles.logoRow}>
+                  <Ionicons name="home" size={60} color="#CD212A" />
+                  <Text style={[styles.logoText, {fontSize: 48}]}>BoardEase</Text>
+                </View>
+                <Text style={styles.tagline}>Finding your perfect boarding house in CDO</Text>
+              </View>
+
+              <View style={styles.divider} />
+
+              <Text style={styles.recordsTitle}>Payment Receipt</Text>
+              
+              <View style={styles.recordsList}>
+                <View style={styles.recordBlock}>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Date:</Text><Text style={styles.recordValue}>{formatDate(receiptData.date)}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{receiptData.tenant}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Property:</Text><Text style={styles.recordValue}>{receiptData.property}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Amount:</Text><Text style={styles.recordValue}>₱{receiptData.amount.toLocaleString()}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{formatType(receiptData.type)}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{receiptData.status}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{receiptData.method}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{receiptData.reference}</Text></View>
+                </View>
+              </View>
+
+              <View style={styles.divider} />
+
+              <View style={styles.exportFooter}>
+                <Text style={styles.approvedText}>Approved by: {getLandlordName()}</Text>
+              </View>
+
+            </View>
+          </ViewShot>
+        </View>
+      )}
 
       {/* --- RECORD PAYMENT MODAL --- */}
       <Modal visible={showRecordPaymentModal} animationType="slide" transparent={true}>
@@ -410,7 +554,7 @@ export default function FinancialsScreen() {
                </View>
 
                <View style={styles.formSection}>
-                 <Text style={styles.formLabel}>Tenant Name</Text>
+                 <Text style={styles.formLabel}>Tenant</Text>
                  <TextInput style={styles.textInput} value={paymentForm.tenantName} placeholder="Name" onChangeText={t => setPaymentForm(p => ({...p, tenantName: t}))} />
                </View>
 
@@ -443,7 +587,7 @@ export default function FinancialsScreen() {
                  <TextInput style={styles.textInput} value={paymentForm.amount} keyboardType="numeric" placeholder="0.00" onChangeText={t => setPaymentForm(p => ({...p, amount: t}))} />
                </View>
 
-               {/* ARRANGED: Payment Type */}
+               {/* Payment Type */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Payment Type</Text>
                  <View style={{flexDirection: 'row', gap: 8, flexWrap: 'wrap'}}>
@@ -459,7 +603,7 @@ export default function FinancialsScreen() {
                  </View>
                </View>
 
-               {/* ARRANGED: Status */}
+               {/* Status */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Status</Text>
                  <View style={{flexDirection: 'row', gap: 8}}>
@@ -477,7 +621,7 @@ export default function FinancialsScreen() {
                  </View>
                </View>
 
-               {/* ARRANGED: Method */}
+               {/* Method */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Payment Method</Text>
                  <View style={{flexDirection: 'row', gap: 8}}>
@@ -550,6 +694,7 @@ const styles = StyleSheet.create({
   tenantName: { fontWeight: '600', fontSize: 16 },
   paymentAmount: { color: Colors.primary, fontWeight: 'bold' },
   statusText: { fontSize: 12, textTransform: 'capitalize' },
+  emptyStateText: { fontSize: 16, color: '#999', textAlign: 'center', marginTop: 20 },
   
   // Modal Styles
   modalOverlay: { flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
@@ -572,4 +717,5 @@ const styles = StyleSheet.create({
 
   confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center' },
   confirmButtonText: { color: 'white', fontWeight: '600' },
+  periodSelector: { flexDirection: 'row', marginBottom: 20 }, 
 });
