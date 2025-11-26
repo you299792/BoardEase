@@ -165,6 +165,13 @@ export default function Favorites() {
       <BoardingHouseCard 
         house={item} 
         onPress={() => handleHousePress(item)}
+        isFavoriteProp={true}
+        onFavoriteChange={(listingId, newFavoriteStatus) => {
+          if (!newFavoriteStatus) {
+            // If unfavorited, remove from list
+            removeFromFavorites(listingId);
+          }
+        }}
       />
       <TouchableOpacity 
         style={styles.removeButton}
