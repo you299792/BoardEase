@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,9 +10,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback } from 'react';
 import TermsAndPrivacyScreen from '../../components/TermsAndPrivacy';
-import { getCurrentUser, getTenantProfile } from '../../lib/supabaseClient';
+import { getCurrentUser, getTenantProfile, signOut } from '../../lib/supabaseClient';
 
 export default function Menu() {
   const [showTerms, setShowTerms] = useState(false);
@@ -50,6 +49,14 @@ export default function Menu() {
       description: 'Manage your account information',
       screen: 'profile',
     },
+    // --- ENTRY POINT FOR RENTED PROPERTIES ---
+    {
+      icon: 'home',
+      title: 'Rented Properties',
+      description: 'View properties you are currently renting',
+      screen: 'rented', 
+    },
+    // -----------------------------------------
     {
       icon: 'heart',
       title: 'Favorites',
@@ -100,8 +107,8 @@ export default function Menu() {
         {
           text: "Log Out",
           style: "destructive",
-          onPress: () => {
-            console.log('User logged out');
+          onPress: async () => {
+            await signOut();
             router.replace('/');
           }
         }
@@ -113,6 +120,7 @@ export default function Menu() {
     if (item.action === 'showTerms') {
       setShowTerms(true);
     } else if (item.screen) {
+      // This will navigate to /(tenant)/rented when that item is clicked
       router.push(`/(tenant)/${item.screen}`);
     }
   };
@@ -127,7 +135,7 @@ export default function Menu() {
         <Text style={styles.title}>Menu</Text>
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* User Profile Section */}
         <View style={styles.profileSection}>
           {userData?.profile_image_url ? (
@@ -141,7 +149,9 @@ export default function Menu() {
             </View>
           )}
           <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>{userData?.first_name} {userData?.last_name}</Text>
+            <Text style={styles.profileName}>
+              {userData?.first_name ? `${userData.first_name} ${userData.last_name}` : 'Tenant'}
+            </Text>
             <Text style={styles.profileEmail}>{userData?.email}</Text>
             <Text style={styles.profileType}>Tenant</Text>
           </View>
@@ -158,7 +168,10 @@ export default function Menu() {
           {menuItems.map((item, index) => (
             <TouchableOpacity
               key={index}
-              style={styles.menuItem}
+              style={[
+                styles.menuItem,
+                index === menuItems.length - 1 && { borderBottomWidth: 0 }
+              ]}
               onPress={() => handleMenuPress(item)}
             >
               <View style={styles.menuItemLeft}>
