@@ -54,13 +54,28 @@ export default function LandlordProfile() {
         const { success, profile, error } = await fetchLandlordProfile(landlordId);
 
         if (success && profile) {
+          // Calculate combined rating from all listings
+          const listings = profile.listings || [];
+          let combinedRating = 0;
+          let totalReviews = 0;
+          
+          if (listings.length > 0) {
+            const ratingsData = listings.filter(l => l.rating && l.rating > 0);
+            if (ratingsData.length > 0) {
+              const totalRating = ratingsData.reduce((sum, listing) => sum + (listing.rating || 0), 0);
+              combinedRating = parseFloat((totalRating / ratingsData.length).toFixed(1));
+            }
+            totalReviews = listings.reduce((sum, listing) => sum + (listing.total_reviews || 0), 0);
+          }
+
           const landlordData = {
             id: profile.user_id,
             name: `${profile.users?.first_name || ''} ${profile.users?.last_name || ''}`.trim(),
             email: profile.users?.email,
             phone: profile.users?.phone,
             image: profile.users?.profile_image_url,
-            rating: profile.rating,
+            rating: combinedRating,
+            totalReviews: totalReviews,
             verified: profile.bank_account_verified,
             joinDate: profile.users?.created_at ? new Date(profile.users.created_at).getFullYear() : null,
             bio: profile.users?.bio,
@@ -70,10 +85,17 @@ export default function LandlordProfile() {
           // The listings are now directly available on the profile object
           const transformedListings = (profile.listings || []).map(listing => ({
             ...listing,
+            id: listing.id,
             name: listing.title,
             location: listing.city,
             price: listing.price_per_month,
             type: listing.room_type,
+            amenities: listing.amenities || [],
+            available: listing.available !== undefined ? listing.available : true,
+            landlord: {
+              name: landlordData.name || 'Unknown',
+              verified: landlordData.verified || false,
+            },
           }));
           setOtherListings(transformedListings);
         } else {
@@ -177,18 +199,18 @@ export default function LandlordProfile() {
         
         <View style={styles.statsRow}>
           <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.totalProperties ?? otherListings.length}</Text>
+            <Text style={styles.statValue}>{otherListings.length}</Text>
             <Text style={styles.statLabel}>Properties</Text>
           </View>
 
           <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.responseRate || '—'}</Text>
-            <Text style={styles.statLabel}>Response Rate</Text>
+            <Text style={styles.statValue}>{landlord.rating || 0}</Text>
+            <Text style={styles.statLabel}>Rating</Text>
           </View>
 
           <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.responseTime || '—'}</Text>
-            <Text style={styles.statLabel}>Response Time</Text>
+            <Text style={styles.statValue}>{landlord.totalReviews || 0}</Text>
+            <Text style={styles.statLabel}>Reviews</Text>
           </View>
         </View>
 
