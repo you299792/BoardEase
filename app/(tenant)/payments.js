@@ -22,7 +22,7 @@ import {
   supabase, 
   getCurrentUser, 
   getTenantBookings,
-  recordPayment // Function to handle the logic of adding a payment
+  recordPayment 
 } from '../../lib/supabaseClient';
 
 const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
@@ -36,7 +36,7 @@ export default function FinancialsScreen() {
   
   // Payment Flow State
   const [selectedBooking, setSelectedBooking] = useState(null); 
-  const [paymentMethod, setPaymentMethod] = useState('cash'); // Default to cash
+  const [paymentMethod, setPaymentMethod] = useState('cash'); 
   const [paymentDetails, setPaymentDetails] = useState({
     accountNumber: '',
     accountName: '',
@@ -62,7 +62,6 @@ export default function FinancialsScreen() {
     try {
       setIsLoading(true);
 
-      // 1. Get Current User
       const user = await getCurrentUser();
       if (!user) {
         Alert.alert('Error', 'Not logged in');
@@ -71,7 +70,6 @@ export default function FinancialsScreen() {
       }
       setCurrentUser(user);
 
-      // 2. Get Tenant Profile
       const { data: profile, error: profileError } = await supabase
         .from('tenant_profile')
         .select('id, user_id')
@@ -85,18 +83,28 @@ export default function FinancialsScreen() {
       }
       setTenantProfile(profile);
 
-      // 3. Load Bookings (To see active properties)
+      // --- 3. Load Bookings (Fixed Property Name Logic) ---
       const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profile.id);
       if (bookingsSuccess) {
-        const mappedBookings = bookingsData.map(b => ({
-          id: b.id,
-          landlordId: b.listing?.landlord_id, 
-          landlordName: b.listing?.landlord_profile?.users?.first_name || 'Landlord',
-          property: b.listing?.title,
-          amount: b.total_amount || b.listing?.price || 0,
-          status: b.status,
-          moveInDate: b.move_in_date
-        }));
+        const mappedBookings = bookingsData.map(b => {
+            // Handle variable naming from different Supabase query structures
+            const listingData = b.listing || b.listings || {}; 
+            const landlordProfile = listingData.landlord_profile || {};
+            const landlordUser = landlordProfile.users || {};
+            
+            // Check title OR name
+            const propertyTitle = listingData.title || listingData.name || 'Unknown Property';
+
+            return {
+              id: b.id,
+              landlordId: listingData.landlord_id, 
+              landlordName: landlordUser.first_name ? `${landlordUser.first_name}` : 'Landlord',
+              property: propertyTitle, // <--- Uses the robust check
+              amount: b.total_amount || listingData.price || listingData.rent || 0,
+              status: b.status,
+              moveInDate: b.move_in_date
+            };
+        });
         setBookings(mappedBookings);
       }
 
@@ -125,7 +133,7 @@ export default function FinancialsScreen() {
         allPayments = mappedPayments;
       }
 
-      // 5. Offline Fallback
+      // Offline Fallback
       const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
       if (localData) {
         const localPayments = JSON.parse(localData);
@@ -147,6 +155,23 @@ export default function FinancialsScreen() {
     setRefreshing(true);
     await loadData();
     setRefreshing(false);
+  };
+
+  // --- HELPER: Calculate Next Due Date ---
+  const calculateNextDueDate = (moveInDateStr) => {
+    if (!moveInDateStr) return 'N/A';
+    const moveIn = new Date(moveInDateStr);
+    const today = new Date();
+
+    if (moveIn > today) {
+      return moveIn.toISOString().split('T')[0];
+    }
+    
+    let nextDue = new Date(moveIn);
+    while (nextDue <= today) {
+      nextDue.setMonth(nextDue.getMonth() + 1);
+    }
+    return nextDue.toISOString().split('T')[0];
   };
 
   const calculateFinancialData = () => {
@@ -175,27 +200,30 @@ export default function FinancialsScreen() {
 
   const paymentHistory = payments.map(p => ({
     ...p,
-    type: p.type.charAt(0).toUpperCase() + p.type.slice(1),
-    status: p.status.charAt(0).toUpperCase() + p.status.slice(1)
+    type: p.type ? p.type.charAt(0).toUpperCase() + p.type.slice(1) : 'Payment',
+    status: p.status ? p.status.charAt(0).toUpperCase() + p.status.slice(1) : 'Unknown'
   }));
 
-  const upcomingDue = bookings.filter(b => b.status === 'approved').map(b => ({
-    id: `due_${b.id}`,
-    property: b.property,
-    amount: b.amount,
-    dueDate: new Date(new Date().setDate(new Date().getDate() + 5)).toISOString().split('T')[0], 
-    type: 'Rent',
-    bookingId: b.id,
-    landlordId: b.landlordId
-  }));
+  // --- DYNAMIC UPCOMING DUE LOGIC ---
+  const upcomingDue = bookings
+    .filter(b => b.status === 'approved' || b.status === 'occupied')
+    .map(b => ({
+      id: `due_${b.id}`,
+      property: b.property || 'Property Name', // Fallback if still undefined
+      amount: b.amount,
+      dueDate: calculateNextDueDate(b.moveInDate), 
+      type: 'Rent',
+      bookingId: b.id,
+      landlordId: b.landlordId
+    }));
 
   // --- PAYMENT ACTIONS ---
 
   const handlePayNow = (item) => {
     setSelectedBooking(item);
-    setPaymentMethod('cash'); // Reset to cash default
+    setPaymentMethod('cash'); 
     setPaymentDetails({
-      accountNumber: '', // Not needed for cash, but kept for others
+      accountNumber: '',
       accountName: currentUser?.user_metadata?.first_name || '',
       amount: item.amount.toString(),
       reference: ''
@@ -208,7 +236,6 @@ export default function FinancialsScreen() {
       Alert.alert('Error', 'Please enter amount');
       return;
     }
-    // If not cash, require account number
     if (paymentMethod !== 'cash' && !paymentDetails.accountNumber) {
        Alert.alert('Error', 'Please enter account number');
        return;
@@ -217,9 +244,6 @@ export default function FinancialsScreen() {
     const amountFloat = parseFloat(paymentDetails.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 
-    // For Cash, mark as pending until landlord confirms? Or completed if handing over?
-    // Let's assume completed for tracking purposes for now, or 'pending' if real world.
-    // Aligning with landlord code which marks manual entry as completed.
     const newPayment = {
       tenant_id: tenantProfile?.id,
       landlord_id: selectedBooking?.landlordId, 
@@ -296,7 +320,7 @@ export default function FinancialsScreen() {
   );
 
   const getStatusColor = (status) => {
-    const s = status.toLowerCase();
+    const s = status ? status.toLowerCase() : '';
     if (s === 'completed' || s === 'paid') return '#10b981';
     if (s === 'pending') return '#f59e0b';
     return '#666';
@@ -374,7 +398,9 @@ export default function FinancialsScreen() {
              upcomingDue.map((item) => (
                 <View key={item.id} style={styles.paymentItem}>
                    <View style={{flex:1}}>
-                      <Text style={styles.propertyName}>{item.property}</Text>
+                      {/* --- PROPERTY NAME IS RENDERED HERE --- */}
+                      <Text style={styles.propertyName}>{item.property}</Text> 
+                      
                       <Text style={styles.paymentDate}>Due: {item.dueDate}</Text>
                       <Text style={styles.paymentType}>{item.type}</Text>
                    </View>
