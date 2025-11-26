@@ -11,7 +11,8 @@ import {
   TextInput,
   ActivityIndicator,
   Platform,
-  BackHandler
+  BackHandler,
+  Image
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -24,6 +25,7 @@ import {
   supabase, 
   getCurrentUser, 
   getTenantBookings,
+  getTenantProfile // Added to fetch real name
 } from '../../lib/supabaseClient';
 
 const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
@@ -35,7 +37,6 @@ export default function FinancialsScreen() {
   const [payments, setPayments] = useState([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
-  // Payment Flow State
   const [selectedBooking, setSelectedBooking] = useState(null); 
   const [paymentMethod, setPaymentMethod] = useState('cash'); 
   const [paymentDetails, setPaymentDetails] = useState({
@@ -52,6 +53,7 @@ export default function FinancialsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [tenantProfile, setTenantProfile] = useState(null);
+  const [tenantName, setTenantName] = useState(''); // Store fetched name
 
   useEffect(() => {
     loadData();
@@ -85,24 +87,43 @@ export default function FinancialsScreen() {
       }
       setCurrentUser(user);
 
-      const { data: profile, error: profileError } = await supabase
-        .from('tenant_profile')
-        .select('id, user_id')
-        .eq('user_id', user.id)
-        .single();
+      // 1. Get Full Tenant Profile (Name, ID, etc.)
+      // We use the helper or direct query to get the name
+      let fetchedTenantName = 'Tenant';
+      let profileId = null;
 
-      if (!profile) {
-        console.warn("Tenant profile not found or error:", profileError);
+      const { success: profileSuccess, user: profileUser, error: profileError } = await getTenantProfile(user.id);
+      
+      if (profileSuccess && profileUser) {
+        // profileUser contains the joined 'users' table data usually
+        fetchedTenantName = `${profileUser.first_name || ''} ${profileUser.last_name || ''}`.trim() || 'Tenant';
+        profileId = profileUser.id; // Assuming the helper returns the profile object which has the ID
+        
+        // Fallback if helper structure is different, try direct query for ID if needed
+        if (!profileId) {
+             const { data: rawProfile } = await supabase
+            .from('tenant_profile')
+            .select('id')
+            .eq('user_id', user.id)
+            .single();
+            profileId = rawProfile?.id;
+        }
+      }
+
+      setTenantName(fetchedTenantName);
+      setTenantProfile({ id: profileId });
+
+      if (!profileId) {
         setIsLoading(false);
         return;
       }
-      setTenantProfile(profile);
 
-      // Load Bookings
-      const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profile.id);
+      // 2. Load Bookings
+      let currentBookings = [];
+      const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profileId);
+      
       if (bookingsSuccess) {
-        const mappedBookings = bookingsData.map(b => {
-          // Handle listing data structure safely
+        currentBookings = bookingsData.map(b => {
           const listing = b.listing || b.listings || {};
           const landlord = listing.landlord_profile?.users || {};
           
@@ -116,35 +137,45 @@ export default function FinancialsScreen() {
             moveInDate: b.move_in_date
           };
         });
-        setBookings(mappedBookings);
+        setBookings(currentBookings);
       }
 
-      // Load Payments
+      // 3. Load Payments
       const { data: dbPayments, error: paymentsError } = await supabase
         .from('payments')
         .select('*')
-        .or(`tenant_id.eq.${profile.id},tenant_name.eq.${user.user_metadata?.first_name}`) 
+        .or(`tenant_id.eq.${profileId},tenant_name.eq.${user.user_metadata?.first_name}`) 
         .order('payment_date', { ascending: false });
 
       let allPayments = [];
 
       if (!paymentsError && dbPayments) {
-        const mappedPayments = dbPayments.map(p => ({
-          ...p,
-          id: p.id,
-          landlordName: 'Landlord', // Ideally fetched via relation
-          property: p.property_title || 'Unknown Property',
-          amount: parseFloat(p.amount) || 0,
-          status: p.status || 'completed',
-          date: p.payment_date || p.created_at,
-          type: p.payment_type || 'rent',
-          method: p.method || 'Manual',
-          reference: p.reference || 'N/A',
-        }));
+        const mappedPayments = dbPayments.map(p => {
+          // Resolve Landlord Name
+          const matchedBooking = currentBookings.find(b => b.landlordId === p.landlord_id);
+          const resolvedLandlordName = matchedBooking ? matchedBooking.landlordName : 'Landlord';
+          
+          // Resolve Tenant Name (DB Value -> Fetched Profile Name -> Fallback)
+          const resolvedTenantName = p.tenant_name || fetchedTenantName;
+
+          return {
+            ...p,
+            id: p.id,
+            landlordName: resolvedLandlordName, 
+            tenantName: resolvedTenantName, // <--- Uses the correct name
+            property: p.property_title || 'Unknown Property',
+            amount: parseFloat(p.amount) || 0,
+            status: p.status || 'completed',
+            date: p.payment_date || p.created_at,
+            type: p.payment_type || 'rent',
+            method: p.method || 'Manual',
+            reference: p.reference || 'N/A',
+          };
+        });
         allPayments = mappedPayments;
       }
 
-      // Offline Fallback
+      // 4. Offline Fallback
       const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
       if (localData) {
         const localPayments = JSON.parse(localData);
@@ -195,14 +226,26 @@ export default function FinancialsScreen() {
   };
 
   const handleViewReceipt = (payment) => {
+    // Normalize receipt payload so tenant name is always present
+    const normalized = {
+      ...payment,
+      tenantName: payment.tenantName || payment.tenant_name || tenantName || 'Tenant',
+      landlordName: payment.landlordName || payment.landlord_name || 'Landlord',
+      property: payment.property || payment.property_title || payment.property_title || 'Property',
+      amount: payment.amount || payment.value || 0,
+      date: payment.date || payment.payment_date || payment.created_at,
+      status: payment.status || 'Completed',
+      method: payment.method || payment.payment_type || 'Manual',
+    };
+
     Alert.alert(
       'Payment Options',
-      `Ref: ${payment.reference}\nAmount: ₱${payment.amount.toLocaleString()}`,
+      `Ref: ${normalized.reference}\nAmount: ₱${parseFloat(normalized.amount).toLocaleString()}`,
       [
         { text: 'Close', style: 'cancel' },
         { 
           text: 'Download Receipt', 
-          onPress: () => setReceiptData(payment) 
+          onPress: () => setReceiptData(normalized) 
         }
       ]
     );
@@ -257,7 +300,8 @@ export default function FinancialsScreen() {
       dueDate: calculateNextDueDate(b.moveInDate), 
       type: 'Rent',
       bookingId: b.id,
-      landlordId: b.landlordId
+      landlordId: b.landlordId,
+      landlordName: b.landlordName
     }));
 
   const handlePayNow = (item) => {
@@ -265,7 +309,7 @@ export default function FinancialsScreen() {
     setPaymentMethod('cash'); 
     setPaymentDetails({
       accountNumber: '',
-      accountName: currentUser?.user_metadata?.first_name || '',
+      accountName: tenantName, // Pre-fill with fetched name
       amount: item.amount.toString(),
       reference: ''
     });
@@ -284,11 +328,14 @@ export default function FinancialsScreen() {
 
     const amountFloat = parseFloat(paymentDetails.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    
+    // Use the fetched tenant name
+    const nameToUse = tenantName || 'Tenant';
 
     const newPayment = {
       tenant_id: tenantProfile?.id,
       landlord_id: selectedBooking?.landlordId, 
-      tenant_name: currentUser?.user_metadata?.first_name + ' ' + currentUser?.user_metadata?.last_name,
+      tenant_name: nameToUse,
       property_title: selectedBooking?.property,
       amount: amountFloat,
       payment_type: 'rent',
@@ -304,6 +351,8 @@ export default function FinancialsScreen() {
         date: newPayment.payment_date, 
         paidDate: newPayment.payment_date,
         property: newPayment.property_title,
+        tenantName: nameToUse,
+        landlordName: selectedBooking?.landlordName || 'Landlord',
         type: 'Rent',
         status: 'Completed'
     };
@@ -359,6 +408,10 @@ export default function FinancialsScreen() {
     return new Date(dateStr).toISOString().split('T')[0];
   };
 
+  const formatType = (type) => {
+      return type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Payment';
+  };
+
   return (
     <>
       <Stack.Screen
@@ -382,6 +435,7 @@ export default function FinancialsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         
+        {/* Period Selector */}
         <View style={styles.periodSelector}>
           {['monthly', 'quarterly', 'yearly'].map(p => (
              <TouchableOpacity 
@@ -396,6 +450,7 @@ export default function FinancialsScreen() {
           ))}
         </View>
 
+        {/* Overview Cards */}
         <View style={styles.overviewSection}>
           <Text style={styles.sectionTitle}>Overview</Text>
           <View style={styles.statsGrid}>
@@ -416,6 +471,7 @@ export default function FinancialsScreen() {
           </View>
         </View>
 
+        {/* Upcoming / Due Payments */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Upcoming Due</Text>
@@ -443,6 +499,7 @@ export default function FinancialsScreen() {
           )}
         </View>
 
+        {/* Payment History */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Payment History</Text>
@@ -461,7 +518,7 @@ export default function FinancialsScreen() {
                      <Text style={styles.paymentAmount}>₱{p.amount.toLocaleString()}</Text>
                   </View>
                   <View style={{flexDirection:'row', justifyContent:'space-between', marginTop:4}}>
-                     <Text style={styles.paymentDate}>{p.date}</Text>
+                     <Text style={styles.paymentDate}>{formatDate(p.date)}</Text>
                      <View style={{flexDirection:'row', alignItems:'center', gap:4}}>
                         <View style={{width:6, height:6, borderRadius:3, backgroundColor: getStatusColor(p.status)}} />
                         <Text style={[styles.statusText, {color: getStatusColor(p.status)}]}>{p.status}</Text>
@@ -474,9 +531,10 @@ export default function FinancialsScreen() {
             ))
           )}
         </View>
+
       </ScrollView>
 
-      {/* --- HIDDEN VIEW: RECEIPT EXPORT --- */}
+      {/* --- HIDDEN VIEW: RECEIPT EXPORT (PNG) --- */}
       {receiptData && (
         <View style={{ position: 'absolute', left: -10000, top: 0, opacity: 1, backgroundColor: 'white' }} pointerEvents="none">
           <ViewShot ref={singleReceiptRef} options={{ format: "png", quality: 1.0 }} style={{ backgroundColor: 'white' }}>
@@ -493,10 +551,15 @@ export default function FinancialsScreen() {
               <View style={styles.recordsList}>
                 <View style={styles.recordBlock}>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Date:</Text><Text style={styles.recordValue}>{formatDate(receiptData.date)}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{currentUser?.user_metadata?.first_name}</Text></View>
+                  
+                  {/* Tenant Name */}
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{receiptData.tenantName}</Text></View>
+                  
+                  {/* Property Name */}
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Property:</Text><Text style={styles.recordValue}>{receiptData.property}</Text></View>
+                  
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Amount:</Text><Text style={styles.recordValue}>₱{receiptData.amount.toLocaleString()}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{receiptData.type}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{formatType(receiptData.type)}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{receiptData.status}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{receiptData.method}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{receiptData.reference}</Text></View>
@@ -504,7 +567,8 @@ export default function FinancialsScreen() {
               </View>
               <View style={styles.divider} />
               <View style={styles.exportFooter}>
-                <Text style={styles.approvedText}>Received by: {receiptData.landlordName}</Text>
+                {/* Updated Footer to Approved By: Landlord */}
+                <Text style={styles.approvedText}>Approved by: {receiptData.landlordName}</Text>
               </View>
             </View>
           </ViewShot>
@@ -564,6 +628,7 @@ export default function FinancialsScreen() {
                  {paymentMethod === 'cash' ? 'Record Cash Payment' : 'Confirm Payment'}
                </Text>
             </TouchableOpacity>
+
           </View>
         </View>
       </Modal>
