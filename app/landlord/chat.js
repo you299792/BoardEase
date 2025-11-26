@@ -277,11 +277,21 @@ export default function LandlordChat() {
 
       // Create booking record in database
       if (listingId && tenantProfileId && landlordProfileId) {
+        // Validate booking date - ensure it's in YYYY-MM-DD format
+        let bookingDateStr = null;
+        if (bookingMessage.bookingDate && bookingMessage.bookingDate !== 'Not specified') {
+          // Try to parse and format the date
+          const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+          if (dateRegex.test(bookingMessage.bookingDate)) {
+            bookingDateStr = bookingMessage.bookingDate;
+          }
+        }
+
         const bookingData = {
           listingId: listingId,
           tenantId: tenantProfileId,
           landlordId: landlordProfileId,
-          moveInDate: bookingMessage.bookingDate || new Date().toISOString().split('T')[0],
+          moveInDate: bookingDateStr || null, // Let createBooking handle default
           moveOutDate: null,
           numberOfGuests: parseInt(bookingMessage.bookingGuests) || 1,
           specialRequests: bookingMessage.text || '',
@@ -297,7 +307,10 @@ export default function LandlordChat() {
       }
 
       // Send approval message with amount details
-      const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${property} has been approved. \n\n📅 Move-in date: ${bookingMessage.bookingDate || 'Not specified'} \n👥 Guests: ${bookingMessage.bookingGuests || '1'} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()} \n\nWe'll contact you soon for the next steps and payment details.`;
+      const displayDate = bookingMessage.bookingDate && bookingMessage.bookingDate !== 'Not specified' 
+        ? bookingMessage.bookingDate 
+        : 'To be confirmed';
+      const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${property} has been approved. \n\n📅 Move-in date: ${displayDate} \n👥 Guests: ${bookingMessage.bookingGuests || '1'} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()} \n\nWe'll contact you soon for the next steps and payment details.`;
       await sendLandlordMessage(approvalMessage);
 
       setShowBookingModal(false);
