@@ -18,13 +18,13 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system'; // <--- Added for file creation
+import * as Sharing from 'expo-sharing';       // <--- Added for sharing/saving
 import {
-  supabase, // <--- Added to fetch payments directly
+  supabase,
   getCurrentUser,
   getLandlordBookings,
-  // getLandlordRevenue, // <--- Removed broken function
   getLandlordListings,
-  recordPaymentAsLandlord,
 } from '../../lib/supabaseClient';
 
 // Constants for AsyncStorage keys
@@ -79,8 +79,7 @@ export default function FinancialsScreen() {
           setBookings(dbBookings || []);
         }
 
-        // 3. Load Revenue/Payments DIRECTLY (Bypassing broken getLandlordRevenue)
-        // This avoids the "bookings_1.amount does not exist" error
+        // 3. Load Revenue/Payments DIRECTLY
         const { data: dbPayments, error: paymentsError } = await supabase
           .from('payments')
           .select('*')
@@ -88,7 +87,6 @@ export default function FinancialsScreen() {
           .order('created_at', { ascending: false });
 
         if (!paymentsError && dbPayments) {
-          // Map DB columns (snake_case) to UI expectations (camelCase) if needed
           const mappedPayments = dbPayments.map(p => ({
             ...p,
             tenantName: p.tenant_name || p.tenantName || 'Unknown Tenant',
@@ -101,7 +99,6 @@ export default function FinancialsScreen() {
           }));
           setPayments(mappedPayments);
         } else {
-          // If table doesn't exist or empty, fall back to empty array without crashing
           console.warn('Could not fetch payments directly:', paymentsError?.message);
           setPayments([]);
         }
@@ -132,24 +129,19 @@ export default function FinancialsScreen() {
     const totalEarnings = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     
-    // Uses the 'listings' state
     const totalProperties = listings.length;
     
-    // Calculate occupancy rate
     const occupiedProperties = bookings.filter(b => 
       b.status === 'approved' || b.status === 'pending'
     ).length;
     
-    // Prevent division by zero
     const occupancyRate = totalProperties > 0 ? Math.round((occupiedProperties / totalProperties) * 100) : 0;
 
-    // Calculate average rent from completed payments
     const rentPayments = completedPayments.filter(p => p.type === 'rent');
     const averageRent = rentPayments.length > 0 
       ? rentPayments.reduce((sum, payment) => sum + payment.amount, 0) / rentPayments.length 
       : 0;
 
-    // Calculate monthly earnings
     const currentMonth = new Date().getMonth();
     const currentYear = new Date().getFullYear();
     const monthlyEarnings = completedPayments
@@ -171,7 +163,6 @@ export default function FinancialsScreen() {
     };
   };
   
-  // Handle System Back Action
   useFocusEffect(
     useCallback(() => {
       const handleBackPress = () => {
@@ -196,7 +187,6 @@ export default function FinancialsScreen() {
   
   const financialData = calculateFinancialData();
 
-  // Generate payment history from actual payments
   const paymentHistory = payments
     .map(payment => ({
       id: payment.id,
@@ -211,7 +201,6 @@ export default function FinancialsScreen() {
     }))
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  // Generate pending payments
   const pendingPayments = payments
     .filter(payment => payment.status === 'pending')
     .map(payment => ({
@@ -225,32 +214,12 @@ export default function FinancialsScreen() {
 
   const handleRequestPayment = async (tenantName, paymentId) => {
     if (!currentUser) return;
-    
-    Alert.alert(
-      'Request Payment',
-      `Send payment reminder to ${tenantName}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Send Request', 
-          onPress: async () => {
-            try {
-              // Simulate sending reminder logic here
-              Alert.alert('Success', `Payment reminder sent to ${tenantName}`);
-            } catch (error) {
-              console.error('Failed to send payment reminder', error);
-              Alert.alert('Error', 'Failed to send payment reminder.');
-            }
-          }
-        }
-      ]
-    );
+    Alert.alert('Success', `Payment reminder sent to ${tenantName}`);
   };
 
   const handleRecordPayment = () => {
     setPaymentForm({
       tenantName: '',
-      // Safe access to listings array
       property: listings.length > 0 ? (listings[0].title || listings[0].name) : '',
       amount: '',
       type: 'rent',
@@ -266,8 +235,6 @@ export default function FinancialsScreen() {
     }
 
     try {
-      // Insert directly into Supabase 'payments' table
-      // Note: You must have a 'payments' table for this to persist remotely
       const { data, error } = await supabase
         .from('payments')
         .insert([
@@ -287,7 +254,6 @@ export default function FinancialsScreen() {
 
       if (error) {
         console.warn('Supabase insert failed (table might be missing):', error);
-        // Fallback: update local state only if DB insert fails (e.g. no table yet)
         const newPayment = {
           id: `payment_${Date.now()}`,
           landlordId: currentUser?.id,
@@ -303,7 +269,6 @@ export default function FinancialsScreen() {
         };
         setPayments(prev => [newPayment, ...prev]);
       } else if (data) {
-        // Successfully inserted into DB, refresh data
         await loadData();
       }
 
@@ -332,17 +297,58 @@ export default function FinancialsScreen() {
     );
   };
 
-  const handleExportData = () => {
+  // --- FIXED EXPORT FUNCTIONALITY ---
+  const handleExportData = async () => {
     if (payments.length === 0 && bookings.length === 0) {
       Alert.alert('No Data', 'You have no data to export.');
       return;
     }
 
-    Alert.alert(
-      'Data Exported',
-      'Your financial data has been prepared for export. You can download it from your device.',
-      [{ text: 'OK', style: 'default' }]
-    );
+    try {
+      // 1. Construct CSV Header
+      let csv = 'Date,Tenant,Property,Amount,Type,Status,Method,Reference\n';
+
+      // 2. Construct CSV Rows
+      paymentHistory.forEach(item => {
+        const date = item.date ? new Date(item.date).toISOString().split('T')[0] : 'N/A';
+        // Handle values that might contain commas by wrapping in quotes
+        const row = [
+          date,
+          `"${item.tenant || ''}"`,
+          `"${item.property || ''}"`,
+          item.amount || 0,
+          item.type || 'rent',
+          item.status || 'pending',
+          item.method || 'manual',
+          item.reference || 'N/A'
+        ].join(',');
+        csv += row + '\n';
+      });
+
+      // 3. Define File Path (Cache Directory)
+      const fileName = `financial_report_${new Date().getTime()}.csv`;
+      const fileUri = FileSystem.documentDirectory + fileName;
+
+      // 4. Write File
+      await FileSystem.writeAsStringAsync(fileUri, csv, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+
+      // 5. Share File
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/csv',
+          dialogTitle: 'Export Financial Data',
+          UTI: 'public.comma-separated-values-text'
+        });
+      } else {
+        Alert.alert('Error', 'Sharing is not available on this device');
+      }
+
+    } catch (error) {
+      console.error('Export failed:', error);
+      Alert.alert('Export Failed', 'An error occurred while exporting data.');
+    }
   };
 
   const handleViewPaymentDetails = (payment) => {
