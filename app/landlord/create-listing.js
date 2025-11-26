@@ -134,12 +134,10 @@ export default function CreateListing() {
     setPhotos([]);
     setFloorPlans([]);
     
-    // Crucial: Explicitly set editing to false
     setIsEditing(false);
     setHeading('Create Property Listing');
     setSubmitText('Create Listing');
     
-    // Reset location
     setSelectedLocation(null);
     setMapAddress('');
   };
@@ -162,28 +160,38 @@ export default function CreateListing() {
       const loadListingForEdit = async () => {
         const listingId = params?.id;
         
-        // --- FIX: Strict check for ID ---
-        // If ID is undefined, null, or the strings 'undefined'/'null'
+        // Strict check for ID
         if (!listingId || listingId === 'undefined' || listingId === 'null') {
           resetForm();
           return;
         }
 
-        // If we have a valid ID, assume we are editing
         console.log('Edit ID detected:', listingId);
         setIsEditing(true);
         setHeading('Edit Property Listing');
         setSubmitText('Update Listing');
         
-        // Try to find listing in context first
+        // 1. Try to find listing in context first
         let existingListing = listings?.find(b => String(b.id) === String(listingId));
 
-        // If not found in context, attempt to fetch landlord listings and find it.
-        if (!existingListing && currentUser) {
+        // 2. IMPORTANT: Check if the context listing is "incomplete" (missing price). 
+        // Sometimes list views don't return the price field. If so, force a DB fetch.
+        const hasPriceData = existingListing && (
+            existingListing.price !== undefined || 
+            existingListing.rent !== undefined || 
+            existingListing.monthly_rent !== undefined
+        );
+
+        // If not found in context OR context data is incomplete, fetch from DB
+        if ((!existingListing || !hasPriceData) && currentUser) {
+          console.log('Listing not found in context or missing price data. Fetching from DB...');
           try {
             const { success, listings: dbListings, error } = await getLandlordListings(currentUser.id);
             if (success && Array.isArray(dbListings)) {
-              existingListing = dbListings.find(b => String(b.id) === String(listingId));
+              const foundInDb = dbListings.find(b => String(b.id) === String(listingId));
+              if (foundInDb) {
+                existingListing = foundInDb;
+              }
             } else {
               console.warn('Could not load landlord listings for edit:', error);
             }
@@ -193,25 +201,38 @@ export default function CreateListing() {
         }
 
         if (existingListing) {
-          console.log('Loading editing data for:', existingListing.name || existingListing.title || existingListing.id);
-          // Map fields from existingListing (support both name/title keys)
+          console.log('Loading editing data for ID:', existingListing.id);
+          
           setTitle(existingListing.name ?? existingListing.title ?? '');
           setAddress(existingListing.location ?? existingListing.address ?? '');
           
-          const priceValue = existingListing.price ?? existingListing.rent;
-          setRent(priceValue !== null && priceValue !== undefined ? String(priceValue) : '');
+          // --- FIX: ROBUST PRICE LOADING ---
+          // Check all possible field names for price
+          const priceValue = existingListing.price ?? 
+                             existingListing.rent ?? 
+                             existingListing.monthly_rent ?? 
+                             existingListing.amount ?? 
+                             existingListing.cost;
+
+          // Convert to string safely, handling 0 correctly
+          if (priceValue !== null && priceValue !== undefined) {
+             setRent(String(priceValue));
+          } else {
+             console.warn('Price field is missing in listing object:', Object.keys(existingListing));
+             setRent(''); // Default to empty if genuinely missing
+          }
 
           setDescription(existingListing.description ?? existingListing.details ?? '');
           setHouseType(existingListing.type ?? existingListing.houseType ?? 'Single Room');
           setDistance(existingListing.distance ?? '');
           setRules(existingListing.rules ?? []);
-          setMaxGuests(String(existingListing.max_guests || ''));
+          setMaxGuests(String(existingListing.max_guests || existingListing.maxOccupants || ''));
           setTotalRooms(String(existingListing.total_rooms || ''));
           setAvailableRooms(String(existingListing.available_rooms || ''));
           setPostalCode(existingListing.postal_code || '');
           setBedrooms(String(existingListing.bedrooms || ''));
           setBathrooms(String(existingListing.bathrooms || ''));
-          setSize(String(existingListing.size || ''));
+          setSize(String(existingListing.size || existingListing.area || ''));
           setMinStay(String(existingListing.min_stay || ''));
           setAvailable(existingListing.available !== false);
           setAvailableFrom(existingListing.availableFrom ?? '');
@@ -264,13 +285,10 @@ export default function CreateListing() {
           }
           setAmenities(amenitiesObj);
 
-          // Photos / images
           setPhotos(existingListing.images || existingListing.photos || []);
 
         } else {
-          // --- FIX: Revert if listing not found ---
-          // If we had an ID but couldn't find the listing, go back to create mode
-          // so the user doesn't see a blank "Edit" form.
+          // Revert if listing not found
           console.warn('Listing to edit not found in context or DB. Reverting to Create mode.');
           resetForm();
         }
@@ -285,7 +303,6 @@ export default function CreateListing() {
     try {
       setIsLoadingLocation(true);
       
-      // Request location permission
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission Denied', 'Location permission is required to use this feature.');
@@ -293,14 +310,12 @@ export default function CreateListing() {
         return;
       }
 
-      // Get current location
       let location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
 
       const { latitude, longitude } = location.coords;
       
-      // Update map region to current location
       setCurrentRegion({
         latitude,
         longitude,
@@ -308,7 +323,6 @@ export default function CreateListing() {
         longitudeDelta: 0.01,
       });
 
-      // Reverse geocode to get address
       const [addressResult] = await Location.reverseGeocodeAsync({
         latitude,
         longitude,
@@ -410,7 +424,6 @@ export default function CreateListing() {
   const openMapModal = async () => {
     setShowMapModal(true);
     
-    // If we have existing location data, center map on it
     if (selectedLocation) {
       setCurrentRegion({
         latitude: selectedLocation.latitude,
@@ -420,11 +433,9 @@ export default function CreateListing() {
       });
       setMapAddress(selectedLocation.address);
     } else if (address) {
-      // Try to geocode the existing address
       setMapAddress(address);
       await geocodeAddress(address);
     } else {
-      // Get current location if no existing data
       await getCurrentLocation();
     }
   };
@@ -433,12 +444,10 @@ export default function CreateListing() {
     setShowMapModal(false);
   };
 
-  // Handle map region change
   const handleRegionChange = (region) => {
     setCurrentRegion(region);
   };
 
-  // Handle map press to set marker
   const handleMapPress = (event) => {
     const { coordinate } = event.nativeEvent;
     setSelectedLocation({
@@ -447,7 +456,6 @@ export default function CreateListing() {
     });
   };
 
-  // Handle address search
   const handleAddressSearch = async () => {
     if (mapAddress.trim()) {
       const coordinates = await geocodeAddress(mapAddress.trim());
@@ -460,10 +468,8 @@ export default function CreateListing() {
     }
   };
 
-  // Use current location
   const handleUseCurrentLocation = async () => {
     await getCurrentLocation();
-    // Set marker at current location
     setSelectedLocation({
       latitude: currentRegion.latitude,
       longitude: currentRegion.longitude,
@@ -473,7 +479,7 @@ export default function CreateListing() {
 
   const handleMapLocationSelect = () => {
     if (selectedLocation) {
-      setAddress(selectedLocation.address); // Also update the main address field
+      setAddress(selectedLocation.address); 
       Alert.alert('Location Saved', 'Property location has been set successfully!');
       closeMapModal();
     } else {
@@ -487,7 +493,6 @@ export default function CreateListing() {
     Alert.alert('Location Cleared', 'Property location has been removed.');
   };
 
-  // Function to open Google Maps with the selected location
   const openInGoogleMaps = () => {
     if (selectedLocation) {
       const { latitude, longitude } = selectedLocation;
@@ -498,7 +503,6 @@ export default function CreateListing() {
     }
   };
 
-  // Toggle map type
   const toggleMapType = () => {
     setMapType(mapType === 'standard' ? 'satellite' : 'standard');
   };
@@ -523,7 +527,6 @@ export default function CreateListing() {
   };
 
   const handleRentChange = (text) => {
-    // allow only numbers and one dot
     let sanitized = text.replace(/[^0-9.]/g, '');
     const parts = sanitized.split('.');
     if (parts.length > 2) {
@@ -535,8 +538,10 @@ export default function CreateListing() {
   const validateAndSubmit = async () => {
     if (!title.trim()) return Alert.alert('Validation', 'Title is required');
     if (!address.trim()) return Alert.alert('Validation', 'Address is required');
+    
     const parsedPrice = parseFloat(rent);
-    if (rent === '' || Number.isNaN(parsedPrice)) return Alert.alert('Validation', 'Rent must be a number');
+    if (rent === '' || Number.isNaN(parsedPrice)) return Alert.alert('Validation', 'Monthly Rent must be a number');
+    
     if (!description.trim()) return Alert.alert('Validation', 'Description is required');
 
     if (!currentUser) {
@@ -556,7 +561,7 @@ export default function CreateListing() {
         city: address.split(',').pop()?.trim() || address,
         price: parsedPrice,
         houseType,
-        distance: distance?.trim() || null, // include distance so it's saved
+        distance: distance?.trim() || null,
         availableFrom,
         amenities: amenitiesArray,
         maxGuests: parseInt(maxGuests) || 1,
@@ -574,12 +579,9 @@ export default function CreateListing() {
       };
 
       let result;
-      // Use isEditing + params.id to determine update vs create.
       if ((isEditing || params?.id) && params?.id) {
-        // Update existing listing
         result = await updateListingDB(params.id, listingData);
         if (result.success) {
-          // Update context if available
           try {
             const updatedRecord = result.listing || { ...listingData, id: params.id };
             if (typeof updateListing === 'function') updateListing(params.id, updatedRecord);
@@ -592,7 +594,6 @@ export default function CreateListing() {
               text: 'OK',
               onPress: () => {
                 resetForm();
-                // Go back to the previous screen if possible, otherwise to the dashboard
                 if (router.canGoBack()) {
                   router.back();
                 } else {
@@ -605,7 +606,6 @@ export default function CreateListing() {
           Alert.alert('Error', result.error || 'Failed to update listing');
         }
       } else {
-        // Create new listing
         result = await createListingDB(listingData, currentUser.id);
         if (result.success) {
           try {
@@ -636,12 +636,10 @@ export default function CreateListing() {
   };
 
   const handleCancel = () => {
-    // Check if we can go back in the navigation stack
     try {
       if (router.canGoBack()) {
         router.back();
       } else {
-        // If not, replace the current screen with the landlord dashboard
         router.replace('/landlord');
       }
     } catch (e) {
@@ -663,7 +661,6 @@ export default function CreateListing() {
         <Text style={styles.label}>Title</Text>
         <TextInput style={styles.input} placeholder="e.g., Cozy 2BR near downtown" value={title} onChangeText={setTitle} />
 
-        {/* Location Section with Real Map Integration */}
         <View style={styles.locationSection}>
           <View style={styles.locationHeader}>
             <Text style={styles.label}>Property Location</Text>
@@ -981,7 +978,6 @@ export default function CreateListing() {
         </View>
       </Modal>
 
-      {/* Real Interactive Google Maps Modal */}
       <Modal
         visible={showMapModal}
         animationType="slide"
@@ -1500,8 +1496,7 @@ const styles = StyleSheet.create({
   mapModalButtons: {
     flexDirection: 'row',
     gap: 12,
-    padding: 20,
-    paddingTop: 0,
+    padding: 20,    paddingTop: 0,
   },
   ruleInput: {
     borderWidth: 1,
