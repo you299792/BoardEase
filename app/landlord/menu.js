@@ -1,4 +1,3 @@
-// app/landlord/menu.js
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -21,7 +20,6 @@ export default function LandlordMenuScreen() {
   const [loading, setLoading] = useState(true);
   const [isShareModalVisible, setShareModalVisible] = useState(false);
 
-  // Reload user data when screen is focused
   useFocusEffect(
     useCallback(() => {
       loadUserData();
@@ -34,17 +32,13 @@ export default function LandlordMenuScreen() {
       const currentUser = await getCurrentUser();
       
       if (currentUser) {
-        // Fetch landlord profile for complete user data
         const { success, profile } = await getLandlordProfile(currentUser.id);
         if (success && profile) {
-          // Set userData to the nested users object so we can access first_name, last_name, profile_image_url
           setUserData(profile.users);
         } else {
-          // Fallback to auth user if profile fetch fails
           setUserData(currentUser);
         }
       } else {
-        // No user logged in, redirect to auth
         router.replace('/(auth)');
       }
     } catch (error) {
@@ -60,10 +54,7 @@ export default function LandlordMenuScreen() {
       "Log Out",
       "Are you sure you want to log out?",
       [
-        {
-          text: "Cancel",
-          style: "cancel"
-        },
+        { text: "Cancel", style: "cancel" },
         {
           text: "Log Out",
           style: "destructive",
@@ -92,6 +83,14 @@ export default function LandlordMenuScreen() {
       description: 'Manage your account information',
       screen: 'profile',
     },
+    // --- NEW ITEM: MY TENANTS ---
+    {
+      icon: 'people', 
+      title: 'My Tenants',
+      description: 'View currently occupied properties',
+      screen: 'tenants',
+    },
+    // ----------------------------
     {
       icon: 'chatbubbles',
       title: 'Tenant Inquiries',
@@ -127,6 +126,8 @@ export default function LandlordMenuScreen() {
   const handleMenuPress = (item) => {
     if (item.screen === 'profile') {
       router.push('/landlord/edit-profile');
+    } else if (item.screen === 'tenants') {
+      router.push('/landlord/tenants'); // Navigates to the new file
     } else if (item.screen === 'inquiries') {
       router.push('/landlord/inquiries');
     } else if (item.screen === 'financials') {
@@ -182,7 +183,6 @@ export default function LandlordMenuScreen() {
               </TouchableOpacity>
             </View>
 
-            
             <View style={styles.menuSection}>
               {menuItems.map((item, index) => (
                 <TouchableOpacity
@@ -207,7 +207,6 @@ export default function LandlordMenuScreen() {
               ))}
             </View>
 
-            
             <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
               <Ionicons name="log-out" size={20} color="#dc2626" />
               <Text style={styles.logoutText}>Log Out</Text>
