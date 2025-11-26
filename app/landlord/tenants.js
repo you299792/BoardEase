@@ -46,10 +46,12 @@ export default function MyTenantsScreen() {
         // Normalize booking shape to what the UI expects
         const normalized = bookings.map(b => ({
           ...b,
-          // `getLandlordBookings` returns `listing` and `tenant` keys
+          // `getLandlordBookings` now returns `listing` and `tenant` (tenant is user object)
           listings: b.listing ? b.listing : b.listings,
+          // Ensure tenant_profile.users is present for older shapes
           tenant_profile: b.tenant_profile ? b.tenant_profile : { users: b.tenant },
-          tenant_id: b.tenant_profile?.id || b.tenant_id || b.tenant?.id,
+          // Provide a tenant reference id
+          tenant_id: b.tenant_profile?.id || b.tenant_id || (b.tenant ? b.tenant.id : null),
         }))
 
         // 2. Filter for APPROVED status
@@ -96,8 +98,9 @@ export default function MyTenantsScreen() {
     }
   };
 
-  const renderTenantCard = ({ item }) => {
-    const tenant = item.tenant_profile?.users;
+    const renderTenantCard = ({ item }) => {
+    // Prefer `item.tenant` (flattened user) then `item.tenant_profile.users`
+    const tenant = item.tenant || item.tenant_profile?.users;
     const tenantName = tenant?.first_name 
       ? `${tenant.first_name} ${tenant.last_name}`
       : 'Unknown Tenant';
