@@ -35,8 +35,8 @@ export default function FinancialsScreen() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
   // Payment Flow State
-  const [selectedBooking, setSelectedBooking] = useState(null); // For "Pay Now" on a specific booking
-  const [paymentMethod, setPaymentMethod] = useState('gcash');
+  const [selectedBooking, setSelectedBooking] = useState(null); 
+  const [paymentMethod, setPaymentMethod] = useState('cash'); // Default to cash
   const [paymentDetails, setPaymentDetails] = useState({
     accountNumber: '',
     accountName: '',
@@ -88,7 +88,6 @@ export default function FinancialsScreen() {
       // 3. Load Bookings (To see active properties)
       const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profile.id);
       if (bookingsSuccess) {
-        // Map booking data to useful structure
         const mappedBookings = bookingsData.map(b => ({
           id: b.id,
           landlordId: b.listing?.landlord_id, 
@@ -101,11 +100,11 @@ export default function FinancialsScreen() {
         setBookings(mappedBookings);
       }
 
-      // 4. Load Payments (Direct from 'payments' table to align with Landlord)
+      // 4. Load Payments
       const { data: dbPayments, error: paymentsError } = await supabase
         .from('payments')
         .select('*')
-        .or(`tenant_id.eq.${profile.id},tenant_name.eq.${user.user_metadata?.first_name}`) // Try to match by ID or Name
+        .or(`tenant_id.eq.${profile.id},tenant_name.eq.${user.user_metadata?.first_name}`) 
         .order('payment_date', { ascending: false });
 
       let allPayments = [];
@@ -114,7 +113,7 @@ export default function FinancialsScreen() {
         const mappedPayments = dbPayments.map(p => ({
           ...p,
           id: p.id,
-          landlordName: 'Landlord', // Ideally fetch via landlord_id join, keeping simple
+          landlordName: 'Landlord',
           property: p.property_title || 'Unknown Property',
           amount: parseFloat(p.amount) || 0,
           status: p.status || 'completed',
@@ -150,7 +149,6 @@ export default function FinancialsScreen() {
     setRefreshing(false);
   };
 
-  // --- CALCULATIONS ---
   const calculateFinancialData = () => {
     const completedPayments = payments.filter(p => p.status === 'completed');
     const pendingPayments = payments.filter(p => p.status === 'pending');
@@ -159,7 +157,6 @@ export default function FinancialsScreen() {
     const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     const activeBookingsCount = bookings.filter(b => b.status === 'approved').length;
 
-    // Calculate average rent based on completed rent payments
     const rentPayments = completedPayments.filter(p => p.type === 'rent');
     const averageRent = rentPayments.length > 0 
       ? rentPayments.reduce((sum, p) => sum + p.amount, 0) / rentPayments.length 
@@ -176,23 +173,17 @@ export default function FinancialsScreen() {
 
   const financialData = calculateFinancialData();
 
-  // Separate lists
   const paymentHistory = payments.map(p => ({
     ...p,
-    // Ensure visual consistency
     type: p.type.charAt(0).toUpperCase() + p.type.slice(1),
     status: p.status.charAt(0).toUpperCase() + p.status.slice(1)
   }));
 
-  const pendingPaymentsList = payments.filter(p => p.status === 'pending');
-
-  // Generate "Upcoming" based on approved bookings that don't have a recent payment
-  // This is a simulation since we don't have a recurring billing engine yet
   const upcomingDue = bookings.filter(b => b.status === 'approved').map(b => ({
     id: `due_${b.id}`,
     property: b.property,
     amount: b.amount,
-    dueDate: new Date(new Date().setDate(new Date().getDate() + 5)).toISOString().split('T')[0], // Mock due date 5 days from now
+    dueDate: new Date(new Date().setDate(new Date().getDate() + 5)).toISOString().split('T')[0], 
     type: 'Rent',
     bookingId: b.id,
     landlordId: b.landlordId
@@ -201,10 +192,10 @@ export default function FinancialsScreen() {
   // --- PAYMENT ACTIONS ---
 
   const handlePayNow = (item) => {
-    // Pre-fill modal with booking info
     setSelectedBooking(item);
+    setPaymentMethod('cash'); // Reset to cash default
     setPaymentDetails({
-      accountNumber: '',
+      accountNumber: '', // Not needed for cash, but kept for others
       accountName: currentUser?.user_metadata?.first_name || '',
       amount: item.amount.toString(),
       reference: ''
@@ -213,28 +204,35 @@ export default function FinancialsScreen() {
   };
 
   const processPayment = async () => {
-    if (!paymentDetails.amount || !paymentDetails.accountNumber) {
-      Alert.alert('Error', 'Please fill in amount and account number');
+    if (!paymentDetails.amount) {
+      Alert.alert('Error', 'Please enter amount');
       return;
+    }
+    // If not cash, require account number
+    if (paymentMethod !== 'cash' && !paymentDetails.accountNumber) {
+       Alert.alert('Error', 'Please enter account number');
+       return;
     }
 
     const amountFloat = parseFloat(paymentDetails.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 
+    // For Cash, mark as pending until landlord confirms? Or completed if handing over?
+    // Let's assume completed for tracking purposes for now, or 'pending' if real world.
+    // Aligning with landlord code which marks manual entry as completed.
     const newPayment = {
       tenant_id: tenantProfile?.id,
-      landlord_id: selectedBooking?.landlordId, // From the booking
+      landlord_id: selectedBooking?.landlordId, 
       tenant_name: currentUser?.user_metadata?.first_name + ' ' + currentUser?.user_metadata?.last_name,
       property_title: selectedBooking?.property,
       amount: amountFloat,
       payment_type: 'rent',
-      status: 'completed', // Assume instant success for demo
+      status: 'completed', 
       payment_date: new Date().toISOString().split('T')[0],
-      method: paymentMethod, // gcash, paymaya, bank
+      method: paymentMethod, 
       reference: generatedRef
     };
 
-    // Optimistic UI update
     const optimisticPayment = { 
         ...newPayment, 
         id: `temp_${Date.now()}`, 
@@ -249,7 +247,6 @@ export default function FinancialsScreen() {
     setShowPaymentModal(false);
 
     try {
-        // Insert into DB
         const { error } = await supabase.from('payments').insert([newPayment]);
         
         if (error) {
@@ -269,7 +266,6 @@ export default function FinancialsScreen() {
     }
   };
 
-  // View Receipt Alert
   const handleViewReceipt = (payment) => {
     Alert.alert(
       'Payment Receipt',
@@ -283,7 +279,6 @@ export default function FinancialsScreen() {
     );
   };
 
-  // Back Handler
   useFocusEffect(
     useCallback(() => {
       const handleBackPress = () => {
@@ -330,7 +325,7 @@ export default function FinancialsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         
-        {/* Period Selector (Visual only for now) */}
+        {/* Period Selector */}
         <View style={styles.periodSelector}>
           {['monthly', 'quarterly', 'yearly'].map(p => (
              <TouchableOpacity 
@@ -394,7 +389,7 @@ export default function FinancialsScreen() {
           )}
         </View>
 
-        {/* Payment History (Mirrors Landlord Data) */}
+        {/* Payment History */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Payment History</Text>
@@ -445,8 +440,8 @@ export default function FinancialsScreen() {
 
             <View style={styles.formSection}>
                <Text style={styles.formLabel}>Select Method</Text>
-               <View style={{flexDirection:'row', gap:10}}>
-                  {['gcash', 'paymaya', 'bank'].map(m => (
+               <View style={{flexDirection:'row', gap:10, flexWrap:'wrap'}}>
+                  {['cash', 'gcash', 'paymaya', 'bank'].map(m => (
                     <TouchableOpacity 
                       key={m} 
                       style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
@@ -458,19 +453,29 @@ export default function FinancialsScreen() {
                </View>
             </View>
 
-            <View style={styles.formSection}>
-               <Text style={styles.formLabel}>Account Number</Text>
-               <TextInput 
-                 style={styles.textInput} 
-                 placeholder="09xxxxxxxxx or Acc #" 
-                 keyboardType="numeric"
-                 value={paymentDetails.accountNumber}
-                 onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
-               />
-            </View>
+            {paymentMethod !== 'cash' && (
+                <View style={styles.formSection}>
+                   <Text style={styles.formLabel}>Account Number</Text>
+                   <TextInput 
+                     style={styles.textInput} 
+                     placeholder="09xxxxxxxxx or Acc #" 
+                     keyboardType="numeric"
+                     value={paymentDetails.accountNumber}
+                     onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
+                   />
+                </View>
+            )}
+            
+            {paymentMethod === 'cash' && (
+                <Text style={{fontStyle:'italic', color:'#666', marginVertical:10}}>
+                   Please hand cash directly to your landlord. This record will serve as your proof of payment intent.
+                </Text>
+            )}
 
             <TouchableOpacity style={styles.confirmButton} onPress={processPayment}>
-               <Text style={styles.confirmButtonText}>Confirm Payment</Text>
+               <Text style={styles.confirmButtonText}>
+                 {paymentMethod === 'cash' ? 'Record Cash Payment' : 'Confirm Payment'}
+               </Text>
             </TouchableOpacity>
 
           </View>
@@ -524,7 +529,7 @@ const styles = StyleSheet.create({
   formSection: { marginTop: 16 },
   formLabel: { fontWeight: '600', marginBottom: 8 },
   textInput: { borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 8, padding: 12 },
-  methodBtn: { flex: 1, padding: 10, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, alignItems: 'center' },
+  methodBtn: { flex: 1, padding: 10, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, alignItems: 'center', minWidth: '45%', marginBottom: 8 },
   methodBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   methodText: { fontSize: 12, color: '#666', fontWeight: '600' },
   methodTextActive: { color: 'white' },
