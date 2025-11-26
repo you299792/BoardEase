@@ -17,7 +17,9 @@ import { Colors } from '../../constants/Colors';
 import {
   getCurrentUser,
   getLandlordBookings,
+  deleteBooking // Assume this helper function exists or we use supabase directly
 } from '../../lib/supabaseClient';
+import { supabase } from '../../lib/supabaseClient'; // Import supabase directly for delete if helper missing
 
 export default function MyTenantsScreen() {
   const [tenants, setTenants] = useState([]);
@@ -39,7 +41,6 @@ export default function MyTenantsScreen() {
       const { success, bookings, error } = await getLandlordBookings(user.id);
 
       if (success && bookings) {
-        // Normalize and calculate next due date
         const normalized = bookings.map(b => ({
           ...b,
           listings: b.listing ? b.listing : b.listings,
@@ -101,6 +102,41 @@ export default function MyTenantsScreen() {
     }
   };
 
+  // --- DELETE LOGIC ---
+  const handleDeleteTenant = (bookingId, tenantName) => {
+    Alert.alert(
+      "Remove Tenant",
+      `Are you sure you want to remove ${tenantName} from your active tenants? This action cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Remove", 
+          style: "destructive", 
+          onPress: async () => {
+            try {
+              // Delete from Supabase 'bookings' table
+              const { error } = await supabase
+                .from('bookings')
+                .delete()
+                .eq('id', bookingId);
+
+              if (error) {
+                Alert.alert("Error", "Failed to remove tenant. Please try again.");
+                console.error(error);
+              } else {
+                // Optimistically remove from list
+                setTenants(prev => prev.filter(t => t.id !== bookingId));
+                Alert.alert("Success", "Tenant removed successfully.");
+              }
+            } catch (err) {
+              Alert.alert("Error", "An unexpected error occurred.");
+            }
+          } 
+        }
+      ]
+    );
+  };
+
   const renderTenantCard = ({ item }) => {
     const tenant = item.tenant || item.tenant_profile?.users;
     const tenantName = tenant?.first_name 
@@ -124,35 +160,47 @@ export default function MyTenantsScreen() {
                 <Ionicons name="person" size={20} color="#666" />
               </View>
             )}
-            <View>
+            <View style={{flex: 1}}>
               <Text style={styles.occupiedLabel}>Occupied by:</Text>
               <Text style={styles.tenantName}>{tenantName}</Text>
               <Text style={styles.moveInDate}>Since: {new Date(moveInDate).toLocaleDateString()}</Text>
               
               {dueDate && (
-                <>
-                  <Text style={[styles.dueDateText, {marginTop:4}]}>
-                    Next Due: {new Date(dueDate).toLocaleDateString()}
-                  </Text>
-                  {(() => {
-                    const today = new Date();
-                    const due = new Date(dueDate);
-                    const diffDays = Math.ceil((due - today) / (1000 * 60 * 60 * 24));
-                    if (diffDays <= 5 && diffDays >= 0) {
-                      return (
-                        <Text style={{color:'#d97706', fontWeight:'bold', fontSize:12, marginTop:2}}>
-                          ⚠️ Due in {diffDays} day{diffDays !== 1 ? 's' : ''}
-                        </Text>
-                      );
-                    }
-                    return null;
-                  })()}
-                </>
-              )}
+                  <>
+                    <Text style={[styles.dueDateText, {marginTop:4}]}>
+                      Next Due: {new Date(dueDate).toLocaleDateString()}
+                    </Text>
+                    {(() => {
+                      const today = new Date();
+                      const due = new Date(dueDate);
+                      const diffTime = due - today;
+                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                      
+                      if (diffDays <= 5 && diffDays >= 0) {
+                        return (
+                          <Text style={{color:'#d97706', fontWeight:'bold', fontSize:12, marginTop:2}}>
+                            ⚠️ Due in {diffDays} day{diffDays !== 1 ? 's' : ''}
+                          </Text>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </>
+                )}
             </View>
           </View>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusText}>Occupied</Text>
+          
+          {/* Status & Delete Icon Container */}
+          <View style={{alignItems: 'flex-end'}}>
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusText}>Occupied</Text>
+            </View>
+            <TouchableOpacity 
+              style={styles.deleteIconBtn} 
+              onPress={() => handleDeleteTenant(item.id, tenantName)}
+            >
+              <Ionicons name="trash-outline" size={20} color="#ef4444" />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -200,7 +248,6 @@ export default function MyTenantsScreen() {
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: 'bold' },
           headerLeft: () => (
-            // --- FIX: Force navigation back to Menu ---
             <TouchableOpacity onPress={() => router.replace('/landlord/menu')} style={{ marginLeft: 16 }}>
               <Ionicons name="arrow-back" size={24} color="#fff" />
             </TouchableOpacity>
@@ -254,8 +301,9 @@ const styles = StyleSheet.create({
   tenantName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   moveInDate: { fontSize: 12, color: '#888', marginTop: 2 },
   dueDateText: { fontSize: 12, color: '#444', fontWeight: '600' },
-  statusBadge: { backgroundColor: '#dcfce7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, marginLeft: 8 },
+  statusBadge: { backgroundColor: '#dcfce7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, marginBottom: 8 },
   statusText: { fontSize: 11, color: '#166534', fontWeight: '600' },
+  deleteIconBtn: { padding: 8, alignSelf: 'flex-end' }, // New delete icon style
   divider: { height: 1, backgroundColor: '#f0f0f0', marginVertical: 12 },
   propertyInfo: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
   infoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
