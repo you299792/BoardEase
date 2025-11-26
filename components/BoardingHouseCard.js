@@ -2,28 +2,28 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getListingReviews } from '../lib/supabaseClient';
+import { getListingReviews, toggleFavorite, getCurrentUser, getTenantProfile } from '../lib/supabaseClient';
 
-const FAVORITES_STORAGE_KEY = '@tenant_favorites';
-const REVIEWS_STORAGE_KEY = '@boarding_house_reviews';
-
-const BoardingHouseCard = ({ house, onPress }) => {
+const BoardingHouseCard = ({ house, onPress, onFavoriteChange, isFavoriteProp }) => {
   const [imageError, setImageError] = useState(false);
-  const [isFavorite, setIsFavorite] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(isFavoriteProp || false);
   const [averageRating, setAverageRating] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
   
   const imageUrl = house.images && house.images.length > 0 ? house.images[0] : house.image;
 
   useEffect(() => {
-    checkIfFavorite();
+    setIsFavorite(isFavoriteProp || false);
+  }, [isFavoriteProp]);
+
+  useEffect(() => {
+    initializeTenant();
     loadAverageRating();
   }, [house.id]);
 
   useFocusEffect(
     React.useCallback(() => {
-      checkIfFavorite();
       loadAverageRating();
     }, [house.id])
   );
@@ -54,32 +54,42 @@ const BoardingHouseCard = ({ house, onPress }) => {
     }
   };
 
-  const checkIfFavorite = async () => {
+  const initializeTenant = async () => {
     try {
-      const favoritesJson = await AsyncStorage.getItem(FAVORITES_STORAGE_KEY);
-      const favorites = favoritesJson ? JSON.parse(favoritesJson) : [];
-      setIsFavorite(favorites.includes(house.id));
+      const user = await getCurrentUser();
+      if (user) {
+        const { profile } = await getTenantProfile(user.id);
+        if (profile?.id) {
+          setTenantProfileId(profile.id);
+        }
+      }
     } catch (error) {
-      console.error('Failed to check favorite status', error);
+      console.error('Failed to initialize tenant', error);
     }
   };
 
-  const toggleFavorite = async () => {
+  const toggleFavoriteHandler = async () => {
     try {
-      const favoritesJson = await AsyncStorage.getItem(FAVORITES_STORAGE_KEY);
-      const favorites = favoritesJson ? JSON.parse(favoritesJson) : [];
+      if (!tenantProfileId || !house?.id) return;
       
-      let updatedFavorites;
-      if (isFavorite) {
-        updatedFavorites = favorites.filter(id => id !== house.id);
-      } else {
-        updatedFavorites = [...favorites, house.id];
+      const result = await toggleFavorite(tenantProfileId, house.id, isFavorite);
+      if (result.success) {
+        setIsFavorite(!isFavorite);
+        if (onFavoriteChange) {
+          onFavoriteChange(house.id, !isFavorite);
+        }
       }
-      
-      await AsyncStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(updatedFavorites));
-      setIsFavorite(!isFavorite);
     } catch (error) {
       console.error('Failed to toggle favorite', error);
+    }
+  };
+
+  const checkIfFavorite = async () => {
+    try {
+      // Favorite state is managed by parent component via isFavoriteProp
+      // No need to check here
+    } catch (error) {
+      console.error('Failed to check favorite status', error);
     }
   };
 
@@ -111,7 +121,7 @@ const BoardingHouseCard = ({ house, onPress }) => {
           ]} 
           onPress={(e) => {
             e.stopPropagation(); // Prevent triggering the card press
-            toggleFavorite();
+            toggleFavoriteHandler();
           }}
         >
           <Ionicons 
