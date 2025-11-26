@@ -70,11 +70,8 @@ export default function FinancialsScreen() {
       setCurrentUser(user);
 
       if (user) {
-        // Load Listings for the selector
         const { success: listingsSuccess, listings: dbListings } = await getLandlordListings(user.id);
-        if (listingsSuccess) {
-          setListings(dbListings || []);
-        }
+        if (listingsSuccess) setListings(dbListings || []);
 
         const { success: bookingsSuccess, bookings: dbBookings } = await getLandlordBookings(user.id);
         if (bookingsSuccess) setBookings(dbBookings || []);
@@ -116,7 +113,6 @@ export default function FinancialsScreen() {
     setRefreshing(false);
   };
 
-  // ... Calculation Logic ...
   const calculateFinancialData = () => {
     const completedPayments = payments.filter(p => p.status === 'completed');
     const pendingPayments = payments.filter(p => p.status === 'pending');
@@ -201,7 +197,6 @@ export default function FinancialsScreen() {
     setPaymentForm({
       date: new Date().toISOString().split('T')[0],
       tenantName: '',
-      // Auto-select first property if available
       property: listings.length > 0 ? (listings[0].title || listings[0].name) : '',
       amount: '',
       type: 'rent',
@@ -212,8 +207,8 @@ export default function FinancialsScreen() {
   };
 
   const processRecordedPayment = async () => {
-    if (!paymentForm.tenantName.trim() || !paymentForm.property || !paymentForm.amount) {
-      Alert.alert('Error', 'Tenant, Property, and Amount are required.');
+    if (!paymentForm.tenantName.trim() || !paymentForm.amount) {
+      Alert.alert('Error', 'Tenant Name and Amount are required.');
       return;
     }
     const amountFloat = parseFloat(paymentForm.amount);
@@ -228,7 +223,7 @@ export default function FinancialsScreen() {
             landlord_id: currentUser?.id,
             payment_date: paymentForm.date,
             tenant_name: paymentForm.tenantName,
-            property_title: paymentForm.property, // This will now be the actual property name
+            property_title: paymentForm.property,
             amount: amountFloat,
             payment_type: paymentForm.type,
             status: paymentForm.status,
@@ -270,6 +265,11 @@ export default function FinancialsScreen() {
   const formatDate = (dateStr) => {
     if(!dateStr) return 'N/A';
     return new Date(dateStr).toISOString().split('T')[0];
+  };
+
+  const formatType = (t) => {
+    if(t === 'security_deposit') return 'Deposit';
+    return t.charAt(0).toUpperCase() + t.slice(1);
   };
 
   return (
@@ -375,8 +375,8 @@ export default function FinancialsScreen() {
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{item.tenant}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Property:</Text><Text style={styles.recordValue}>{item.property}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Amount:</Text><Text style={styles.recordValue}>₱{item.amount.toLocaleString()}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{item.type}</Text></View>
-                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{item.status}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{formatType(item.type)}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{item.status === 'completed' ? 'Paid' : 'Pending'}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{item.method}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{item.reference}</Text></View>
                   
@@ -410,17 +410,16 @@ export default function FinancialsScreen() {
                </View>
 
                <View style={styles.formSection}>
-                 <Text style={styles.formLabel}>Tenant</Text>
+                 <Text style={styles.formLabel}>Tenant Name</Text>
                  <TextInput style={styles.textInput} value={paymentForm.tenantName} placeholder="Name" onChangeText={t => setPaymentForm(p => ({...p, tenantName: t}))} />
                </View>
 
-               {/* UPDATED PROPERTY SELECTOR */}
+               {/* Property Selector */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Property</Text>
                  {listings.length > 0 ? (
                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 8}}>
                      {listings.map((item, idx) => {
-                        // Handle slightly different DB column names
                         const propName = item.title || item.name || `Prop ${idx}`;
                         const isActive = paymentForm.property === propName;
                         return (
@@ -440,49 +439,49 @@ export default function FinancialsScreen() {
                </View>
 
                <View style={styles.formSection}>
-                 <Text style={styles.formLabel}>Amount</Text>
+                 <Text style={styles.formLabel}>Amount (₱)</Text>
                  <TextInput style={styles.textInput} value={paymentForm.amount} keyboardType="numeric" placeholder="0.00" onChangeText={t => setPaymentForm(p => ({...p, amount: t}))} />
                </View>
 
-               {/* Type & Status Row */}
-               <View style={{flexDirection:'row', gap:10, marginBottom:10}}>
-                 <View style={{flex:1}}>
-                   <Text style={styles.formLabel}>Type</Text>
-                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 5}}>
-                      {['rent', 'utility', 'deposit'].map(t => (
-                        <TouchableOpacity 
-                          key={t} 
-                          style={[styles.smallChip, paymentForm.type === t && styles.smallChipActive]}
-                          onPress={() => setPaymentForm(p => ({...p, type: t}))}
-                        >
-                          <Text style={[styles.smallChipText, paymentForm.type === t && styles.smallChipTextActive]}>{t}</Text>
-                        </TouchableOpacity>
-                      ))}
-                   </ScrollView>
-                 </View>
-                 <View style={{flex:1}}>
-                   <Text style={styles.formLabel}>Status</Text>
-                   <View style={{flexDirection:'row', gap:5}}>
-                      {['completed', 'pending'].map(s => (
-                        <TouchableOpacity 
-                          key={s} 
-                          style={[styles.smallChip, paymentForm.status === s && styles.smallChipActive]}
-                          onPress={() => setPaymentForm(p => ({...p, status: s}))}
-                        >
-                          <Text style={[styles.smallChipText, paymentForm.status === s && styles.smallChipTextActive]}>
-                            {s === 'completed' ? 'Paid' : 'Pend'}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                   </View>
+               {/* ARRANGED: Payment Type */}
+               <View style={styles.formSection}>
+                 <Text style={styles.formLabel}>Payment Type</Text>
+                 <View style={{flexDirection: 'row', gap: 8, flexWrap: 'wrap'}}>
+                    {['rent', 'utility', 'security_deposit'].map(t => (
+                      <TouchableOpacity 
+                        key={t} 
+                        style={[styles.optionBtn, paymentForm.type === t && styles.optionBtnActive]} 
+                        onPress={() => setPaymentForm(p => ({...p, type: t}))}
+                      >
+                        <Text style={[styles.optionText, paymentForm.type === t && styles.optionTextActive]}>{formatType(t)}</Text>
+                      </TouchableOpacity>
+                    ))}
                  </View>
                </View>
 
-               {/* Method Row */}
+               {/* ARRANGED: Status */}
                <View style={styles.formSection}>
-                 <Text style={styles.formLabel}>Method</Text>
-                 <View style={{flexDirection:'row', gap:8, flexWrap:'wrap'}}>
-                    {['Cash', 'Gcash', 'Bank'].map((m) => (
+                 <Text style={styles.formLabel}>Status</Text>
+                 <View style={{flexDirection: 'row', gap: 8}}>
+                    {['completed', 'pending'].map(s => (
+                      <TouchableOpacity 
+                        key={s} 
+                        style={[styles.optionBtn, paymentForm.status === s && styles.optionBtnActive]} 
+                        onPress={() => setPaymentForm(p => ({...p, status: s}))}
+                      >
+                        <Text style={[styles.optionText, paymentForm.status === s && styles.optionTextActive]}>
+                          {s === 'completed' ? 'Paid' : 'Pending'}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                 </View>
+               </View>
+
+               {/* ARRANGED: Method */}
+               <View style={styles.formSection}>
+                 <Text style={styles.formLabel}>Payment Method</Text>
+                 <View style={{flexDirection: 'row', gap: 8}}>
+                    {['Cash', 'Gcash', 'Bank'].map(m => (
                       <TouchableOpacity 
                         key={m} 
                         style={[styles.optionBtn, paymentForm.method === m && styles.optionBtnActive]} 
@@ -556,26 +555,21 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
   modalContent: { backgroundColor: 'white', margin: 20, padding: 24, borderRadius: 16, maxHeight: '80%' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
-  formSection: { marginBottom: 12 },
-  formLabel: { fontWeight: '600', marginBottom: 6, fontSize: 14 },
-  textInput: { borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 8, padding: 10 },
-  confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center' },
-  confirmButtonText: { color: 'white', fontWeight: '600' },
-  periodSelector: { flexDirection: 'row', marginBottom: 20 },
+  formSection: { marginBottom: 16 },
+  formLabel: { fontWeight: '600', marginBottom: 8, fontSize: 14, color: '#333' },
+  textInput: { borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 8, padding: 12, fontSize: 16 },
   
-  // Chips & Buttons
-  propertyChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, backgroundColor: '#f0f0f0', marginRight: 5 },
-  propertyChipActive: { backgroundColor: Colors.primary },
-  propertyChipText: { fontSize: 12, color: '#333' },
+  // Chips
+  propertyChip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 25, backgroundColor: '#f0f0f0', marginRight: 8, borderWidth: 1, borderColor: '#eee' },
+  propertyChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  propertyChipText: { fontSize: 14, color: '#555', fontWeight: '500' },
   propertyChipTextActive: { color: 'white' },
 
-  smallChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 15, backgroundColor: '#f0f0f0', marginRight: 5 },
-  smallChipActive: { backgroundColor: Colors.primary },
-  smallChipText: { fontSize: 11, color: '#333' },
-  smallChipTextActive: { color: 'white' },
-
-  optionBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#ddd', backgroundColor: 'white' },
+  optionBtn: { flex: 1, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, paddingVertical: 12, alignItems: 'center', backgroundColor: 'white' },
   optionBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  optionText: { color: '#666' },
-  optionTextActive: { color: 'white' }
+  optionText: { color: '#666', fontWeight: '600' },
+  optionTextActive: { color: 'white' },
+
+  confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center' },
+  confirmButtonText: { color: 'white', fontWeight: '600' },
 });
