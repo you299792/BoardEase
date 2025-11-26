@@ -326,8 +326,14 @@ export default function Home() {
               <BoardingHouseCard
                 house={item}
                 onPress={() => router.push(`/boarding-house-details?id=${item.id}`)}
-                isFavorited={favorites.includes(item.id)}
-                onToggleFavorite={() => handleToggleFavorite(item.id)}
+                isFavoriteProp={favorites.includes(item.id)}
+                onFavoriteChange={(listingId, newFavoriteStatus) => {
+                  if (newFavoriteStatus) {
+                    setFavorites([...favorites, listingId]);
+                  } else {
+                    setFavorites(favorites.filter(id => id !== listingId));
+                  }
+                }}
               />
             )}
             keyExtractor={item => item.id}
