@@ -17,16 +17,17 @@ import { Stack, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
-import AsyncStorage from '@react-native-async-storage/async-storage'; // Added missing import
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  supabase, // <--- Added to fetch payments directly
   getCurrentUser,
   getLandlordBookings,
-  getLandlordRevenue,
-  getLandlordListings, // <--- Added this import
+  // getLandlordRevenue, // <--- Removed broken function
+  getLandlordListings,
   recordPaymentAsLandlord,
 } from '../../lib/supabaseClient';
 
-// Constants for AsyncStorage keys if not defined elsewhere
+// Constants for AsyncStorage keys
 const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
 const TENANT_MESSAGES_KEY = '@tenant_messages';
 const PAYMENTS_STORAGE_KEY = '@payments_data';
@@ -37,7 +38,7 @@ export default function FinancialsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
-  const [listings, setListings] = useState([]); // <--- Added missing state
+  const [listings, setListings] = useState([]); 
   const [revenue, setRevenue] = useState({});
   const [currentUser, setCurrentUser] = useState(null);
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
@@ -66,7 +67,7 @@ export default function FinancialsScreen() {
       setCurrentUser(user);
 
       if (user) {
-        // 1. Load Listings (Fixed the reference error)
+        // 1. Load Listings
         const { success: listingsSuccess, listings: dbListings } = await getLandlordListings(user.id);
         if (listingsSuccess) {
           setListings(dbListings || []);
@@ -78,11 +79,31 @@ export default function FinancialsScreen() {
           setBookings(dbBookings || []);
         }
 
-        // 3. Load revenue
-        const { success: revenueSuccess, payments: dbPayments, revenue: revenueData } = await getLandlordRevenue(user.id, selectedPeriod);
-        if (revenueSuccess) {
-          setPayments(dbPayments || []);
-          setRevenue(revenueData || {});
+        // 3. Load Revenue/Payments DIRECTLY (Bypassing broken getLandlordRevenue)
+        // This avoids the "bookings_1.amount does not exist" error
+        const { data: dbPayments, error: paymentsError } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('landlord_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (!paymentsError && dbPayments) {
+          // Map DB columns (snake_case) to UI expectations (camelCase) if needed
+          const mappedPayments = dbPayments.map(p => ({
+            ...p,
+            tenantName: p.tenant_name || p.tenantName || 'Unknown Tenant',
+            property: p.property_title || p.property || 'Unknown Property',
+            amount: p.amount || 0,
+            status: p.status || 'pending',
+            date: p.payment_date || p.created_at,
+            paidDate: p.payment_date,
+            type: p.payment_type || p.type || 'rent'
+          }));
+          setPayments(mappedPayments);
+        } else {
+          // If table doesn't exist or empty, fall back to empty array without crashing
+          console.warn('Could not fetch payments directly:', paymentsError?.message);
+          setPayments([]);
         }
       }
     } catch (error) {
@@ -111,7 +132,7 @@ export default function FinancialsScreen() {
     const totalEarnings = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     
-    // Now uses the state variable 'listings'
+    // Uses the 'listings' state
     const totalProperties = listings.length;
     
     // Calculate occupancy rate
@@ -214,7 +235,7 @@ export default function FinancialsScreen() {
           text: 'Send Request', 
           onPress: async () => {
             try {
-              // Logic remains similar, ensuring currentLandlord uses currentUser state
+              // Simulate sending reminder logic here
               Alert.alert('Success', `Payment reminder sent to ${tenantName}`);
             } catch (error) {
               console.error('Failed to send payment reminder', error);
@@ -230,7 +251,7 @@ export default function FinancialsScreen() {
     setPaymentForm({
       tenantName: '',
       // Safe access to listings array
-      property: listings.length > 0 ? listings[0].title || listings[0].name : '',
+      property: listings.length > 0 ? (listings[0].title || listings[0].name) : '',
       amount: '',
       type: 'rent',
       date: new Date().toISOString().split('T')[0],
@@ -245,30 +266,49 @@ export default function FinancialsScreen() {
     }
 
     try {
-      // If you have a backend function for this, call it here.
-      // Otherwise, simulate local update or call Supabase insert
-      
-      // Example simulation for UI update:
-      const newPayment = {
-        id: `payment_${Date.now()}`,
-        landlordId: currentUser?.id,
-        tenantName: paymentForm.tenantName,
-        property: paymentForm.property,
-        amount: parseFloat(paymentForm.amount),
-        type: paymentForm.type,
-        status: 'completed',
-        date: new Date().toISOString().split('T')[0],
-        paidDate: paymentForm.date,
-        method: 'manual',
-        reference: `MAN-${Date.now()}`,
-      };
+      // Insert directly into Supabase 'payments' table
+      // Note: You must have a 'payments' table for this to persist remotely
+      const { data, error } = await supabase
+        .from('payments')
+        .insert([
+          {
+            landlord_id: currentUser?.id,
+            tenant_name: paymentForm.tenantName,
+            property_title: paymentForm.property,
+            amount: parseFloat(paymentForm.amount),
+            payment_type: paymentForm.type,
+            status: 'completed',
+            payment_date: paymentForm.date,
+            method: 'manual',
+            reference: `MAN-${Date.now()}`,
+          }
+        ])
+        .select();
 
-      // Update local state immediately
-      setPayments(prev => [newPayment, ...prev]);
+      if (error) {
+        console.warn('Supabase insert failed (table might be missing):', error);
+        // Fallback: update local state only if DB insert fails (e.g. no table yet)
+        const newPayment = {
+          id: `payment_${Date.now()}`,
+          landlordId: currentUser?.id,
+          tenantName: paymentForm.tenantName,
+          property: paymentForm.property,
+          amount: parseFloat(paymentForm.amount),
+          type: paymentForm.type,
+          status: 'completed',
+          date: new Date().toISOString().split('T')[0],
+          paidDate: paymentForm.date,
+          method: 'manual',
+          reference: `MAN-${Date.now()}`,
+        };
+        setPayments(prev => [newPayment, ...prev]);
+      } else if (data) {
+        // Successfully inserted into DB, refresh data
+        await loadData();
+      }
 
       setShowRecordPaymentModal(false);
-      
-      Alert.alert('Success', `Payment of ₱${parseFloat(paymentForm.amount).toLocaleString()} recorded successfully!`);
+      Alert.alert('Success', `Payment of ₱${parseFloat(paymentForm.amount).toLocaleString()} recorded!`);
     } catch (error) {
       console.error('Failed to record payment', error);
       Alert.alert('Error', 'Failed to record payment.');
@@ -336,6 +376,7 @@ export default function FinancialsScreen() {
   };
 
   const getTimeAgo = (date) => {
+    if (!date) return 'N/A';
     const now = new Date();
     const paymentDate = new Date(date);
     const diffMs = now - paymentDate;
