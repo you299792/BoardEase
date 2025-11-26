@@ -99,13 +99,15 @@ export default function RentedPropertiesScreen() {
   };
 
   const renderPropertyCard = ({ item }) => {
-    const listing = item.listings;
+    const listing = item.listings || item.listing || {};
     const landlord = listing?.landlord_profile?.users;
     
-    const propertyName = listing?.title || 'Unknown Property';
-    const propertyImage = listing?.images ? listing.images[0] : null;
-    const rentAmount = listing?.price || 0;
-    const address = listing?.address || listing?.location || 'No address';
+    const propertyName = listing?.title || listing?.name || 'Unknown Property';
+    const propertyImage = Array.isArray(listing?.images) ? listing.images[0] : (listing?.images && listing.images[0]) || null;
+    // Use price_per_month from DB schema (fallback to price if present)
+    const rentAmount = listing?.price_per_month || listing?.price || 0;
+    // Use full address when available, otherwise city
+    const address = listing?.address || listing?.full_address || listing?.city || 'No address';
     const moveInDate = item.move_in_date || item.created_at;
     const landlordName = landlord ? `${landlord.first_name} ${landlord.last_name}` : 'Landlord';
     const landlordPhone = landlord?.phone;
