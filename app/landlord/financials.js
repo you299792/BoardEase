@@ -49,7 +49,6 @@ export default function FinancialsScreen() {
     type: 'rent',
     status: 'completed',
     method: 'Cash',
-    reference: '',
   });
 
   const viewShotRef = useRef();
@@ -71,8 +70,11 @@ export default function FinancialsScreen() {
       setCurrentUser(user);
 
       if (user) {
+        // Load Listings for the selector
         const { success: listingsSuccess, listings: dbListings } = await getLandlordListings(user.id);
-        if (listingsSuccess) setListings(dbListings || []);
+        if (listingsSuccess) {
+          setListings(dbListings || []);
+        }
 
         const { success: bookingsSuccess, bookings: dbBookings } = await getLandlordBookings(user.id);
         if (bookingsSuccess) setBookings(dbBookings || []);
@@ -114,6 +116,7 @@ export default function FinancialsScreen() {
     setRefreshing(false);
   };
 
+  // ... Calculation Logic ...
   const calculateFinancialData = () => {
     const completedPayments = payments.filter(p => p.status === 'completed');
     const pendingPayments = payments.filter(p => p.status === 'pending');
@@ -198,27 +201,25 @@ export default function FinancialsScreen() {
     setPaymentForm({
       date: new Date().toISOString().split('T')[0],
       tenantName: '',
+      // Auto-select first property if available
       property: listings.length > 0 ? (listings[0].title || listings[0].name) : '',
       amount: '',
       type: 'rent',
       status: 'completed',
       method: 'Cash',
-      reference: '',
     });
     setShowRecordPaymentModal(true);
   };
 
   const processRecordedPayment = async () => {
-    if (!paymentForm.tenantName.trim() || !paymentForm.amount) {
-      Alert.alert('Error', 'Tenant Name and Amount are required.');
+    if (!paymentForm.tenantName.trim() || !paymentForm.property || !paymentForm.amount) {
+      Alert.alert('Error', 'Tenant, Property, and Amount are required.');
       return;
     }
     const amountFloat = parseFloat(paymentForm.amount);
     
-    // --- AUTO-GENERATE REFERENCE IF EMPTY ---
-    // Generates a random 8-character string like "TRX-A1B2"
+    // Auto-generate reference
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-    const finalReference = paymentForm.reference.trim() || generatedRef;
 
     try {
       const { data, error } = await supabase
@@ -227,17 +228,16 @@ export default function FinancialsScreen() {
             landlord_id: currentUser?.id,
             payment_date: paymentForm.date,
             tenant_name: paymentForm.tenantName,
-            property_title: paymentForm.property,
+            property_title: paymentForm.property, // This will now be the actual property name
             amount: amountFloat,
             payment_type: paymentForm.type,
             status: paymentForm.status,
             method: paymentForm.method,
-            reference: finalReference, // Use the generated reference
+            reference: generatedRef,
         }]).select();
 
       if (error) {
         console.warn('Supabase error, saving locally');
-        // Local fallback
         const newLocalPayment = {
           id: `local_${Date.now()}`,
           landlordId: currentUser?.id,
@@ -249,17 +249,16 @@ export default function FinancialsScreen() {
           date: new Date().toISOString().split('T')[0],
           paidDate: paymentForm.date,
           method: paymentForm.method,
-          reference: finalReference,
+          reference: generatedRef,
           isLocal: true
         };
-        // Just update state directly for now as fallback
         setPayments(prev => [newLocalPayment, ...prev]);
       } else {
         await loadData();
       }
       
       setShowRecordPaymentModal(false);
-      Alert.alert('Success', `Payment Saved! Ref: ${finalReference}`);
+      Alert.alert('Success', `Payment Saved! Ref: ${generatedRef}`);
     } catch (error) {
       Alert.alert('Error', 'Failed to save record.');
     }
@@ -343,7 +342,7 @@ export default function FinancialsScreen() {
         </View>
       </ScrollView>
 
-      {/* --- HIDDEN VIEW SHOT FOR PNG EXPORT (BoardEase Format) --- */}
+      {/* --- HIDDEN VIEW SHOT FOR PNG EXPORT --- */}
       <View 
         style={{ 
           position: 'absolute', 
@@ -379,7 +378,6 @@ export default function FinancialsScreen() {
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{item.type}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{item.status}</Text></View>
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{item.method}</Text></View>
-                  {/* This field is now guaranteed to have a value */}
                   <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{item.reference}</Text></View>
                   
                   {index < paymentHistory.length - 1 && <View style={styles.itemSeparator} />}
@@ -416,9 +414,29 @@ export default function FinancialsScreen() {
                  <TextInput style={styles.textInput} value={paymentForm.tenantName} placeholder="Name" onChangeText={t => setPaymentForm(p => ({...p, tenantName: t}))} />
                </View>
 
+               {/* UPDATED PROPERTY SELECTOR */}
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Property</Text>
-                 <TextInput style={styles.textInput} value={paymentForm.property} placeholder="Room/Unit" onChangeText={t => setPaymentForm(p => ({...p, property: t}))} />
+                 {listings.length > 0 ? (
+                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 8}}>
+                     {listings.map((item, idx) => {
+                        // Handle slightly different DB column names
+                        const propName = item.title || item.name || `Prop ${idx}`;
+                        const isActive = paymentForm.property === propName;
+                        return (
+                          <TouchableOpacity 
+                            key={item.id || idx} 
+                            style={[styles.propertyChip, isActive && styles.propertyChipActive]} 
+                            onPress={() => setPaymentForm(p => ({...p, property: propName}))}
+                          >
+                            <Text style={[styles.propertyChipText, isActive && styles.propertyChipTextActive]}>{propName}</Text>
+                          </TouchableOpacity>
+                        );
+                     })}
+                   </ScrollView>
+                 ) : (
+                   <TextInput style={styles.textInput} value={paymentForm.property} placeholder="Room/Unit" onChangeText={t => setPaymentForm(p => ({...p, property: t}))} />
+                 )}
                </View>
 
                <View style={styles.formSection}>
@@ -426,29 +444,58 @@ export default function FinancialsScreen() {
                  <TextInput style={styles.textInput} value={paymentForm.amount} keyboardType="numeric" placeholder="0.00" onChangeText={t => setPaymentForm(p => ({...p, amount: t}))} />
                </View>
 
-               <View style={{flexDirection:'row', gap:10}}>
-                 <View style={[styles.formSection, {flex:1}]}>
+               {/* Type & Status Row */}
+               <View style={{flexDirection:'row', gap:10, marginBottom:10}}>
+                 <View style={{flex:1}}>
                    <Text style={styles.formLabel}>Type</Text>
-                   <TextInput style={styles.textInput} value={paymentForm.type} onChangeText={t => setPaymentForm(p => ({...p, type: t}))} />
+                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 5}}>
+                      {['rent', 'utility', 'deposit'].map(t => (
+                        <TouchableOpacity 
+                          key={t} 
+                          style={[styles.smallChip, paymentForm.type === t && styles.smallChipActive]}
+                          onPress={() => setPaymentForm(p => ({...p, type: t}))}
+                        >
+                          <Text style={[styles.smallChipText, paymentForm.type === t && styles.smallChipTextActive]}>{t}</Text>
+                        </TouchableOpacity>
+                      ))}
+                   </ScrollView>
                  </View>
-                 <View style={[styles.formSection, {flex:1}]}>
+                 <View style={{flex:1}}>
                    <Text style={styles.formLabel}>Status</Text>
-                   <TextInput style={styles.textInput} value={paymentForm.status} onChangeText={t => setPaymentForm(p => ({...p, status: t}))} />
+                   <View style={{flexDirection:'row', gap:5}}>
+                      {['completed', 'pending'].map(s => (
+                        <TouchableOpacity 
+                          key={s} 
+                          style={[styles.smallChip, paymentForm.status === s && styles.smallChipActive]}
+                          onPress={() => setPaymentForm(p => ({...p, status: s}))}
+                        >
+                          <Text style={[styles.smallChipText, paymentForm.status === s && styles.smallChipTextActive]}>
+                            {s === 'completed' ? 'Paid' : 'Pend'}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                   </View>
                  </View>
                </View>
 
-               <View style={{flexDirection:'row', gap:10}}>
-                 <View style={[styles.formSection, {flex:1}]}>
-                   <Text style={styles.formLabel}>Method</Text>
-                   <TextInput style={styles.textInput} value={paymentForm.method} placeholder="Cash/Gcash" onChangeText={t => setPaymentForm(p => ({...p, method: t}))} />
-                 </View>
-                 <View style={[styles.formSection, {flex:1}]}>
-                   <Text style={styles.formLabel}>Reference (Opt)</Text>
-                   <TextInput style={styles.textInput} value={paymentForm.reference} placeholder="Auto-gen if empty" onChangeText={t => setPaymentForm(p => ({...p, reference: t}))} />
+               {/* Method Row */}
+               <View style={styles.formSection}>
+                 <Text style={styles.formLabel}>Method</Text>
+                 <View style={{flexDirection:'row', gap:8, flexWrap:'wrap'}}>
+                    {['Cash', 'Gcash', 'Bank'].map((m) => (
+                      <TouchableOpacity 
+                        key={m} 
+                        style={[styles.optionBtn, paymentForm.method === m && styles.optionBtnActive]} 
+                        onPress={() => setPaymentForm(p => ({...p, method: m}))}
+                      >
+                        <Text style={[styles.optionText, paymentForm.method === m && styles.optionTextActive]}>{m}</Text>
+                      </TouchableOpacity>
+                    ))}
                  </View>
                </View>
 
-               <View style={{flexDirection:'row', gap: 10, marginTop: 10, marginBottom: 20}}>
+               {/* Buttons */}
+               <View style={{flexDirection:'row', gap: 10, marginTop: 20, marginBottom: 20}}>
                   <TouchableOpacity style={[styles.confirmButton, {backgroundColor:'#ccc', flex:1}]} onPress={() => setShowRecordPaymentModal(false)}>
                     <Text style={styles.confirmButtonText}>Cancel</Text>
                   </TouchableOpacity>
@@ -469,7 +516,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f6f7fb', padding: 16 },
   sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 16, color: '#333' },
   
-  // Export Styles (BoardEase Format)
+  // Export Styles
   exportContainer: {
     width: 500,
     backgroundColor: 'white',
@@ -514,5 +561,21 @@ const styles = StyleSheet.create({
   textInput: { borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 8, padding: 10 },
   confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center' },
   confirmButtonText: { color: 'white', fontWeight: '600' },
-  periodSelector: { flexDirection: 'row', marginBottom: 20 }, 
+  periodSelector: { flexDirection: 'row', marginBottom: 20 },
+  
+  // Chips & Buttons
+  propertyChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, backgroundColor: '#f0f0f0', marginRight: 5 },
+  propertyChipActive: { backgroundColor: Colors.primary },
+  propertyChipText: { fontSize: 12, color: '#333' },
+  propertyChipTextActive: { color: 'white' },
+
+  smallChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 15, backgroundColor: '#f0f0f0', marginRight: 5 },
+  smallChipActive: { backgroundColor: Colors.primary },
+  smallChipText: { fontSize: 11, color: '#333' },
+  smallChipTextActive: { color: 'white' },
+
+  optionBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#ddd', backgroundColor: 'white' },
+  optionBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  optionText: { color: '#666' },
+  optionTextActive: { color: 'white' }
 });
