@@ -363,75 +363,6 @@ export default function LandlordPortal() {
     );
   };
 
-  // Function to render inquiry
-  const renderInquiry = ({ item }) => (
-    <View style={styles.inquiryCard}>
-      <View style={styles.inquiryHeader}>
-        <Image source={{ uri: item.tenant?.image }} style={styles.inquirerImage} />
-        <View style={styles.inquirerInfo}>
-          <Text style={styles.inquirerName}>{item.tenant?.name}</Text>
-          <Text style={styles.inquiryType}>{item.type === 'booking' ? 'Booking Request' : 'General Inquiry'}</Text>
-        </View>
-        <Text style={styles.inquiryTime}>{item.time}</Text>
-      </View>
-      <Text style={styles.inquiryMessage}>{item.lastMessage}</Text>
-      <View style={styles.inquiryActions}>
-        <TouchableOpacity style={styles.replyButton}>
-          <Ionicons name="chatbubble-ellipses" size={16} color="white" />
-          <Text style={styles.replyButtonText}>Reply</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.viewChatButton}>
-          <Ionicons name="eye" size={16} color="#667eea" />
-          <Text style={styles.viewChatButtonText}>View Chat</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  // Function to render amenities
-  const renderAmenities = (amenities) => {
-    if (!amenities || amenities.length === 0) {
-      return (
-        <Text style={styles.noAmenitiesText}>No amenities listed</Text>
-      );
-    }
-
-    return (
-      <View style={styles.amenitiesGrid}>
-        {amenities.map((amenity, index) => (
-          <View key={index} style={styles.amenityItem}>
-            <Ionicons name="checkmark-circle" size={20} color="#10b981" />
-            <Text style={styles.amenityText}>{amenity}</Text>
-          </View>
-        ))}
-      </View>
-    );
-  };
-
-  // Function to render property statistics
-  const renderPropertyStats = (listing) => {
-    const stats = [
-      { label: 'Views', value: '1.2K', icon: 'eye', color: '#667eea' },
-      { label: 'Inquiries', value: inquiries.length, icon: 'chatbubble', color: '#10b981' },
-      { label: 'Bookings', value: '8', icon: 'calendar', color: '#f59e0b' },
-      { label: 'Occupancy', value: '89%', icon: 'home', color: '#8b5cf6' },
-    ];
-
-    return (
-      <View style={styles.statsGrid}>
-        {stats.map((stat, index) => (
-          <View key={index} style={styles.statItem}>
-            <View style={[styles.statIcon, { backgroundColor: `${stat.color}20` }]}>
-              <Ionicons name={stat.icon} size={20} color={stat.color} />
-            </View>
-            <Text style={styles.statValue}>{stat.value}</Text>
-            <Text style={styles.statLabel}>{stat.label}</Text>
-          </View>
-        ))}
-      </View>
-    );
-  };
-
   // Function to render all reviews modal
   const renderAllReviewsModal = () => (
     <Modal
@@ -522,7 +453,7 @@ export default function LandlordPortal() {
     </Modal>
   );
 
-  // Render Inquiries modal (re-added to fix the ReferenceError)
+  // Render Inquiries modal - WITH FIXED NAVIGATION
   const renderInquiriesModal = () => (
     <Modal
       visible={showInquiriesModal}
@@ -552,7 +483,7 @@ export default function LandlordPortal() {
             renderItem={({ item }) => (
               <View style={styles.inquiryCard}>
                 <View style={styles.inquiryHeader}>
-                  <Image source={{ uri: item.tenant?.profile_image_url }} style={styles.inquirerImage} />
+                  <Image source={{ uri: item.tenant?.profile_image_url || PLACEHOLDER_IMAGE }} style={styles.inquirerImage} />
                   <View style={styles.inquirerInfo}>
                     <Text style={styles.inquirerName}>{item.tenant?.first_name ? `${item.tenant.first_name} ${item.tenant.last_name || ''}` : (item.tenant?.name || 'Tenant')}</Text>
                     <Text style={styles.inquiryType}>{item.inquiry_type === 'booking' ? 'Booking Request' : 'General Inquiry'}</Text>
@@ -560,16 +491,59 @@ export default function LandlordPortal() {
                   <Text style={styles.inquiryTime}>{item.created_at ? new Date(item.created_at).toLocaleDateString() : ''}</Text>
                 </View>
                 <Text style={styles.inquiryMessage}>{item.message || item.last_message || 'No message'}</Text>
+                
+                {/* --- FIX: NAVIGATION TO CHAT --- */}
                 <View style={styles.inquiryActions}>
-                  <TouchableOpacity style={styles.replyButton}>
+                  <TouchableOpacity 
+                    style={styles.replyButton}
+                    onPress={() => {
+                      setShowInquiriesModal(false);
+                      // FIX: Using params object instead of string path for better stability
+                      // Assumes chat.js is at /landlord/chat.js
+                      if (item.tenant?.id) {
+                        router.push({
+                          pathname: '/landlord/chat', 
+                          params: { 
+                            id: item.tenant.id,
+                            tenantName: item.tenant.first_name || item.tenant.name,
+                            tenantImage: item.tenant.profile_image_url,
+                            property: selectedListing?.title
+                          }
+                        });
+                      } else {
+                        Alert.alert("Error", "User information not found.");
+                      }
+                    }}
+                  >
                     <Ionicons name="chatbubble-ellipses" size={16} color="white" />
                     <Text style={styles.replyButtonText}>Reply</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.viewChatButton}>
+                  
+                  <TouchableOpacity 
+                    style={styles.viewChatButton}
+                    onPress={() => {
+                       setShowInquiriesModal(false);
+                       if (item.tenant?.id) {
+                        router.push({
+                          pathname: '/landlord/chat', 
+                          params: { 
+                            id: item.tenant.id,
+                            tenantName: item.tenant.first_name || item.tenant.name,
+                            tenantImage: item.tenant.profile_image_url,
+                            property: selectedListing?.title
+                          }
+                        });
+                       } else {
+                         Alert.alert("Error", "User information not found.");
+                       }
+                    }}
+                  >
                     <Ionicons name="eye" size={16} color="#667eea" />
                     <Text style={styles.viewChatButtonText}>View Chat</Text>
                   </TouchableOpacity>
                 </View>
+                {/* --- END NAVIGATION --- */}
+                
               </View>
             )}
             keyExtractor={item => item.id ?? Math.random().toString()}
@@ -1134,9 +1108,6 @@ export default function LandlordPortal() {
   );
 }
 
-/* Styles: reuse your existing styles. Below are the critical style entries used above.
-   If you already have a long styles object in your file, keep it and ensure these keys exist.
-   For brevity I include a condensed styles object that contains the keys referenced; you can merge with your full styles. */
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: '#f6f7fb' },
   container: { padding: 16, paddingBottom: 120 },

@@ -22,7 +22,6 @@ import {
   sendMessage,
   getMessages,
   subscribeToMessages,
-  uploadProfileImage,
   getUserProfile,
   uploadMessageImage,
   getListing,
@@ -30,7 +29,9 @@ import {
 } from '../../lib/supabaseClient';
 
 export default function LandlordChat() {
-  const { conversationId: routeConversationId, tenantId, tenantName, tenantImage, property } = useLocalSearchParams();
+  // Added 'id' to capture the dynamic route parameter (which acts as tenantId from the portal)
+  const { id, conversationId: routeConversationId, tenantId: paramTenantId, tenantName, tenantImage, property } = useLocalSearchParams();
+  
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -43,15 +44,16 @@ export default function LandlordChat() {
   const [conversationId, setConversationId] = useState(routeConversationId || null);
   const [currentUser, setCurrentUser] = useState(null);
 
+  // Consolidated dependencies
   useEffect(() => {
     loadConversation();
-  }, [tenantId, property, routeConversationId]);
+  }, [id, paramTenantId, property, routeConversationId]);
 
   const loadConversation = async () => {
     try {
       setIsLoading(true);
 
-      // Get current user
+      // 1. Get current user
       const user = await getCurrentUser();
       if (!user) {
         Alert.alert('Error', 'Not logged in');
@@ -61,33 +63,60 @@ export default function LandlordChat() {
 
       setCurrentUser(user);
 
-      // Fetch landlord profile to get landlord_profile.id
-      const { data: landlordProfile } = await supabase
+      // 2. Fetch landlord profile to get landlord_profile.id
+      const { data: landlordProfile, error: profileError } = await supabase
         .from('landlord_profile')
         .select('id')
         .eq('user_id', user.id)
         .single();
 
-      if (landlordProfile?.id) {
-        setLandlordProfileId(landlordProfile.id);
-      }
-
-      // Use conversationId from route params
-      const convId = routeConversationId;
-
-      if (!convId) {
-        Alert.alert('Error', 'Conversation ID is missing');
+      if (profileError || !landlordProfile) {
+        console.error('Error fetching landlord profile:', profileError);
+        Alert.alert('Error', 'Could not load landlord profile');
         setIsLoading(false);
         return;
       }
 
-      setConversationId(convId);
+      setLandlordProfileId(landlordProfile.id);
 
-      // Fetch conversation details to get listing_id and tenant_id
-      const { data: conversationData, error: convDataError } = await supabase
+      // 3. Resolve Conversation ID
+      let targetConversationId = routeConversationId;
+
+      // If no explicit conversationId, try to find it using the Tenant ID (passed as 'id' or 'tenantId')
+      if (!targetConversationId) {
+        const targetTenantId = id || paramTenantId;
+
+        if (targetTenantId) {
+          // Look for an existing conversation between this landlord and the tenant
+          const { data: existingConv, error: convError } = await supabase
+            .from('conversations')
+            .select('id, listing_id, tenant_id')
+            .eq('landlord_id', landlordProfile.id)
+            .eq('tenant_id', targetTenantId)
+            .maybeSingle(); // Use maybeSingle to avoid error if not found
+
+          if (existingConv) {
+            targetConversationId = existingConv.id;
+          } else {
+            console.log('No existing conversation found for tenant:', targetTenantId);
+            // Optional: You could handle "New Conversation" logic here if needed
+          }
+        }
+      }
+
+      if (!targetConversationId) {
+        Alert.alert('Notice', 'Conversation not found.');
+        setIsLoading(false);
+        return;
+      }
+
+      setConversationId(targetConversationId);
+
+      // 4. Fetch conversation details (listing_id, tenant_id)
+      const { data: conversationData } = await supabase
         .from('conversations')
         .select('listing_id, tenant_id')
-        .eq('id', convId)
+        .eq('id', targetConversationId)
         .single();
 
       if (conversationData?.listing_id) {
@@ -103,8 +132,8 @@ export default function LandlordChat() {
         setTenantProfileId(conversationData.tenant_id);
       }
 
-      // Fetch messages for this conversation
-      const { success, messages: messagesData, error } = await getMessages(convId);
+      // 5. Fetch messages
+      const { success, messages: messagesData, error } = await getMessages(targetConversationId);
 
       if (!success || !messagesData) {
         Alert.alert('Error', error || 'Failed to load messages');
@@ -112,7 +141,7 @@ export default function LandlordChat() {
         return;
       }
 
-      // Transform messages to include sender profile data
+      // Transform messages
       const transformedMessages = messagesData.map(msg => ({
         id: msg.id,
         sender_id: msg.sender_id,
@@ -126,8 +155,8 @@ export default function LandlordChat() {
 
       setMessages(transformedMessages);
 
-      // Subscribe to real-time messages
-      const subscription = subscribeToMessages(convId, (newMsg) => {
+      // 6. Subscribe to real-time messages
+      const subscription = subscribeToMessages(targetConversationId, (newMsg) => {
         const transformedMsg = {
           id: newMsg.id,
           sender_id: newMsg.sender_id,
@@ -182,7 +211,7 @@ export default function LandlordChat() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.8,
@@ -221,10 +250,10 @@ export default function LandlordChat() {
         }
       }
 
-      // Clear input first (so user sees it's been sent)
+      // Clear input first
       setNewMessage('');
 
-      // Create optimistic message object for immediate display
+      // Create optimistic message object
       const optimisticMessage = {
         id: `temp-${Date.now()}`,
         sender_id: currentUser.id,
@@ -241,10 +270,9 @@ export default function LandlordChat() {
         type: imageUrl ? 'image' : 'text',
       };
 
-      // Show message immediately (optimistic update)
       setMessages([optimisticMessage, ...messages]);
 
-      // Send message to Supabase with conversation ID
+      // Send message to Supabase
       const { success, error } = await sendMessage(
         conversationId,
         currentUser.id,
@@ -253,14 +281,11 @@ export default function LandlordChat() {
       );
 
       if (!success) {
-        // Remove optimistic message if send failed
         setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
         Alert.alert('Error', error || 'Failed to send message');
       }
-      // On success, real-time subscription will replace the optimistic message with the actual one
     } catch (error) {
       console.error('Failed to send message', error);
-      // Remove optimistic message on error
       setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
       Alert.alert('Error', 'Failed to send message');
     }
@@ -272,15 +297,11 @@ export default function LandlordChat() {
 
   const handleApproveBooking = async (bookingMessage) => {
     try {
-      // Calculate final amount (use property price if no specific amount mentioned)
       const finalAmount = bookingMessage.amount > 0 ? bookingMessage.amount : propertyPrice;
 
-      // Create booking record in database
       if (listingId && tenantProfileId && landlordProfileId) {
-        // Validate booking date - ensure it's in YYYY-MM-DD format
         let bookingDateStr = null;
         if (bookingMessage.bookingDate && bookingMessage.bookingDate !== 'Not specified') {
-          // Try to parse and format the date
           const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
           if (dateRegex.test(bookingMessage.bookingDate)) {
             bookingDateStr = bookingMessage.bookingDate;
@@ -291,22 +312,18 @@ export default function LandlordChat() {
           listingId: listingId,
           tenantId: tenantProfileId,
           landlordId: landlordProfileId,
-          moveInDate: bookingDateStr || null, // Let createBooking handle default
+          moveInDate: bookingDateStr || null,
           moveOutDate: null,
           numberOfGuests: parseInt(bookingMessage.bookingGuests) || 1,
           specialRequests: bookingMessage.text || '',
         };
 
-        // Create the booking
         const bookingResult = await createBooking(bookingData);
         if (!bookingResult.success) {
           console.warn('Failed to create booking record:', bookingResult.error);
-        } else {
-          console.log('Booking created successfully:', bookingResult.booking);
         }
       }
 
-      // Send approval message with amount details
       const displayDate = bookingMessage.bookingDate && bookingMessage.bookingDate !== 'Not specified' 
         ? bookingMessage.bookingDate 
         : 'To be confirmed';
@@ -347,7 +364,6 @@ export default function LandlordChat() {
   };
 
   const extractBookingDetails = (message) => {
-    // Simple parsing for booking messages
     if (message.text && message.text.toLowerCase().includes('book')) {
       const extractedAmount = extractAmount(message.text);
       const finalAmount = extractedAmount > 0 ? extractedAmount : propertyPrice;
@@ -465,7 +481,7 @@ export default function LandlordChat() {
         </TouchableOpacity>
         {tenantImage && <Image source={{ uri: tenantImage }} style={styles.avatar} />}
         <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>{tenantName}</Text>
+          <Text style={styles.headerTitle}>{tenantName || 'Tenant'}</Text>
           {property && <Text style={styles.headerSubtitle}>{property}</Text>}
         </View>
         <TouchableOpacity style={{ padding: 8 }} onPress={handleDeleteConversation}>
