@@ -25,7 +25,7 @@ import {
   supabase, 
   getCurrentUser, 
   getTenantBookings,
-  getTenantProfile // Added to fetch real name
+  getTenantProfile 
 } from '../../lib/supabaseClient';
 
 const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
@@ -48,26 +48,27 @@ export default function FinancialsScreen() {
   
   // Receipt State
   const [receiptData, setReceiptData] = useState(null);
+  const [receiptAction, setReceiptAction] = useState(null); // 'share' or 'chat'
   const singleReceiptRef = useRef();
 
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [tenantProfile, setTenantProfile] = useState(null);
-  const [tenantName, setTenantName] = useState(''); // Store fetched name
+  const [tenantName, setTenantName] = useState(''); 
 
   useEffect(() => {
     loadData();
   }, []);
 
-  // Auto-capture receipt when data is set
+  // Trigger capture when data is ready
   useEffect(() => {
-    if (receiptData) {
+    if (receiptData && receiptAction) {
       const timer = setTimeout(() => {
         captureSingleReceipt();
       }, 200);
       return () => clearTimeout(timer);
     }
-  }, [receiptData]);
+  }, [receiptData, receiptAction]);
 
   useFocusEffect(
     useCallback(() => {
@@ -87,19 +88,15 @@ export default function FinancialsScreen() {
       }
       setCurrentUser(user);
 
-      // 1. Get Full Tenant Profile (Name, ID, etc.)
-      // We use the helper or direct query to get the name
       let fetchedTenantName = 'Tenant';
       let profileId = null;
 
-      const { success: profileSuccess, user: profileUser, error: profileError } = await getTenantProfile(user.id);
+      const { success: profileSuccess, user: profileUser } = await getTenantProfile(user.id);
       
       if (profileSuccess && profileUser) {
-        // profileUser contains the joined 'users' table data usually
         fetchedTenantName = `${profileUser.first_name || ''} ${profileUser.last_name || ''}`.trim() || 'Tenant';
-        profileId = profileUser.id; // Assuming the helper returns the profile object which has the ID
+        profileId = profileUser.id; 
         
-        // Fallback if helper structure is different, try direct query for ID if needed
         if (!profileId) {
              const { data: rawProfile } = await supabase
             .from('tenant_profile')
@@ -118,7 +115,7 @@ export default function FinancialsScreen() {
         return;
       }
 
-      // 2. Load Bookings
+      // Load Bookings
       let currentBookings = [];
       const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profileId);
       
@@ -140,7 +137,7 @@ export default function FinancialsScreen() {
         setBookings(currentBookings);
       }
 
-      // 3. Load Payments
+      // Load Payments
       const { data: dbPayments, error: paymentsError } = await supabase
         .from('payments')
         .select('*')
@@ -151,21 +148,19 @@ export default function FinancialsScreen() {
 
       if (!paymentsError && dbPayments) {
         const mappedPayments = dbPayments.map(p => {
-          // Resolve Landlord Name
           const matchedBooking = currentBookings.find(b => b.landlordId === p.landlord_id);
           const resolvedLandlordName = matchedBooking ? matchedBooking.landlordName : 'Landlord';
-          
-          // Resolve Tenant Name (DB Value -> Fetched Profile Name -> Fallback)
           const resolvedTenantName = p.tenant_name || fetchedTenantName;
 
           return {
             ...p,
             id: p.id,
+            landlordId: p.landlord_id, // Save ID for chat forwarding
             landlordName: resolvedLandlordName, 
-            tenantName: resolvedTenantName, // <--- Uses the correct name
+            tenantName: resolvedTenantName,
             property: p.property_title || 'Unknown Property',
-            amount: parseFloat(p.amount) || 0,
-            status: p.status || 'completed',
+            amount: parseFloat(p.amount) || 0, 
+            status: p.status ? p.status.toLowerCase() : 'pending', 
             date: p.payment_date || p.created_at,
             type: p.payment_type || 'rent',
             method: p.method || 'Manual',
@@ -175,7 +170,6 @@ export default function FinancialsScreen() {
         allPayments = mappedPayments;
       }
 
-      // 4. Offline Fallback
       const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
       if (localData) {
         const localPayments = JSON.parse(localData);
@@ -199,53 +193,72 @@ export default function FinancialsScreen() {
     setRefreshing(false);
   };
 
-  // --- RECEIPT GENERATION ---
+  // --- RECEIPT HANDLER ---
   const captureSingleReceipt = async () => {
     try {
+      // Generate the image
       const uri = await captureRef(singleReceiptRef, {
         format: 'png',
         quality: 1.0, 
         result: 'tmpfile'
       });
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'image/png',
-          dialogTitle: 'Download Receipt',
-          UTI: 'public.png'
-        });
-      } else {
-        Alert.alert('Error', 'Sharing is not available on this device');
+      if (receiptAction === 'share') {
+        // Option A: Share/Download
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, {
+            mimeType: 'image/png',
+            dialogTitle: 'Download Receipt',
+            UTI: 'public.png'
+          });
+        } else {
+          Alert.alert('Error', 'Sharing is not available on this device');
+        }
+      } else if (receiptAction === 'chat') {
+        // Option B: Send to Landlord
+        if (receiptData.landlordId) {
+            router.push({
+              pathname: '/(tenant)/chat',
+              params: { 
+                landlordId: receiptData.landlordId,
+                landlordName: receiptData.landlordName,
+                // Pass the generated image URI to the chat screen
+                attachment: uri 
+              }
+            });
+        } else {
+            Alert.alert("Error", "Landlord information missing for this payment.");
+        }
       }
+
     } catch (error) {
-      console.error('Single Receipt Export failed:', error);
+      console.error('Receipt generation failed:', error);
       Alert.alert('Error', 'Could not generate receipt image.');
     } finally {
       setReceiptData(null);
+      setReceiptAction(null);
     }
   };
 
   const handleViewReceipt = (payment) => {
-    // Normalize receipt payload so tenant name is always present
-    const normalized = {
-      ...payment,
-      tenantName: payment.tenantName || payment.tenant_name || tenantName || 'Tenant',
-      landlordName: payment.landlordName || payment.landlord_name || 'Landlord',
-      property: payment.property || payment.property_title || payment.property_title || 'Property',
-      amount: payment.amount || payment.value || 0,
-      date: payment.date || payment.payment_date || payment.created_at,
-      status: payment.status || 'Completed',
-      method: payment.method || payment.payment_type || 'Manual',
-    };
-
     Alert.alert(
       'Payment Options',
-      `Ref: ${normalized.reference}\nAmount: ₱${parseFloat(normalized.amount).toLocaleString()}`,
+      `Ref: ${payment.reference}\nAmount: ₱${payment.amount.toLocaleString()}`,
       [
-        { text: 'Close', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         { 
-          text: 'Download Receipt', 
-          onPress: () => setReceiptData(normalized) 
+          text: 'Download', 
+          onPress: () => {
+            setReceiptAction('share');
+            setReceiptData(payment);
+          } 
+        },
+        { 
+          text: 'Send to Landlord', 
+          onPress: () => {
+            setReceiptAction('chat');
+            setReceiptData(payment);
+          } 
         }
       ]
     );
@@ -265,11 +278,11 @@ export default function FinancialsScreen() {
   };
 
   const calculateFinancialData = () => {
-    const completedPayments = payments.filter(p => p.status === 'completed');
+    const completedPayments = payments.filter(p => p.status === 'completed' || p.status === 'paid');
     const pendingPayments = payments.filter(p => p.status === 'pending');
     
-    const totalSpent = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
+    const totalSpent = completedPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
+    const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
     
     const rentPayments = completedPayments.filter(p => p.type === 'rent');
     const averageRent = rentPayments.length > 0 
@@ -329,7 +342,6 @@ export default function FinancialsScreen() {
     const amountFloat = parseFloat(paymentDetails.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
     
-    // Use the fetched tenant name
     const nameToUse = tenantName || 'Tenant';
 
     const newPayment = {
@@ -567,7 +579,7 @@ export default function FinancialsScreen() {
               </View>
               <View style={styles.divider} />
               <View style={styles.exportFooter}>
-                {/* Updated Footer to Approved By: Landlord */}
+                {/* Updated Footer */}
                 <Text style={styles.approvedText}>Approved by: {receiptData.landlordName}</Text>
               </View>
             </View>
