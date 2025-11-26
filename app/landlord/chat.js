@@ -16,8 +16,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { supabase } from '../../lib/supabaseClient';
 import {
+  supabase,
   getCurrentUser,
   sendMessage,
   getMessages,
@@ -29,41 +29,40 @@ import {
 } from '../../lib/supabaseClient';
 
 export default function LandlordChat() {
-  // Added 'id' to capture the dynamic route parameter (which acts as tenantId from the portal)
-  const { id, conversationId: routeConversationId, tenantId: paramTenantId, tenantName, tenantImage, property } = useLocalSearchParams();
+  const { id, conversationId: routeConversationId, tenantId: paramTenantId, tenantName, tenantImage, property: routeProperty } = useLocalSearchParams();
   
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState(null);
+  
+  // Property Details State
   const [propertyPrice, setPropertyPrice] = useState(0);
+  const [currentProperty, setCurrentProperty] = useState(routeProperty || ''); 
   const [listingId, setListingId] = useState(null);
+  
   const [tenantProfileId, setTenantProfileId] = useState(null);
   const [landlordProfileId, setLandlordProfileId] = useState(null);
   const [conversationId, setConversationId] = useState(routeConversationId || null);
   const [currentUser, setCurrentUser] = useState(null);
 
-  // Consolidated dependencies
   useEffect(() => {
     loadConversation();
-  }, [id, paramTenantId, property, routeConversationId]);
+  }, [id, paramTenantId, routeProperty, routeConversationId]);
 
   const loadConversation = async () => {
     try {
       setIsLoading(true);
-
-      // 1. Get current user
       const user = await getCurrentUser();
       if (!user) {
         Alert.alert('Error', 'Not logged in');
         setIsLoading(false);
         return;
       }
-
       setCurrentUser(user);
 
-      // 2. Fetch landlord profile to get landlord_profile.id
+      // 1. Get Landlord Profile
       const { data: landlordProfile, error: profileError } = await supabase
         .from('landlord_profile')
         .select('id')
@@ -72,34 +71,26 @@ export default function LandlordChat() {
 
       if (profileError || !landlordProfile) {
         console.error('Error fetching landlord profile:', profileError);
-        Alert.alert('Error', 'Could not load landlord profile');
         setIsLoading(false);
         return;
       }
-
       setLandlordProfileId(landlordProfile.id);
 
-      // 3. Resolve Conversation ID
+      // 2. Resolve Conversation ID
       let targetConversationId = routeConversationId;
 
-      // If no explicit conversationId, try to find it using the Tenant ID (passed as 'id' or 'tenantId')
       if (!targetConversationId) {
         const targetTenantId = id || paramTenantId;
-
         if (targetTenantId) {
-          // Look for an existing conversation between this landlord and the tenant
-          const { data: existingConv, error: convError } = await supabase
+          const { data: existingConv } = await supabase
             .from('conversations')
             .select('id, listing_id, tenant_id')
             .eq('landlord_id', landlordProfile.id)
             .eq('tenant_id', targetTenantId)
-            .maybeSingle(); // Use maybeSingle to avoid error if not found
+            .maybeSingle();
 
           if (existingConv) {
             targetConversationId = existingConv.id;
-          } else {
-            console.log('No existing conversation found for tenant:', targetTenantId);
-            // Optional: You could handle "New Conversation" logic here if needed
           }
         }
       }
@@ -112,7 +103,7 @@ export default function LandlordChat() {
 
       setConversationId(targetConversationId);
 
-      // 4. Fetch conversation details (listing_id, tenant_id)
+      // 3. Fetch Conversation Details & Property Info
       const { data: conversationData } = await supabase
         .from('conversations')
         .select('listing_id, tenant_id')
@@ -121,10 +112,14 @@ export default function LandlordChat() {
 
       if (conversationData?.listing_id) {
         setListingId(conversationData.listing_id);
-        // Fetch listing to get price
+        
+        // Fetch listing details (Price AND Title)
         const { success: listingSuccess, listing } = await getListing(conversationData.listing_id);
         if (listingSuccess && listing) {
-          setPropertyPrice(listing.price_per_month || 0);
+          setPropertyPrice(listing.price_per_month || listing.price || 0);
+          if (!currentProperty) {
+            setCurrentProperty(listing.title || listing.name || 'Property');
+          }
         }
       }
 
@@ -132,7 +127,7 @@ export default function LandlordChat() {
         setTenantProfileId(conversationData.tenant_id);
       }
 
-      // 5. Fetch messages
+      // 4. Fetch Messages
       const { success, messages: messagesData, error } = await getMessages(targetConversationId);
 
       if (!success || !messagesData) {
@@ -141,7 +136,6 @@ export default function LandlordChat() {
         return;
       }
 
-      // Transform messages
       const transformedMessages = messagesData.map(msg => ({
         id: msg.id,
         sender_id: msg.sender_id,
@@ -155,7 +149,6 @@ export default function LandlordChat() {
 
       setMessages(transformedMessages);
 
-      // 6. Subscribe to real-time messages
       const subscription = subscribeToMessages(targetConversationId, (newMsg) => {
         const transformedMsg = {
           id: newMsg.id,
@@ -175,7 +168,6 @@ export default function LandlordChat() {
       };
     } catch (e) {
       console.error('Failed to load landlord conversation', e);
-      Alert.alert('Error', 'Failed to load conversation');
       setMessages([]);
     } finally {
       setIsLoading(false);
@@ -183,87 +175,47 @@ export default function LandlordChat() {
   };
 
   const handleDeleteConversation = () => {
-    Alert.alert(
-      'Delete Conversation',
-      'Are you sure you want to delete this conversation? This will remove it only from your inbox.',
-      [
+    Alert.alert('Delete', 'Are you sure?', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: async () => {
-          try {
-            setMessages([]);
-            router.back();
-            Alert.alert('Deleted', 'Conversation has been deleted.');
-          } catch (e) {
-            console.error('Failed to delete landlord conversation', e);
-            Alert.alert('Error', 'Failed to delete conversation.');
-          }
-        }}
-      ]
-    );
+        { text: 'Delete', style: 'destructive', onPress: () => router.back() }
+    ]);
   };
 
   const pickImage = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission required', 'Sorry, we need camera roll permissions to upload images.');
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
+    const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
-        aspect: [4, 3],
         quality: 0.8,
-      });
-
-      if (!result.canceled && result.assets && result.assets[0]) {
+    });
+    if (!result.canceled && result.assets[0]) {
         await sendLandlordMessage('', result.assets[0].uri);
-      }
-    } catch (err) {
-      console.error('Image pick error', err);
-      Alert.alert('Error', 'Failed to pick image.');
     }
   };
 
   const sendLandlordMessage = async (text = '', imageUri = '') => {
     if (!text.trim() && !imageUri) return;
-
-    if (!conversationId || !currentUser) {
-      Alert.alert('Error', 'Conversation not loaded. Please try again.');
-      return;
-    }
+    if (!conversationId || !currentUser) return;
 
     try {
-      // Fetch user's full profile to get image
       const { success: profileSuccess, user: userProfile } = await getUserProfile(currentUser.id);
       
-      // Upload message image if provided
       let imageUrl = null;
       if (imageUri) {
         const uploadResult = await uploadMessageImage(imageUri, currentUser.id);
-        if (uploadResult.success) {
-          imageUrl = uploadResult.publicUrl;
-        } else {
-          Alert.alert('Error', 'Failed to upload image');
-          return;
-        }
+        if (uploadResult.success) imageUrl = uploadResult.publicUrl;
       }
 
-      // Clear input first
       setNewMessage('');
 
-      // Create optimistic message object
       const optimisticMessage = {
         id: `temp-${Date.now()}`,
         sender_id: currentUser.id,
         sender: {
           id: currentUser.id,
-          first_name: userProfile?.first_name || currentUser.user_metadata?.first_name || 'You',
-          last_name: userProfile?.last_name || currentUser.user_metadata?.last_name || '',
-          profile_image_url: userProfile?.profile_image_url || currentUser.user_metadata?.profile_image_url,
+          first_name: userProfile?.first_name || 'You',
+          last_name: userProfile?.last_name || '',
+          profile_image_url: userProfile?.profile_image_url,
         },
-        receiver: null,
         text: text.trim() || null,
         image: imageUrl || null,
         timestamp: new Date().toISOString(),
@@ -272,22 +224,9 @@ export default function LandlordChat() {
 
       setMessages([optimisticMessage, ...messages]);
 
-      // Send message to Supabase
-      const { success, error } = await sendMessage(
-        conversationId,
-        currentUser.id,
-        text.trim() || null,
-        imageUrl
-      );
-
-      if (!success) {
-        setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
-        Alert.alert('Error', error || 'Failed to send message');
-      }
+      await sendMessage(conversationId, currentUser.id, text.trim() || null, imageUrl);
     } catch (error) {
       console.error('Failed to send message', error);
-      setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
-      Alert.alert('Error', 'Failed to send message');
     }
   };
 
@@ -295,11 +234,21 @@ export default function LandlordChat() {
     sendLandlordMessage(newMessage);
   }, [newMessage, conversationId, currentUser]);
 
+  // --- APPROVE BOOKING LOGIC ---
   const handleApproveBooking = async (bookingMessage) => {
     try {
+      // 1. CHECK: Is this chat linked to a property?
+      if (!listingId) {
+        Alert.alert(
+          "Missing Property Info", 
+          "This chat isn't linked to a specific property in the database, so we can't create a booking record. Please ask the tenant to inquire from a specific listing page."
+        );
+        return;
+      }
+
       const finalAmount = bookingMessage.amount > 0 ? bookingMessage.amount : propertyPrice;
 
-      if (listingId && tenantProfileId && landlordProfileId) {
+      if (tenantProfileId && landlordProfileId) {
         let bookingDateStr = null;
         if (bookingMessage.bookingDate && bookingMessage.bookingDate !== 'Not specified') {
           const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -308,32 +257,51 @@ export default function LandlordChat() {
           }
         }
 
+        // 2. PREPARE DATA
         const bookingData = {
           listingId: listingId,
           tenantId: tenantProfileId,
           landlordId: landlordProfileId,
-          moveInDate: bookingDateStr || null,
+          moveInDate: bookingDateStr || new Date().toISOString(), // Fallback to today if missing
           moveOutDate: null,
           numberOfGuests: parseInt(bookingMessage.bookingGuests) || 1,
           specialRequests: bookingMessage.text || '',
+          totalAmount: finalAmount,
+          status: 'approved' // <--- CRITICAL: Must be 'approved' to show in Tenant List
         };
 
+        console.log("Attempting to create booking:", bookingData);
+
+        // 3. SAVE TO DATABASE
         const bookingResult = await createBooking(bookingData);
+        
         if (!bookingResult.success) {
-          console.warn('Failed to create booking record:', bookingResult.error);
+          console.error('Create Booking Failed:', bookingResult.error);
+          Alert.alert('Database Error', 'Could not save the booking. Please try again.');
+          return; 
         }
+        console.log("Booking created successfully!");
+      } else {
+        Alert.alert("Error", "Missing Tenant or Landlord profile ID.");
+        return;
       }
 
+      // 4. SEND CONFIRMATION MESSAGE
       const displayDate = bookingMessage.bookingDate && bookingMessage.bookingDate !== 'Not specified' 
         ? bookingMessage.bookingDate 
         : 'To be confirmed';
-      const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${property} has been approved. \n\n📅 Move-in date: ${displayDate} \n👥 Guests: ${bookingMessage.bookingGuests || '1'} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()} \n\nWe'll contact you soon for the next steps and payment details.`;
+      
+      const approvalMessage = `✅ Booking Approved! \n\nYour booking for ${currentProperty} has been approved. \n\n📅 Move-in date: ${displayDate} \n👥 Guests: ${bookingMessage.bookingGuests || '1'} \n💰 Monthly Rent: ₱${finalAmount.toLocaleString()}`;
+      
       await sendLandlordMessage(approvalMessage);
 
       setShowBookingModal(false);
       setSelectedBooking(null);
       
-      Alert.alert('Booking Approved', `The booking has been approved with monthly rent of ₱${finalAmount.toLocaleString()}.`);
+      Alert.alert(
+        'Success', 
+        'Booking approved! This tenant will now appear in your "My Tenants" list.'
+      );
     } catch (error) {
       console.error('Failed to approve booking', error);
       Alert.alert('Error', 'Failed to approve booking.');
@@ -341,59 +309,43 @@ export default function LandlordChat() {
   };
 
   const handleRejectBooking = async (bookingMessage) => {
-    const rejectionMessage = `❌ Booking Declined \n\nUnfortunately, your booking request for ${property} cannot be accommodated at this time. \n\nReason: ${bookingMessage.reason || 'Not available for the requested dates.'}`;
+    const rejectionMessage = `❌ Booking Declined \n\nUnfortunately, your booking request for ${currentProperty} cannot be accommodated at this time.`;
     await sendLandlordMessage(rejectionMessage);
     setShowBookingModal(false);
     setSelectedBooking(null);
   };
 
   const handleModifyBooking = async (bookingDetails) => {
-    Alert.alert(
-      'Modify Booking',
-      'This would open a modification screen where you can adjust dates, pricing, or other details.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Continue', onPress: () => {
-          const modificationMessage = `📝 Booking Modification Requested \n\nI'd like to discuss some changes to your booking request. Let me know what works for you.`;
-          sendLandlordMessage(modificationMessage);
-          setShowBookingModal(false);
-          setSelectedBooking(null);
-        }}
-      ]
-    );
+    const modificationMessage = `📝 Booking Modification Requested \n\nI'd like to discuss some changes to your booking request for ${currentProperty}.`;
+    sendLandlordMessage(modificationMessage);
+    setShowBookingModal(false);
+    setSelectedBooking(null);
   };
 
   const extractBookingDetails = (message) => {
     if (message.text && message.text.toLowerCase().includes('book')) {
-      const extractedAmount = extractAmount(message.text);
-      const finalAmount = extractedAmount > 0 ? extractedAmount : propertyPrice;
+      const amountMatch = message.text.match(/₱(\d+)/);
+      const amount = amountMatch ? parseInt(amountMatch[1]) : 0;
+      
+      const dateMatch = message.text.match(/\d{4}-\d{2}-\d{2}/);
+      const date = dateMatch ? dateMatch[0] : 'Not specified';
+
+      const guestMatch = message.text.match(/for (\d+) guest/);
+      const guests = guestMatch ? guestMatch[1] : '1';
+
+      const finalAmount = amount > 0 ? amount : propertyPrice;
       
       return {
         isBooking: true,
         text: message.text,
-        bookingDate: extractDate(message.text),
-        bookingGuests: extractGuests(message.text),
+        bookingDate: date,
+        bookingGuests: guests,
         amount: finalAmount,
-        originalAmount: extractedAmount,
-        usesPropertyPrice: extractedAmount === 0,
+        originalAmount: amount,
+        usesPropertyPrice: amount === 0,
       };
     }
     return null;
-  };
-
-  const extractDate = (text) => {
-    const dateMatch = text.match(/\d{4}-\d{2}-\d{2}/);
-    return dateMatch ? dateMatch[0] : 'Not specified';
-  };
-
-  const extractGuests = (text) => {
-    const guestMatch = text.match(/for (\d+) guest/);
-    return guestMatch ? guestMatch[1] : '1';
-  };
-
-  const extractAmount = (text) => {
-    const amountMatch = text.match(/₱(\d+)/);
-    return amountMatch ? parseInt(amountMatch[1]) : 0;
   };
 
   const renderMessage = ({ item }) => {
@@ -403,33 +355,16 @@ export default function LandlordChat() {
     const senderAvatar = senderProfile?.profile_image_url;
 
     return (
-      <View
-        style={[
-          styles.messageContainer,
-          isMyMessage ? styles.myMessageContainer : styles.otherMessageContainer,
-        ]}
-      >
-        {!isMyMessage && senderAvatar && (
-          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+      <View style={[styles.messageContainer, isMyMessage ? styles.myMessageContainer : styles.otherMessageContainer]}>
+        {!isMyMessage && (
+            senderAvatar ? <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} /> : <View style={[styles.senderAvatar, styles.defaultAvatar]}><Ionicons name="person" size={20}/></View>
         )}
-        {!isMyMessage && !senderAvatar && (
-          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
-            <Ionicons name="person-circle" size={32} color="#ccc" />
-          </View>
-        )}
-
-        <View style={[
-          styles.messageBubble,
-          isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble
-        ]}>
+        
+        <View style={[styles.messageBubble, isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble]}>
           {item.image ? (
-            <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
-              <Image source={{ uri: item.image }} style={styles.messageImage} />
-            </TouchableOpacity>
+            <Image source={{ uri: item.image }} style={styles.messageImage} />
           ) : (
-            <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>
-              {item.text}
-            </Text>
+            <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>{item.text}</Text>
           )}
 
           {bookingDetails?.isBooking && !isMyMessage && (
@@ -443,137 +378,70 @@ export default function LandlordChat() {
               <Text style={styles.bookingActionText}>Manage Booking</Text>
             </TouchableOpacity>
           )}
-
-          <Text style={[styles.messageTime, isMyMessage ? styles.myMessageTime : styles.otherMessageTime]}>
-            {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </Text>
+          <Text style={styles.messageTime}>{new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</Text>
         </View>
-
-        {isMyMessage && senderAvatar && (
-          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
-        )}
-        {isMyMessage && !senderAvatar && (
-          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
-            <Ionicons name="person-circle" size={32} color="#ccc" />
-          </View>
-        )}
       </View>
     );
   };
 
   if (isLoading) {
-    return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#667eea" />
-      </View>
-    );
+    return <View style={styles.container}><ActivityIndicator size="large" color="#667eea"/></View>;
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
-    >
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
-        {tenantImage && <Image source={{ uri: tenantImage }} style={styles.avatar} />}
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>{tenantName || 'Tenant'}</Text>
-          {property && <Text style={styles.headerSubtitle}>{property}</Text>}
+        <View>
+            <Text style={styles.headerTitle}>{tenantName || 'Tenant'}</Text>
+            <Text style={styles.headerSubtitle}>{currentProperty || 'Property Inquiry'}</Text>
         </View>
-        <TouchableOpacity style={{ padding: 8 }} onPress={handleDeleteConversation}>
+        <TouchableOpacity style={{ padding: 8, marginLeft: 'auto' }} onPress={handleDeleteConversation}>
           <Ionicons name="trash" size={22} color="#ef4444" />
         </TouchableOpacity>
       </View>
 
       <FlatList
         data={messages}
-        keyExtractor={item => item.id}
+        keyExtractor={item => item.id.toString()}
         inverted
-        contentContainerStyle={{ padding: 12 }}
         renderItem={renderMessage}
       />
 
       <View style={styles.inputContainer}>
-        <TouchableOpacity style={styles.attachButton} onPress={pickImage}>
-          <Ionicons name="image" size={24} color="#667eea" />
-        </TouchableOpacity>
-        <TextInput
-          style={styles.textInput}
-          value={newMessage}
-          onChangeText={setNewMessage}
-          placeholder="Type a reply..."
-          multiline
-        />
-        <TouchableOpacity style={styles.sendButton} onPress={handleSend}>
-          <Ionicons name="send" size={20} color="white" />
-        </TouchableOpacity>
+        <TouchableOpacity style={styles.attachButton} onPress={pickImage}><Ionicons name="image" size={24} color="#667eea" /></TouchableOpacity>
+        <TextInput style={styles.textInput} value={newMessage} onChangeText={setNewMessage} placeholder="Type a message..." multiline />
+        <TouchableOpacity style={styles.sendButton} onPress={handleSend}><Ionicons name="send" size={20} color="white" /></TouchableOpacity>
       </View>
 
-      {/* Booking Management Modal */}
-      <Modal
-        visible={showBookingModal}
-        animationType="slide"
-        transparent={true}
-      >
+      <Modal visible={showBookingModal} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Manage Booking Request</Text>
-              <TouchableOpacity 
-                style={styles.modalCloseButton}
-                onPress={() => setShowBookingModal(false)}
-              >
-                <Ionicons name="close" size={24} color="#333" />
-              </TouchableOpacity>
-            </View>
+            <Text style={styles.modalTitle}>Booking Request</Text>
             <Text style={styles.modalSubtitle}>
-              {tenantName} wants to book {property}
+              {tenantName} wants to book <Text style={{fontWeight: 'bold', color: '#333'}}>{currentProperty}</Text>
             </Text>
             
             {selectedBooking && (
               <View style={styles.bookingDetails}>
-                <Text style={styles.bookingDetail}>📅 Move-in Date: {selectedBooking.bookingDate}</Text>
-                <Text style={styles.bookingDetail}>👥 Guests: {selectedBooking.bookingGuests}</Text>
-                <Text style={styles.bookingDetail}>
-                  💰 Monthly Rent: ₱{selectedBooking.amount.toLocaleString()}
-                  {selectedBooking.usesPropertyPrice && (
-                    <Text style={styles.priceNote}> (based on property listing)</Text>
-                  )}
-                  {!selectedBooking.usesPropertyPrice && selectedBooking.originalAmount > 0 && (
-                    <Text style={styles.priceNote}> (as mentioned by tenant)</Text>
-                  )}
-                </Text>
-                <View style={styles.bookingMessageContainer}>
-                  <Text style={styles.bookingMessageLabel}>Tenant's Message:</Text>
-                  <Text style={styles.bookingMessage}>{selectedBooking.text}</Text>
-                </View>
+                <Text>Date: {selectedBooking.bookingDate}</Text>
+                <Text>Rent: ₱{selectedBooking.amount}</Text>
               </View>
             )}
-            
+
             <View style={styles.modalButtons}>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.rejectButton]}
-                onPress={() => handleRejectBooking(selectedBooking)}
-              >
+              <TouchableOpacity style={[styles.modalButton, styles.rejectButton]} onPress={() => handleRejectBooking(selectedBooking)}>
                 <Text style={styles.rejectButtonText}>Decline</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.modifyButton]}
-                onPress={() => handleModifyBooking(selectedBooking)}
-              >
-                <Text style={styles.modifyButtonText}>Modify</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.approveButton]}
-                onPress={() => handleApproveBooking(selectedBooking)}
-              >
+              <TouchableOpacity style={[styles.modalButton, styles.approveButton]} onPress={() => handleApproveBooking(selectedBooking)}>
                 <Text style={styles.approveButtonText}>Approve</Text>
               </TouchableOpacity>
             </View>
+            <TouchableOpacity onPress={() => setShowBookingModal(false)} style={{marginTop:15, alignItems:'center'}}>
+                <Text style={{color:'#666'}}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -583,223 +451,36 @@ export default function LandlordChat() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingTop: 60,
-    paddingBottom: 12,
-    backgroundColor: 'white',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e5e5',
-  },
-  backButton: { padding: 8 },
-  avatar: { width: 40, height: 40, borderRadius: 20, marginHorizontal: 10 },
-  headerInfo: { flex: 1 },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#333' },
-  headerSubtitle: { fontSize: 14, color: '#666' },
-  messageContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginVertical: 6,
-    gap: 6,
-  },
-  myMessageContainer: {
-    justifyContent: 'flex-end',
-  },
-  otherMessageContainer: {
-    justifyContent: 'flex-start',
-  },
-  senderAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#e5e7eb',
-  },
-  defaultAvatar: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  messageBubble: { 
-    padding: 12, 
-    borderRadius: 18, 
-    maxWidth: '70%',
-    minWidth: 120,
-  },
-  myMessageBubble: {
-    backgroundColor: '#667eea',
-  },
-  otherMessageBubble: {
-    backgroundColor: '#e5e7eb',
-  },
-  myMessage: { alignSelf: 'flex-end', backgroundColor: '#667eea' },
-  otherMessage: { alignSelf: 'flex-start', backgroundColor: '#e5e7eb' },
-  myMessageText: { color: 'white', fontSize: 16 },
-  otherMessageText: { color: '#333', fontSize: 16 },
-  messageImage: { 
-    width: 200, 
-    height: 150, 
-    borderRadius: 12,
-    marginBottom: 8,
-  },
-  messageTime: { 
-    fontSize: 10, 
-    color: 'rgba(0,0,0,0.5)', 
-    alignSelf: 'flex-end', 
-    marginTop: 6 
-  },
-  myMessageTime: {
-    color: 'rgba(255,255,255,0.7)',
-  },
-  otherMessageTime: {
-    color: 'rgba(0,0,0,0.5)',
-  },
-  bookingActionButton: {
-    backgroundColor: '#f59e0b',
-    padding: 8,
-    borderRadius: 8,
-    marginTop: 8,
-    alignSelf: 'flex-start',
-  },
-  bookingActionText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  inputContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    padding: 10, 
-    borderTopWidth: 1, 
-    borderTopColor: '#e5e5e5', 
-    backgroundColor: 'white' 
-  },
-  attachButton: {
-    padding: 8,
-    marginRight: 8,
-  },
-  textInput: { 
-    flex: 1, 
-    backgroundColor: '#f8f9fa', 
-    borderWidth: 1, 
-    borderColor: '#e9ecef', 
-    borderRadius: 20, 
-    paddingHorizontal: 15, 
-    paddingVertical: 10, 
-    fontSize: 16, 
-    marginRight: 10, 
-    maxHeight: 100 
-  },
-  sendButton: { 
-    backgroundColor: '#667eea', 
-    width: 44, 
-    height: 44, 
-    borderRadius: 22, 
-    justifyContent: 'center', 
-    alignItems: 'center' 
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    backgroundColor: 'white',
-    borderRadius: 16,
-    padding: 24,
-    margin: 20,
-    width: '90%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    flex: 1,
-  },
-  modalCloseButton: {
-    padding: 8,
-    marginRight: -8,
-  },
-  modalSubtitle: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 20,
-  },
-  bookingDetails: {
-    backgroundColor: '#f8f9fa',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 20,
-  },
-  bookingDetail: {
-    fontSize: 14,
-    color: '#333',
-    marginBottom: 8,
-    fontWeight: '500',
-  },
-  priceNote: {
-    fontSize: 12,
-    color: '#666',
-    fontStyle: 'italic',
-  },
-  bookingMessageContainer: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#e5e5e5',
-  },
-  bookingMessageLabel: {
-    fontSize: 12,
-    color: '#666',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  bookingMessage: {
-    fontSize: 14,
-    color: '#666',
-    fontStyle: 'italic',
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  modalButton: {
-    flex: 1,
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  rejectButton: {
-    backgroundColor: '#f8f9fa',
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-  },
-  modifyButton: {
-    backgroundColor: '#f59e0b',
-  },
-  approveButton: {
-    backgroundColor: '#10b981',
-  },
-  rejectButtonText: {
-    color: '#666',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  modifyButtonText: {
-    color: 'white',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  approveButtonText: {
-    color: 'white',
-    fontWeight: '600',
-    fontSize: 16,
-  },
+  header: { flexDirection: 'row', alignItems: 'center', padding: 15, paddingTop: 50, backgroundColor: 'white', borderBottomWidth: 1, borderColor: '#eee' },
+  headerTitle: { fontSize: 18, fontWeight: 'bold', marginLeft: 10 },
+  headerSubtitle: { fontSize: 12, color: '#666', marginLeft: 10 },
+  messageContainer: { flexDirection: 'row', marginVertical: 5, paddingHorizontal: 10 },
+  myMessageContainer: { justifyContent: 'flex-end' },
+  otherMessageContainer: { justifyContent: 'flex-start' },
+  messageBubble: { padding: 10, borderRadius: 15, maxWidth: '75%' },
+  myMessageBubble: { backgroundColor: '#667eea' },
+  otherMessageBubble: { backgroundColor: '#e5e7eb' },
+  myMessageText: { color: 'white' },
+  otherMessageText: { color: 'black' },
+  messageTime: { fontSize: 10, alignSelf: 'flex-end', marginTop: 5, opacity: 0.7 },
+  senderAvatar: { width: 30, height: 30, borderRadius: 15, marginRight: 5 },
+  defaultAvatar: { backgroundColor: '#ddd', alignItems: 'center', justifyContent: 'center' },
+  inputContainer: { flexDirection: 'row', padding: 10, backgroundColor: 'white', alignItems: 'center' },
+  textInput: { flex: 1, backgroundColor: '#f0f0f0', borderRadius: 20, paddingHorizontal: 15, paddingVertical: 10, marginHorizontal: 10 },
+  sendButton: { backgroundColor: '#667eea', padding: 10, borderRadius: 20 },
+  bookingActionButton: { backgroundColor: '#f59e0b', padding: 8, borderRadius: 5, marginTop: 5 },
+  bookingActionText: { color: 'white', fontWeight: 'bold', fontSize: 12 },
+  
+  // Modal Styles
+  modalOverlay: { flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 20 },
+  modalContent: { backgroundColor: 'white', padding: 20, borderRadius: 15 },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 10 },
+  modalSubtitle: { marginBottom: 15, color: '#666' },
+  bookingDetails: { backgroundColor: '#f9f9f9', padding: 10, borderRadius: 8, marginBottom: 20 },
+  modalButtons: { flexDirection: 'row', gap: 10 },
+  modalButton: { flex: 1, padding: 15, borderRadius: 8, alignItems: 'center' },
+  approveButton: { backgroundColor: '#10b981' },
+  rejectButton: { backgroundColor: '#ef4444' },
+  approveButtonText: { color: 'white', fontWeight: 'bold' },
+  rejectButtonText: { color: 'white', fontWeight: 'bold' },
 });

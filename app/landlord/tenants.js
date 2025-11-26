@@ -8,7 +8,8 @@ import {
   ActivityIndicator,
   Image,
   Alert,
-  Linking
+  Linking,
+  RefreshControl
 } from 'react-native';
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -21,7 +22,9 @@ import {
 export default function MyTenantsScreen() {
   const [tenants, setTenants] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
+  // Reload data every time the screen is focused
   useFocusEffect(
     useCallback(() => {
       loadTenants();
@@ -30,19 +33,32 @@ export default function MyTenantsScreen() {
 
   const loadTenants = async () => {
     try {
-      setIsLoading(true);
+      if (!refreshing) setIsLoading(true);
       const user = await getCurrentUser();
       if (!user) return;
 
-      // 1. Fetch all bookings for this landlord
+      // 1. Fetch all bookings from DB
       const { success, bookings, error } = await getLandlordBookings(user.id);
 
       if (success && bookings) {
-        // 2. FILTER: Only show 'approved' bookings
-        // This logic ensures that once you approve a booking in Chat, it appears here.
-        const activeTenants = bookings.filter(
-          b => b.status === 'approved' || b.status === 'occupied'
-        );
+        console.log("Fetched Bookings count:", bookings.length);
+
+        // Normalize booking shape to what the UI expects
+        const normalized = bookings.map(b => ({
+          ...b,
+          // `getLandlordBookings` returns `listing` and `tenant` keys
+          listings: b.listing ? b.listing : b.listings,
+          tenant_profile: b.tenant_profile ? b.tenant_profile : { users: b.tenant },
+          tenant_id: b.tenant_profile?.id || b.tenant_id || b.tenant?.id,
+        }))
+
+        // 2. Filter for APPROVED status
+        const activeTenants = normalized.filter(b => {
+          const status = b.status ? b.status.toLowerCase() : '';
+          return status === 'approved' || status === 'occupied';
+        });
+
+        console.log("Active Tenants count:", activeTenants.length);
         setTenants(activeTenants);
       } else {
         console.error("Error fetching bookings:", error);
@@ -51,7 +67,13 @@ export default function MyTenantsScreen() {
       console.error('Failed to load tenants', error);
     } finally {
       setIsLoading(false);
+      setRefreshing(false);
     }
+  };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadTenants();
   };
 
   const handleMessageTenant = (tenantId, tenantName, tenantImage, propertyName) => {
@@ -75,7 +97,6 @@ export default function MyTenantsScreen() {
   };
 
   const renderTenantCard = ({ item }) => {
-    // Extract Tenant Data
     const tenant = item.tenant_profile?.users;
     const tenantName = tenant?.first_name 
       ? `${tenant.first_name} ${tenant.last_name}`
@@ -84,7 +105,6 @@ export default function MyTenantsScreen() {
     const tenantImage = tenant?.profile_image_url;
     const tenantPhone = tenant?.phone;
     
-    // Extract Property Data
     const propertyName = item.listings?.title || item.listings?.name || 'Property Name';
     const rentAmount = item.listings?.price || item.listings?.rent || 0;
     const moveInDate = item.move_in_date || item.created_at;
@@ -93,7 +113,6 @@ export default function MyTenantsScreen() {
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.userInfo}>
-            {/* Avatar */}
             {tenantImage ? (
               <Image source={{ uri: tenantImage }} style={styles.avatar} />
             ) : (
@@ -101,17 +120,12 @@ export default function MyTenantsScreen() {
                 <Ionicons name="person" size={20} color="#666" />
               </View>
             )}
-            
             <View>
-              {/* --- REQUESTED LABEL --- */}
               <Text style={styles.occupiedLabel}>Occupied by:</Text>
-              
               <Text style={styles.tenantName}>{tenantName}</Text>
               <Text style={styles.moveInDate}>Since: {new Date(moveInDate).toLocaleDateString()}</Text>
             </View>
           </View>
-
-          {/* Status Badge */}
           <View style={styles.statusBadge}>
             <Text style={styles.statusText}>Occupied</Text>
           </View>
@@ -169,7 +183,7 @@ export default function MyTenantsScreen() {
       />
 
       <View style={styles.container}>
-        {isLoading ? (
+        {isLoading && !refreshing ? (
           <View style={styles.center}>
             <ActivityIndicator size="large" color={Colors.primary} />
           </View>
@@ -179,6 +193,9 @@ export default function MyTenantsScreen() {
             keyExtractor={(item) => item.id.toString()}
             renderItem={renderTenantCard}
             contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            }
             ListEmptyComponent={
               <View style={styles.emptyState}>
                 <Ionicons name="people-outline" size={48} color="#ccc" />
@@ -186,6 +203,9 @@ export default function MyTenantsScreen() {
                 <Text style={styles.emptySubText}>
                   When you approve a booking request in your chat, the tenant will appear here.
                 </Text>
+                <TouchableOpacity onPress={onRefresh} style={{marginTop:20, padding:10, backgroundColor:Colors.primary, borderRadius:8}}>
+                   <Text style={{color:'white'}}>Refresh List</Text>
+                </TouchableOpacity>
               </View>
             }
           />
@@ -196,140 +216,29 @@ export default function MyTenantsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f6f7fb',
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  listContent: {
-    padding: 16,
-  },
-  card: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start', 
-  },
-  userInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#eee',
-  },
-  avatarPlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  // --- NEW STYLE FOR "Occupied by:" ---
-  occupiedLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 2,
-    fontStyle: 'italic',
-  },
-  tenantName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  moveInDate: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 2,
-  },
-  statusBadge: {
-    backgroundColor: '#dcfce7',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginLeft: 8,
-  },
-  statusText: {
-    fontSize: 11,
-    color: '#166534',
-    fontWeight: '600',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#f0f0f0',
-    marginVertical: 12,
-  },
-  propertyInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-  },
-  infoText: {
-    fontSize: 14,
-    color: '#444',
-  },
-  actionRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  actionButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 8,
-    gap: 6,
-    borderWidth: 1,
-  },
-  messageBtn: {
-    borderColor: Colors.primary,
-    backgroundColor: '#f0f4ff',
-  },
-  callBtn: {
-    borderColor: '#10b981',
-    backgroundColor: '#f0fdf4',
-  },
-  actionText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  emptyState: {
-    alignItems: 'center',
-    marginTop: 60,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    marginTop: 16,
-  },
-  emptySubText: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 8,
-    textAlign: 'center',
-    paddingHorizontal: 40,
-  },
+  container: { flex: 1, backgroundColor: '#f6f7fb' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  listContent: { padding: 16 },
+  card: { backgroundColor: 'white', borderRadius: 12, padding: 16, marginBottom: 16, elevation: 2 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  userInfo: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  avatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#eee' },
+  avatarPlaceholder: { justifyContent: 'center', alignItems: 'center' },
+  occupiedLabel: { fontSize: 12, color: '#666', marginBottom: 2, fontStyle: 'italic' },
+  tenantName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+  moveInDate: { fontSize: 12, color: '#888', marginTop: 2 },
+  statusBadge: { backgroundColor: '#dcfce7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, marginLeft: 8 },
+  statusText: { fontSize: 11, color: '#166534', fontWeight: '600' },
+  divider: { height: 1, backgroundColor: '#f0f0f0', marginVertical: 12 },
+  propertyInfo: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
+  infoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  infoText: { fontSize: 14, color: '#444' },
+  actionRow: { flexDirection: 'row', gap: 12 },
+  actionButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderRadius: 8, gap: 6, borderWidth: 1 },
+  messageBtn: { borderColor: Colors.primary, backgroundColor: '#f0f4ff' },
+  callBtn: { borderColor: '#10b981', backgroundColor: '#f0fdf4' },
+  actionText: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  emptyState: { alignItems: 'center', marginTop: 60 },
+  emptyText: { fontSize: 18, fontWeight: 'bold', color: '#333', marginTop: 16 },
+  emptySubText: { fontSize: 14, color: '#666', marginTop: 8, textAlign: 'center', paddingHorizontal: 40 },
 });
