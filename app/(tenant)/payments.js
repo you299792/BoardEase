@@ -211,18 +211,13 @@ export default function FinancialsScreen() {
       const paymentReference = `PAY-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
       // Record payment in Supabase
-      const paymentData = {
-        tenantProfileId: currentUser.id,
-        bookingId: selectedPayment.bookingId,
-        amount: selectedPayment.amount,
-        paymentType: selectedPayment.type,
-        paymentMethod: paymentMethod,
-        referenceNumber: paymentReference,
-        paymentStatus: 'completed',
-        paymentDate: new Date().toISOString().split('T')[0],
-      };
-
-      const { success, error, paymentId } = await recordPayment(paymentData);
+      // recordPayment expects: (paymentId, amount, method, transactionRef)
+      const { success, error } = await recordPayment(
+        selectedPayment.bookingId,  // paymentId
+        selectedPayment.amount,     // amount
+        paymentMethod,              // method
+        paymentReference            // transactionRef
+      );
 
       if (success) {
         // Reload data
