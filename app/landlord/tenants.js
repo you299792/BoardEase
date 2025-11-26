@@ -24,7 +24,6 @@ export default function MyTenantsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Reload data every time the screen is focused
   useFocusEffect(
     useCallback(() => {
       loadTenants();
@@ -37,30 +36,23 @@ export default function MyTenantsScreen() {
       const user = await getCurrentUser();
       if (!user) return;
 
-      // 1. Fetch all bookings from DB
       const { success, bookings, error } = await getLandlordBookings(user.id);
 
       if (success && bookings) {
-        console.log("Fetched Bookings count:", bookings.length);
-
-        // Normalize booking shape to what the UI expects
+        // Normalize and calculate next due date
         const normalized = bookings.map(b => ({
           ...b,
-          // `getLandlordBookings` now returns `listing` and `tenant` (tenant is user object)
           listings: b.listing ? b.listing : b.listings,
-          // Ensure tenant_profile.users is present for older shapes
           tenant_profile: b.tenant_profile ? b.tenant_profile : { users: b.tenant },
-          // Provide a tenant reference id
           tenant_id: b.tenant_profile?.id || b.tenant_id || (b.tenant ? b.tenant.id : null),
-        }))
+          next_due_date: calculateNextDueDate(b.move_in_date || b.created_at)
+        }));
 
-        // 2. Filter for APPROVED status
         const activeTenants = normalized.filter(b => {
           const status = b.status ? b.status.toLowerCase() : '';
           return status === 'approved' || status === 'occupied';
         });
 
-        console.log("Active Tenants count:", activeTenants.length);
         setTenants(activeTenants);
       } else {
         console.error("Error fetching bookings:", error);
@@ -71,6 +63,17 @@ export default function MyTenantsScreen() {
       setIsLoading(false);
       setRefreshing(false);
     }
+  };
+
+  const calculateNextDueDate = (moveInDateStr) => {
+    if (!moveInDateStr) return null;
+    const moveIn = new Date(moveInDateStr);
+    const today = new Date();
+    let nextDue = new Date(moveIn);
+    while (nextDue <= today) {
+      nextDue.setDate(nextDue.getDate() + 30);
+    }
+    return nextDue.toISOString();
   };
 
   const onRefresh = () => {
@@ -98,19 +101,17 @@ export default function MyTenantsScreen() {
     }
   };
 
-    const renderTenantCard = ({ item }) => {
-    // Prefer `item.tenant` (flattened user) then `item.tenant_profile.users`
+  const renderTenantCard = ({ item }) => {
     const tenant = item.tenant || item.tenant_profile?.users;
     const tenantName = tenant?.first_name 
       ? `${tenant.first_name} ${tenant.last_name}`
       : 'Unknown Tenant';
-    
     const tenantImage = tenant?.profile_image_url;
     const tenantPhone = tenant?.phone;
-    
     const propertyName = item.listings?.title || item.listings?.name || 'Property Name';
     const rentAmount = item.listings?.price || item.listings?.rent || 0;
     const moveInDate = item.move_in_date || item.created_at;
+    const dueDate = item.next_due_date;
 
     return (
       <View style={styles.card}>
@@ -127,6 +128,27 @@ export default function MyTenantsScreen() {
               <Text style={styles.occupiedLabel}>Occupied by:</Text>
               <Text style={styles.tenantName}>{tenantName}</Text>
               <Text style={styles.moveInDate}>Since: {new Date(moveInDate).toLocaleDateString()}</Text>
+              
+              {dueDate && (
+                <>
+                  <Text style={[styles.dueDateText, {marginTop:4}]}>
+                    Next Due: {new Date(dueDate).toLocaleDateString()}
+                  </Text>
+                  {(() => {
+                    const today = new Date();
+                    const due = new Date(dueDate);
+                    const diffDays = Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+                    if (diffDays <= 5 && diffDays >= 0) {
+                      return (
+                        <Text style={{color:'#d97706', fontWeight:'bold', fontSize:12, marginTop:2}}>
+                          ⚠️ Due in {diffDays} day{diffDays !== 1 ? 's' : ''}
+                        </Text>
+                      );
+                    }
+                    return null;
+                  })()}
+                </>
+              )}
             </View>
           </View>
           <View style={styles.statusBadge}>
@@ -178,7 +200,8 @@ export default function MyTenantsScreen() {
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: 'bold' },
           headerLeft: () => (
-            <TouchableOpacity onPress={() => router.back()} style={{ marginLeft: 16 }}>
+            // --- FIX: Force navigation back to Menu ---
+            <TouchableOpacity onPress={() => router.replace('/landlord/menu')} style={{ marginLeft: 16 }}>
               <Ionicons name="arrow-back" size={24} color="#fff" />
             </TouchableOpacity>
           ),
@@ -230,6 +253,7 @@ const styles = StyleSheet.create({
   occupiedLabel: { fontSize: 12, color: '#666', marginBottom: 2, fontStyle: 'italic' },
   tenantName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   moveInDate: { fontSize: 12, color: '#888', marginTop: 2 },
+  dueDateText: { fontSize: 12, color: '#444', fontWeight: '600' },
   statusBadge: { backgroundColor: '#dcfce7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, marginLeft: 8 },
   statusText: { fontSize: 11, color: '#166534', fontWeight: '600' },
   divider: { height: 1, backgroundColor: '#f0f0f0', marginVertical: 12 },
