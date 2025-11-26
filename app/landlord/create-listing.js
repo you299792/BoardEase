@@ -99,7 +99,7 @@ export default function CreateListing() {
   ];
 
   const resetForm = () => {
-    console.log('Resetting form...');
+    console.log('Resetting form to Create Mode...');
     setTitle('');
     setAddress('');
     setRent('');
@@ -133,9 +133,12 @@ export default function CreateListing() {
     });
     setPhotos([]);
     setFloorPlans([]);
+    
+    // Crucial: Explicitly set editing to false
     setIsEditing(false);
     setHeading('Create Property Listing');
     setSubmitText('Create Listing');
+    
     // Reset location
     setSelectedLocation(null);
     setMapAddress('');
@@ -158,115 +161,117 @@ export default function CreateListing() {
     React.useCallback(() => {
       const loadListingForEdit = async () => {
         const listingId = params?.id;
-        const paramId = listingId;
-        if (paramId && paramId !== 'undefined') {
-          setIsEditing(true);
-          setHeading('Edit Property Listing');
-          setSubmitText('Update Listing');
+        
+        // --- FIX: Strict check for ID ---
+        // If ID is undefined, null, or the strings 'undefined'/'null'
+        if (!listingId || listingId === 'undefined' || listingId === 'null') {
+          resetForm();
+          return;
+        }
+
+        // If we have a valid ID, assume we are editing
+        console.log('Edit ID detected:', listingId);
+        setIsEditing(true);
+        setHeading('Edit Property Listing');
+        setSubmitText('Update Listing');
+        
+        // Try to find listing in context first
+        let existingListing = listings?.find(b => String(b.id) === String(listingId));
+
+        // If not found in context, attempt to fetch landlord listings and find it.
+        if (!existingListing && currentUser) {
+          try {
+            const { success, listings: dbListings, error } = await getLandlordListings(currentUser.id);
+            if (success && Array.isArray(dbListings)) {
+              existingListing = dbListings.find(b => String(b.id) === String(listingId));
+            } else {
+              console.warn('Could not load landlord listings for edit:', error);
+            }
+          } catch (err) {
+            console.warn('Error fetching landlord listings for edit:', err);
+          }
+        }
+
+        if (existingListing) {
+          console.log('Loading editing data for:', existingListing.name || existingListing.title || existingListing.id);
+          // Map fields from existingListing (support both name/title keys)
+          setTitle(existingListing.name ?? existingListing.title ?? '');
+          setAddress(existingListing.location ?? existingListing.address ?? '');
           
-          // Try to find listing in context first
-          let existingListing = listings?.find(b => String(b.id) === String(paramId));
-  
-          // If not found in context, attempt to fetch landlord listings and find it.
-          if (!existingListing && currentUser) {
-            try {
-              const { success, listings: dbListings, error } = await getLandlordListings(currentUser.id);
-              if (success && Array.isArray(dbListings)) {
-                existingListing = dbListings.find(b => String(b.id) === String(paramId));
-              } else {
-                console.warn('Could not load landlord listings for edit:', error);
+          const priceValue = existingListing.price ?? existingListing.rent;
+          setRent(priceValue !== null && priceValue !== undefined ? String(priceValue) : '');
+
+          setDescription(existingListing.description ?? existingListing.details ?? '');
+          setHouseType(existingListing.type ?? existingListing.houseType ?? 'Single Room');
+          setDistance(existingListing.distance ?? '');
+          setRules(existingListing.rules ?? []);
+          setMaxGuests(String(existingListing.max_guests || ''));
+          setTotalRooms(String(existingListing.total_rooms || ''));
+          setAvailableRooms(String(existingListing.available_rooms || ''));
+          setPostalCode(existingListing.postal_code || '');
+          setBedrooms(String(existingListing.bedrooms || ''));
+          setBathrooms(String(existingListing.bathrooms || ''));
+          setSize(String(existingListing.size || ''));
+          setMinStay(String(existingListing.min_stay || ''));
+          setAvailable(existingListing.available !== false);
+          setAvailableFrom(existingListing.availableFrom ?? '');
+          
+          // Load location data if exists
+          if (existingListing.locationData) {
+            setSelectedLocation(existingListing.locationData);
+            setMapAddress(existingListing.locationData.address || existingListing.location || existingListing.address || '');
+            setCurrentRegion({
+              latitude: existingListing.locationData.latitude,
+              longitude: existingListing.locationData.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            });
+          } else if (existingListing.latitude && existingListing.longitude) {
+            setSelectedLocation({
+              latitude: existingListing.latitude,
+              longitude: existingListing.longitude,
+              address: existingListing.location || existingListing.address || '',
+            });
+            setMapAddress(existingListing.location || existingListing.address || '');
+            setCurrentRegion({
+              latitude: existingListing.latitude,
+              longitude: existingListing.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            });
+          }
+          
+          // Amenities mapping
+          const amenitiesObj = {
+            wifi: false,
+            airConditioning: false,
+            parking: false,
+            kitchen: false,
+            laundry: false,
+            security: false,
+            furnished: false,
+            waterIncluded: false,
+            electricityIncluded: false,
+            petsAllowed: false,
+          };
+          if (existingListing.amenities && Array.isArray(existingListing.amenities)) {
+            existingListing.amenities.forEach(amenity => {
+              const key = amenity.toLowerCase().replace(/\s+/g, '');
+              if (amenitiesObj.hasOwnProperty(key)) {
+                amenitiesObj[key] = true;
               }
-            } catch (err) {
-              console.warn('Error fetching landlord listings for edit:', err);
-            }
+            });
           }
-  
-          if (existingListing) {
-            console.log('Loading editing data for:', existingListing.name || existingListing.title || existingListing.id);
-            // Map fields from existingListing (support both name/title keys)
-            setTitle(existingListing.name ?? existingListing.title ?? '');
-            setAddress(existingListing.location ?? existingListing.address ?? '');
-            
-            // --- FIX START: Better handling for Price/Rent ---
-            // This ensures we check both 'price' and 'rent' keys, and handle 0 correctly
-            const priceValue = existingListing.price ?? existingListing.rent;
-            setRent(priceValue !== null && priceValue !== undefined ? String(priceValue) : '');
-            // --- FIX END ---
-  
-            setDescription(existingListing.description ?? existingListing.details ?? '');
-            setHouseType(existingListing.type ?? existingListing.houseType ?? 'Single Room');
-            setDistance(existingListing.distance ?? '');
-            setRules(existingListing.rules ?? []);
-            setMaxGuests(String(existingListing.max_guests || ''));
-            setTotalRooms(String(existingListing.total_rooms || ''));
-            setAvailableRooms(String(existingListing.available_rooms || ''));
-            setPostalCode(existingListing.postal_code || '');
-            setBedrooms(String(existingListing.bedrooms || ''));
-            setBathrooms(String(existingListing.bathrooms || ''));
-            setSize(String(existingListing.size || ''));
-            setMinStay(String(existingListing.min_stay || ''));
-            setAvailable(existingListing.available !== false);
-            setAvailableFrom(existingListing.availableFrom ?? '');
-            
-            // Load location data if exists
-            if (existingListing.locationData) {
-              setSelectedLocation(existingListing.locationData);
-              setMapAddress(existingListing.locationData.address || existingListing.location || existingListing.address || '');
-              setCurrentRegion({
-                latitude: existingListing.locationData.latitude,
-                longitude: existingListing.locationData.longitude,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01,
-              });
-            } else if (existingListing.latitude && existingListing.longitude) {
-              setSelectedLocation({
-                latitude: existingListing.latitude,
-                longitude: existingListing.longitude,
-                address: existingListing.location || existingListing.address || '',
-              });
-              setMapAddress(existingListing.location || existingListing.address || '');
-              setCurrentRegion({
-                latitude: existingListing.latitude,
-                longitude: existingListing.longitude,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01,
-              });
-            }
-            
-            // Amenities mapping
-            const amenitiesObj = {
-              wifi: false,
-              airConditioning: false,
-              parking: false,
-              kitchen: false,
-              laundry: false,
-              security: false,
-              furnished: false,
-              waterIncluded: false,
-              electricityIncluded: false,
-              petsAllowed: false,
-            };
-            if (existingListing.amenities && Array.isArray(existingListing.amenities)) {
-              existingListing.amenities.forEach(amenity => {
-                const key = amenity.toLowerCase().replace(/\s+/g, '');
-                if (amenitiesObj.hasOwnProperty(key)) {
-                  amenitiesObj[key] = true;
-                }
-              });
-            }
-            setAmenities(amenitiesObj);
-  
-            // Photos / images
-            setPhotos(existingListing.images || existingListing.photos || []);
-  
-            return;
-          } else {
-            // If we couldn't find the listing yet, prepare form for edit state
-            console.warn('Listing to edit not found in context or DB result for id:', paramId);
-            // keep isEditing false for now — when user submits we'll treat it as update only if we have a valid id and isEditing true
-          }
+          setAmenities(amenitiesObj);
+
+          // Photos / images
+          setPhotos(existingListing.images || existingListing.photos || []);
+
         } else {
-          // no id param -> ensure form cleared for create
+          // --- FIX: Revert if listing not found ---
+          // If we had an ID but couldn't find the listing, go back to create mode
+          // so the user doesn't see a blank "Edit" form.
+          console.warn('Listing to edit not found in context or DB. Reverting to Create mode.');
           resetForm();
         }
       };
