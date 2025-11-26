@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -18,11 +18,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Sharing from 'expo-sharing';
+import ViewShot, { captureRef } from 'react-native-view-shot';
 import { 
   supabase, 
   getCurrentUser, 
   getTenantBookings,
-  recordPayment 
 } from '../../lib/supabaseClient';
 
 const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
@@ -44,6 +45,10 @@ export default function FinancialsScreen() {
     reference: ''
   });
   
+  // Receipt State
+  const [receiptData, setReceiptData] = useState(null);
+  const singleReceiptRef = useRef();
+
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [tenantProfile, setTenantProfile] = useState(null);
@@ -51,6 +56,16 @@ export default function FinancialsScreen() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Auto-capture receipt when data is set
+  useEffect(() => {
+    if (receiptData) {
+      const timer = setTimeout(() => {
+        captureSingleReceipt();
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [receiptData]);
 
   useFocusEffect(
     useCallback(() => {
@@ -83,32 +98,28 @@ export default function FinancialsScreen() {
       }
       setTenantProfile(profile);
 
-      // --- 3. Load Bookings (Fixed Property Name Logic) ---
+      // Load Bookings
       const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profile.id);
       if (bookingsSuccess) {
         const mappedBookings = bookingsData.map(b => {
-            // Handle variable naming from different Supabase query structures
-            const listingData = b.listing || b.listings || {}; 
-            const landlordProfile = listingData.landlord_profile || {};
-            const landlordUser = landlordProfile.users || {};
-            
-            // Check title OR name
-            const propertyTitle = listingData.title || listingData.name || 'Unknown Property';
-
-            return {
-              id: b.id,
-              landlordId: listingData.landlord_id, 
-              landlordName: landlordUser.first_name ? `${landlordUser.first_name}` : 'Landlord',
-              property: propertyTitle, // <--- Uses the robust check
-              amount: b.total_amount || listingData.price || listingData.rent || 0,
-              status: b.status,
-              moveInDate: b.move_in_date
-            };
+          // Handle listing data structure safely
+          const listing = b.listing || b.listings || {};
+          const landlord = listing.landlord_profile?.users || {};
+          
+          return {
+            id: b.id,
+            landlordId: listing.landlord_id, 
+            landlordName: landlord.first_name ? `${landlord.first_name} ${landlord.last_name}` : 'Landlord',
+            property: listing.title || listing.name || 'Unknown Property',
+            amount: b.total_amount || listing.price || 0,
+            status: b.status,
+            moveInDate: b.move_in_date
+          };
         });
         setBookings(mappedBookings);
       }
 
-      // 4. Load Payments
+      // Load Payments
       const { data: dbPayments, error: paymentsError } = await supabase
         .from('payments')
         .select('*')
@@ -121,7 +132,7 @@ export default function FinancialsScreen() {
         const mappedPayments = dbPayments.map(p => ({
           ...p,
           id: p.id,
-          landlordName: 'Landlord',
+          landlordName: 'Landlord', // Ideally fetched via relation
           property: p.property_title || 'Unknown Property',
           amount: parseFloat(p.amount) || 0,
           status: p.status || 'completed',
@@ -157,16 +168,52 @@ export default function FinancialsScreen() {
     setRefreshing(false);
   };
 
-  // --- HELPER: Calculate Next Due Date ---
+  // --- RECEIPT GENERATION ---
+  const captureSingleReceipt = async () => {
+    try {
+      const uri = await captureRef(singleReceiptRef, {
+        format: 'png',
+        quality: 1.0, 
+        result: 'tmpfile'
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'image/png',
+          dialogTitle: 'Download Receipt',
+          UTI: 'public.png'
+        });
+      } else {
+        Alert.alert('Error', 'Sharing is not available on this device');
+      }
+    } catch (error) {
+      console.error('Single Receipt Export failed:', error);
+      Alert.alert('Error', 'Could not generate receipt image.');
+    } finally {
+      setReceiptData(null);
+    }
+  };
+
+  const handleViewReceipt = (payment) => {
+    Alert.alert(
+      'Payment Options',
+      `Ref: ${payment.reference}\nAmount: ₱${payment.amount.toLocaleString()}`,
+      [
+        { text: 'Close', style: 'cancel' },
+        { 
+          text: 'Download Receipt', 
+          onPress: () => setReceiptData(payment) 
+        }
+      ]
+    );
+  };
+
+  // Helpers
   const calculateNextDueDate = (moveInDateStr) => {
     if (!moveInDateStr) return 'N/A';
     const moveIn = new Date(moveInDateStr);
     const today = new Date();
-
-    if (moveIn > today) {
-      return moveIn.toISOString().split('T')[0];
-    }
-    
+    if (moveIn > today) return moveIn.toISOString().split('T')[0];
     let nextDue = new Date(moveIn);
     while (nextDue <= today) {
       nextDue.setMonth(nextDue.getMonth() + 1);
@@ -180,8 +227,7 @@ export default function FinancialsScreen() {
     
     const totalSpent = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const activeBookingsCount = bookings.filter(b => b.status === 'approved').length;
-
+    
     const rentPayments = completedPayments.filter(p => p.type === 'rent');
     const averageRent = rentPayments.length > 0 
       ? rentPayments.reduce((sum, p) => sum + p.amount, 0) / rentPayments.length 
@@ -190,9 +236,7 @@ export default function FinancialsScreen() {
     return {
       totalSpent,
       pendingAmount,
-      activeBookingsCount,
       averageRent: Math.round(averageRent),
-      completedCount: completedPayments.length,
     };
   };
 
@@ -204,20 +248,17 @@ export default function FinancialsScreen() {
     status: p.status ? p.status.charAt(0).toUpperCase() + p.status.slice(1) : 'Unknown'
   }));
 
-  // --- DYNAMIC UPCOMING DUE LOGIC ---
   const upcomingDue = bookings
     .filter(b => b.status === 'approved' || b.status === 'occupied')
     .map(b => ({
       id: `due_${b.id}`,
-      property: b.property || 'Property Name', // Fallback if still undefined
+      property: b.property || 'Property Name',
       amount: b.amount,
       dueDate: calculateNextDueDate(b.moveInDate), 
       type: 'Rent',
       bookingId: b.id,
       landlordId: b.landlordId
     }));
-
-  // --- PAYMENT ACTIONS ---
 
   const handlePayNow = (item) => {
     setSelectedBooking(item);
@@ -290,19 +331,6 @@ export default function FinancialsScreen() {
     }
   };
 
-  const handleViewReceipt = (payment) => {
-    Alert.alert(
-      'Payment Receipt',
-      `Property: ${payment.property}\n` +
-      `Amount: ₱${payment.amount.toLocaleString()}\n` +
-      `Date: ${payment.date}\n` +
-      `Method: ${payment.method}\n` +
-      `Ref: ${payment.reference}\n` +
-      `Status: ${payment.status}`,
-      [{ text: 'OK' }]
-    );
-  };
-
   useFocusEffect(
     useCallback(() => {
       const handleBackPress = () => {
@@ -324,6 +352,11 @@ export default function FinancialsScreen() {
     if (s === 'completed' || s === 'paid') return '#10b981';
     if (s === 'pending') return '#f59e0b';
     return '#666';
+  };
+  
+  const formatDate = (dateStr) => {
+    if(!dateStr) return 'N/A';
+    return new Date(dateStr).toISOString().split('T')[0];
   };
 
   return (
@@ -349,7 +382,6 @@ export default function FinancialsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         
-        {/* Period Selector */}
         <View style={styles.periodSelector}>
           {['monthly', 'quarterly', 'yearly'].map(p => (
              <TouchableOpacity 
@@ -364,7 +396,6 @@ export default function FinancialsScreen() {
           ))}
         </View>
 
-        {/* Overview Cards */}
         <View style={styles.overviewSection}>
           <Text style={styles.sectionTitle}>Overview</Text>
           <View style={styles.statsGrid}>
@@ -385,7 +416,6 @@ export default function FinancialsScreen() {
           </View>
         </View>
 
-        {/* Upcoming / Due Payments */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Upcoming Due</Text>
@@ -398,9 +428,7 @@ export default function FinancialsScreen() {
              upcomingDue.map((item) => (
                 <View key={item.id} style={styles.paymentItem}>
                    <View style={{flex:1}}>
-                      {/* --- PROPERTY NAME IS RENDERED HERE --- */}
                       <Text style={styles.propertyName}>{item.property}</Text> 
-                      
                       <Text style={styles.paymentDate}>Due: {item.dueDate}</Text>
                       <Text style={styles.paymentType}>{item.type}</Text>
                    </View>
@@ -415,7 +443,6 @@ export default function FinancialsScreen() {
           )}
         </View>
 
-        {/* Payment History */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Payment History</Text>
@@ -447,8 +474,42 @@ export default function FinancialsScreen() {
             ))
           )}
         </View>
-
       </ScrollView>
+
+      {/* --- HIDDEN VIEW: RECEIPT EXPORT --- */}
+      {receiptData && (
+        <View style={{ position: 'absolute', left: -10000, top: 0, opacity: 1, backgroundColor: 'white' }} pointerEvents="none">
+          <ViewShot ref={singleReceiptRef} options={{ format: "png", quality: 1.0 }} style={{ backgroundColor: 'white' }}>
+            <View style={styles.exportContainer}>
+              <View style={styles.exportHeader}>
+                <View style={styles.logoRow}>
+                  <Ionicons name="home" size={60} color="#CD212A" />
+                  <Text style={[styles.logoText, {fontSize: 48}]}>BoardEase</Text>
+                </View>
+                <Text style={styles.tagline}>Finding your perfect boarding house in CDO</Text>
+              </View>
+              <View style={styles.divider} />
+              <Text style={styles.recordsTitle}>Payment Receipt</Text>
+              <View style={styles.recordsList}>
+                <View style={styles.recordBlock}>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Date:</Text><Text style={styles.recordValue}>{formatDate(receiptData.date)}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{currentUser?.user_metadata?.first_name}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Property:</Text><Text style={styles.recordValue}>{receiptData.property}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Amount:</Text><Text style={styles.recordValue}>₱{receiptData.amount.toLocaleString()}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{receiptData.type}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{receiptData.status}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{receiptData.method}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{receiptData.reference}</Text></View>
+                </View>
+              </View>
+              <View style={styles.divider} />
+              <View style={styles.exportFooter}>
+                <Text style={styles.approvedText}>Received by: {receiptData.landlordName}</Text>
+              </View>
+            </View>
+          </ViewShot>
+        </View>
+      )}
 
       {/* Pay Modal */}
       <Modal visible={showPaymentModal} animationType="slide" transparent={true}>
@@ -503,7 +564,6 @@ export default function FinancialsScreen() {
                  {paymentMethod === 'cash' ? 'Record Cash Payment' : 'Confirm Payment'}
                </Text>
             </TouchableOpacity>
-
           </View>
         </View>
       </Modal>
@@ -561,4 +621,25 @@ const styles = StyleSheet.create({
   methodTextActive: { color: 'white' },
   confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 20 },
   confirmButtonText: { color: 'white', fontWeight: '600', fontSize: 16 },
+
+  // Export Styles (BoardEase Format)
+  exportContainer: {
+    width: 500,
+    backgroundColor: 'white',
+    padding: 40,
+    paddingTop: 60,
+  },
+  exportHeader: { alignItems: 'center', marginBottom: 20 },
+  logoRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  logoText: { fontSize: 40, fontWeight: 'bold', color: '#000' },
+  tagline: { fontSize: 16, color: '#555', marginTop: 8, fontStyle: 'italic' },
+  divider: { height: 3, backgroundColor: '#000', marginVertical: 20 },
+  recordsTitle: { fontSize: 32, fontWeight: 'bold', color: '#000', marginBottom: 20 },
+  recordsList: { gap: 20 },
+  recordBlock: { gap: 5 },
+  recordRow: { flexDirection: 'row', marginBottom: 4 },
+  recordLabel: { width: 140, fontSize: 18, fontWeight: '500', color: '#000' },
+  recordValue: { fontSize: 18, color: '#333', flex: 1 },
+  exportFooter: { alignItems: 'flex-end', marginTop: 20 },
+  approvedText: { fontSize: 18, color: '#000', fontWeight: '500' },
 });
