@@ -92,7 +92,16 @@ export default function Favorites() {
             location: favorite.listings?.city,
             address: favorite.listings?.address,
             price: favorite.listings?.price_per_month,
-            type: favorite.listings?.room_type,
+            type: (function(enumVal) {
+              const labels = {
+                single_room: 'Single Room',
+                shared_room: 'Shared Room',
+                studio: 'Studio Unit',
+                suite: 'Suite',
+                bed_space: 'Bed Space',
+              };
+              return labels[enumVal] || (enumVal || 'Boarding House');
+            })(favorite.listings?.room_type),
             rating: favorite.listings?.rating,
             totalReviews: favorite.listings?.total_reviews,
             images: favorite.listings?.images || [],
