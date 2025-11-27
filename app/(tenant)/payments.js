@@ -30,6 +30,7 @@ import {
   sendMessage,
   uploadMessageImage
 } from '../../lib/supabaseClient';
+import { getLandlordProfile as fetchLandlordProfile } from '../../lib/supabaseClient';
 
 const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
 
@@ -41,7 +42,7 @@ export default function FinancialsScreen() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
   const [selectedBooking, setSelectedBooking] = useState(null); 
-  const [paymentMethod, setPaymentMethod] = useState('cash'); 
+  const [paymentMethod, setPaymentMethod] = useState('gcash'); 
   const [paymentDetails, setPaymentDetails] = useState({
     accountNumber: '',
     accountName: '',
@@ -53,6 +54,7 @@ export default function FinancialsScreen() {
   const [receiptData, setReceiptData] = useState(null);
   const [receiptAction, setReceiptAction] = useState(null); // 'share' or 'chat'
   const singleReceiptRef = useRef();
+  const justPaidRef = useRef(new Set());
 
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
@@ -133,18 +135,35 @@ export default function FinancialsScreen() {
       const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profileId);
       
       if (bookingsSuccess) {
+        // Read landlord payment methods from AsyncStorage (fallback only)
+        const methodsJson = await AsyncStorage.getItem('@landlord_payment_methods');
+        let landlordPaymentMethods = [];
+        if (methodsJson) {
+          landlordPaymentMethods = JSON.parse(methodsJson);
+        }
         currentBookings = bookingsData.map(b => {
           const listing = b.listing || b.listings || {};
           const landlord = listing.landlord_profile?.users || {};
-          
+          const landlordProfile = listing.landlord_profile || {};
+          // Prefer server profile fields, fallback to locally saved landlord methods (dev)
+          const gcashMethod = landlordPaymentMethods.find(m => m.type === 'gcash');
+          const paymayaMethod = landlordPaymentMethods.find(m => m.type === 'paymaya');
+          const bankMethod = landlordPaymentMethods.find(m => m.type === 'bank_account');
+          const gcashNumber = landlordProfile.gcash_number || landlordProfile.gcash || landlordProfile.gcash_phone || gcashMethod?.phone || '';
+          const paymayaNumber = landlordProfile.paymaya_number || landlordProfile.paymaya || paymayaMethod?.phone || '';
+          const bankAcct = landlordProfile.bank_account || landlordProfile.bankAccount || bankMethod?.accountNumber || '';
           return {
             id: b.id,
+            listingId: listing.id,
             landlordId: listing.landlord_id, 
             landlordName: landlord.first_name ? `${landlord.first_name} ${landlord.last_name}` : 'Landlord',
             property: listing.title || listing.name || 'Unknown Property',
             amount: b.total_amount || listing.price || 0,
             status: b.status,
-            moveInDate: b.move_in_date
+            moveInDate: b.move_in_date,
+            landlordGcash: gcashNumber,
+            landlordPaymaya: paymayaNumber,
+            landlordBank: bankAcct
           };
         });
         setBookings(currentBookings);
@@ -163,7 +182,8 @@ export default function FinancialsScreen() {
 
       if (!paymentsError && dbPayments) {
         const mappedPayments = dbPayments.map(p => {
-          const matchedBooking = currentBookings.find(b => b.landlordId === p.landlord_id);
+          const matchedByBooking = currentBookings.find(b => String(b.id) === String(p.booking_id));
+          const matchedBooking = matchedByBooking || currentBookings.find(b => b.landlordId === p.landlord_id);
           const resolvedLandlordName = matchedBooking ? matchedBooking.landlordName : 'Landlord';
 
           const mapped = {
@@ -402,6 +422,21 @@ export default function FinancialsScreen() {
     return nextDue.toISOString().split('T')[0];
   };
 
+  // Normalize any date-like value into YYYY-MM-DD for reliable equality checks
+  const dateKey = (v) => {
+    if (!v) return '';
+    if (typeof v === 'string') {
+      if (v.includes('T')) return v.split('T')[0];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+      const d = new Date(v);
+      if (!isNaN(d)) return d.toISOString().split('T')[0];
+      return '';
+    }
+    const d = new Date(v);
+    if (isNaN(d)) return '';
+    return d.toISOString().split('T')[0];
+  };
+
   const calculateFinancialData = () => {
     const completedPayments = payments.filter(p => p.status === 'completed' || p.status === 'paid');
     
@@ -446,13 +481,27 @@ export default function FinancialsScreen() {
 
         const dueDateStr = nextDue.toISOString().split('T')[0];
 
+        // Immediate hide if we just paid this specific due (optimistic guard)
+        if (justPaidRef.current.has(`${b.id}_${dueDateStr}`)) {
+          return null; // skip returning a due for this month
+        }
+
         const alreadyPaid = payments.some(p => {
-          const paymentDate = (p.date || p.paidDate || '').toString().split('T')[0];
-          return (
-            p.booking_id === b.id &&
-            paymentDate === dueDateStr &&
-            (p.status === 'completed' || p.status === 'paid')
-          );
+          const paymentDate = dateKey(p.date || p.paidDate || p.paid_date);
+          const statusLower = (p.status || '').toString().toLowerCase();
+          if (String(p.booking_id) !== String(b.id) || !(statusLower === 'completed' || statusLower === 'paid')) {
+            return false;
+          }
+          if (paymentDate === dueDateStr) return true;
+          // Fallback: consider paid if same month and year (handles TZ or boundary issues)
+          if (paymentDate) {
+            const pd = new Date(paymentDate);
+            const dd = new Date(dueDateStr);
+            if (!isNaN(pd) && !isNaN(dd) && pd.getUTCFullYear() === dd.getUTCFullYear() && pd.getUTCMonth() === dd.getUTCMonth()) {
+              return true;
+            }
+          }
+          return false;
         });
 
         if (!alreadyPaid) {
@@ -463,8 +512,12 @@ export default function FinancialsScreen() {
             dueDate: dueDateStr,
             type: 'Rent',
             bookingId: b.id,
+            listingId: b.listingId,
             landlordId: b.landlordId,
-            landlordName: b.landlordName
+            landlordName: b.landlordName,
+            landlordGcash: b.landlordGcash || '',
+            landlordPaymaya: b.landlordPaymaya || '',
+            landlordBank: b.landlordBank || ''
           };
         }
 
@@ -479,9 +532,29 @@ export default function FinancialsScreen() {
 
   const financialData = calculateFinancialData();
 
-  const handlePayNow = (item) => {
-    setSelectedBooking(item);
-    setPaymentMethod('cash'); 
+  const handlePayNow = async (item) => {
+    let enriched = { ...item };
+    // If no methods attached to the item, try fetching landlord profile
+    if (!enriched.landlordGcash && !enriched.landlordPaymaya && !enriched.landlordBank && item?.landlordId) {
+      try {
+        const { success, profile } = await fetchLandlordProfile(item.landlordId);
+        if (success && profile) {
+          const lp = profile || {};
+          const gcash = lp.gcash_number || lp.gcash || lp.gcash_phone || '';
+          const paymaya = lp.paymaya_number || lp.paymaya || '';
+          const bank = lp.bank_account || lp.bankAccount || '';
+          enriched = { ...enriched, landlordGcash: gcash, landlordPaymaya: paymaya, landlordBank: bank };
+        }
+      } catch {}
+    }
+
+    setSelectedBooking(enriched);
+    const available = [];
+    if (enriched?.landlordGcash) available.push('gcash');
+    if (enriched?.landlordPaymaya) available.push('paymaya');
+    if (enriched?.landlordBank) available.push('bank');
+    const initialMethod = available[0] || 'gcash';
+    setPaymentMethod(initialMethod);
     setPaymentDetails({
       accountNumber: '',
       accountName: tenantName, // Pre-fill with fetched name
@@ -490,6 +563,8 @@ export default function FinancialsScreen() {
     });
     setShowPaymentModal(true);
   };
+
+  // Removed auto-fill of account number; tenant will input their own
 
   const processPayment = async () => {
     if (!paymentDetails.amount) {
@@ -502,19 +577,20 @@ export default function FinancialsScreen() {
     }
 
     const amountFloat = parseFloat(paymentDetails.amount);
+    const duePaidDate = (selectedBooking?.dueDate) ? selectedBooking.dueDate : new Date().toISOString().split('T')[0];
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
     
     const nameToUse = tenantName || 'Tenant';
 
     const newPayment = {
       booking_id: selectedBooking?.bookingId,
-      listing_id: selectedBooking?.id || selectedBooking?.listingId,
+      listing_id: selectedBooking?.listingId,
       tenant_id: tenantProfile?.id,
       landlord_id: selectedBooking?.landlordId, 
       amount: amountFloat,
       payment_type: 'rent',
       status: 'completed', 
-      paid_date: new Date().toISOString().split('T')[0],
+      paid_date: duePaidDate,
       payment_method: paymentMethod, 
       reference_number: generatedRef,
       notes: `Payment made by ${nameToUse}`
@@ -523,8 +599,8 @@ export default function FinancialsScreen() {
     const optimisticPayment = { 
         ...newPayment, 
         id: `temp_${Date.now()}`, 
-        date: newPayment.paid_date, 
-        paidDate: newPayment.paid_date,
+        date: duePaidDate, 
+        paidDate: duePaidDate,
         property: selectedBooking?.property,
         tenant_name: nameToUse,
         property_title: selectedBooking?.property,
@@ -537,6 +613,11 @@ export default function FinancialsScreen() {
       reference: generatedRef
     };
     
+    // Mark this booking+due date as just paid for immediate UI reflection
+    if (selectedBooking?.bookingId && duePaidDate) {
+      justPaidRef.current.add(`${selectedBooking.bookingId}_${duePaidDate}`);
+    }
+
     setPayments(prev => [optimisticPayment, ...prev]);
     setShowPaymentModal(false);
 
@@ -571,7 +652,7 @@ export default function FinancialsScreen() {
         return true; 
       };
       let backHandlerSubscription;
-      if (Platform.OS === 'android') {
+               if (Platform.OS === 'android') {
         backHandlerSubscription = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
       }
       return () => {
@@ -595,6 +676,17 @@ export default function FinancialsScreen() {
   const formatType = (type) => {
       return type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Payment';
   };
+
+  // Derived UI state for modal validation
+  const availableMethods = selectedBooking
+    ? ['gcash', 'paymaya', 'bank'].filter(m => (
+        m === 'gcash' ? selectedBooking?.landlordGcash : m === 'paymaya' ? selectedBooking?.landlordPaymaya : selectedBooking?.landlordBank
+      ))
+    : [];
+  const hasAvailableMethods = availableMethods.length > 0;
+  const amountValid = !!paymentDetails?.amount && !isNaN(parseFloat(paymentDetails.amount)) && parseFloat(paymentDetails.amount) > 0;
+  const hasAccountNumber = !!(paymentDetails?.accountNumber && String(paymentDetails.accountNumber).trim());
+  const confirmDisabled = !hasAvailableMethods || !amountValid || !hasAccountNumber;
 
   return (
     <>
@@ -770,21 +862,53 @@ export default function FinancialsScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.summaryLabel}>Property: <Text style={styles.summaryValue}>{selectedBooking?.property}</Text></Text>
-            <Text style={styles.summaryLabel}>Amount: <Text style={[styles.summaryValue, {color:Colors.primary}]}>₱{parseFloat(paymentDetails.amount || 0).toLocaleString()}</Text></Text>
+            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+              <Text style={styles.summaryLabel}>Property:</Text>
+              <Text style={styles.summaryValue}>{selectedBooking?.property}</Text>
+            </View>
+            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+              <Text style={styles.summaryLabel}>Amount:</Text>
+              <Text style={[styles.summaryValue, {color:Colors.primary}]}>₱{parseFloat(paymentDetails.amount || 0).toLocaleString()}</Text>
+            </View>
+
+            {/* Show only the number for the selected payment method */}
+            <View style={{marginVertical:10}}>
+              {paymentMethod === 'gcash' && selectedBooking?.landlordGcash && (
+                <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                  <Text style={styles.summaryLabel}>Sending to:</Text>
+                  <Text style={styles.summaryValue}>{selectedBooking.landlordGcash}</Text>
+                </View>
+              )}
+              {paymentMethod === 'paymaya' && selectedBooking?.landlordPaymaya && (
+                <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                  <Text style={styles.summaryLabel}>Sending to:</Text>
+                  <Text style={styles.summaryValue}>{selectedBooking.landlordPaymaya}</Text>
+                </View>
+              )}
+              {paymentMethod === 'bank' && selectedBooking?.landlordBank && (
+                <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                  <Text style={styles.summaryLabel}>Sending to:</Text>
+                  <Text style={styles.summaryValue}>{selectedBooking.landlordBank}</Text>
+                </View>
+              )}
+            </View>
 
             <View style={styles.formSection}>
                <Text style={styles.formLabel}>Select Method</Text>
                <View style={{flexDirection:'row', gap:10, flexWrap:'wrap'}}>
-                  {['gcash', 'paymaya', 'bank'].map(m => (
-                    <TouchableOpacity 
-                      key={m} 
-                      style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
-                      onPress={() => setPaymentMethod(m)}
-                    >
-                      <Text style={[styles.methodText, paymentMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
-                    </TouchableOpacity>
-                  ))}
+                  {availableMethods.length === 0 ? (
+                    <Text style={{ color: '#666', fontStyle: 'italic' }}>No payment methods available for this landlord.</Text>
+                  ) : (
+                    availableMethods.map(m => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
+                        onPress={() => setPaymentMethod(m)}
+                      >
+                        <Text style={[styles.methodText, paymentMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
+                      </TouchableOpacity>
+                    ))
+                  )}
                </View>
             </View>
 
@@ -795,11 +919,11 @@ export default function FinancialsScreen() {
                 placeholder="09xxxxxxxxx or Acc #" 
                 keyboardType="numeric"
                 value={paymentDetails.accountNumber}
-                onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
+                 onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
               />
             </View>
 
-            <TouchableOpacity style={styles.confirmButton} onPress={processPayment}>
+            <TouchableOpacity style={[styles.confirmButton, confirmDisabled && styles.confirmButtonDisabled]} disabled={confirmDisabled} onPress={processPayment}>
                <Text style={styles.confirmButtonText}>
                  Confirm Payment
                </Text>
@@ -861,6 +985,7 @@ const styles = StyleSheet.create({
   methodText: { fontSize: 12, color: '#666', fontWeight: '600' },
   methodTextActive: { color: 'white' },
   confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 20 },
+  confirmButtonDisabled: { backgroundColor: '#cccccc' },
   confirmButtonText: { color: 'white', fontWeight: '600', fontSize: 16 },
 
   // Export Styles (BoardEase Format)
