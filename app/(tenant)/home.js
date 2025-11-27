@@ -76,30 +76,33 @@ export default function Home() {
 
       if (success) {
         // Transform Supabase data to match component expectations
-        const transformedListings = data.map(listing => ({
-          id: listing.id,
-          name: listing.title,
-          description: listing.description,
-          location: listing.city,
-          address: listing.address,
-          price: listing.price_per_month,
-          type: listing.room_type,
-          rating: listing.rating,
-          totalReviews: listing.total_reviews,
-          images: listing.images || [],
-          amenities: listing.amenities || [],
-          landlord: {
-            id: listing.landlord_profile?.user_id,
-            name: `${listing.landlord_profile?.users?.first_name} ${listing.landlord_profile?.users?.last_name}`,
-            image: listing.landlord_profile?.users?.profile_image_url,
-            rating: listing.landlord_profile?.rating,
-            verified: listing.landlord_profile?.bank_account_verified,
-          },
-          latitude: listing.latitude,
-          longitude: listing.longitude,
-        }));
+          // Only show available properties (not occupied)
+          const transformedListings = data
+            .filter(listing => listing.status !== 'occupied')
+            .map(listing => ({
+              id: listing.id,
+              name: listing.title,
+              description: listing.description,
+              location: listing.city,
+              address: listing.address,
+              price: listing.price_per_month,
+              type: listing.room_type,
+              rating: listing.rating,
+              totalReviews: listing.total_reviews,
+              images: listing.images || [],
+              amenities: listing.amenities || [],
+              landlord: {
+                id: listing.landlord_profile?.user_id,
+                name: `${listing.landlord_profile?.users?.first_name} ${listing.landlord_profile?.users?.last_name}`,
+                image: listing.landlord_profile?.users?.profile_image_url,
+                rating: listing.landlord_profile?.rating,
+                verified: listing.landlord_profile?.bank_account_verified,
+              },
+              latitude: listing.latitude,
+              longitude: listing.longitude,
+            }));
 
-        setListings(transformedListings);
+          setListings(transformedListings);
       }
     } catch (error) {
       console.error('Load data error:', error);

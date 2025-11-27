@@ -25,7 +25,10 @@ import {
   supabase, 
   getCurrentUser, 
   getTenantBookings,
-  getTenantProfile 
+  getTenantProfile,
+  createConversation,
+  sendMessage,
+  uploadMessageImage
 } from '../../lib/supabaseClient';
 
 const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
@@ -91,11 +94,11 @@ export default function FinancialsScreen() {
       let fetchedTenantName = 'Tenant';
       let profileId = null;
 
-      const { success: profileSuccess, user: profileUser } = await getTenantProfile(user.id);
+      const { success: profileSuccess, user: userObj, profile } = await getTenantProfile(user.id);
       
-      if (profileSuccess && profileUser) {
-        fetchedTenantName = `${profileUser.first_name || ''} ${profileUser.last_name || ''}`.trim() || 'Tenant';
-        profileId = profileUser.id; 
+      if (profileSuccess && userObj) {
+        fetchedTenantName = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim() || 'Tenant';
+        profileId = profile?.id; // Get ID from profile object, not user object
         
         if (!profileId) {
              const { data: rawProfile } = await supabase
@@ -216,16 +219,119 @@ export default function FinancialsScreen() {
         }
       } else if (receiptAction === 'chat') {
         // Option B: Send to Landlord
-        if (receiptData.landlordId) {
-            router.push({
-              pathname: '/(tenant)/chat',
-              params: { 
-                landlordId: receiptData.landlordId,
-                landlordName: receiptData.landlordName,
-                // Pass the generated image URI to the chat screen
-                attachment: uri 
-              }
+        let landlordId = receiptData?.landlordId || receiptData?.landlord_id || (receiptData?.landlord && (receiptData.landlord.id || receiptData.landlord.user_id)) || null;
+        let landlordName = receiptData?.landlordName || receiptData?.landlord_name || (receiptData?.landlord && (receiptData.landlord.first_name ? `${receiptData.landlord.first_name} ${receiptData.landlord.last_name}` : null)) || 'Landlord';
+
+        // Fallbacks: try to resolve landlordId from bookings or other payments if missing
+        if (!landlordId) {
+          // Try booking match by bookingId
+          const bookingId = receiptData?.bookingId || receiptData?.booking_id || receiptData?.booking;
+          if (bookingId) {
+            const found = bookings.find(b => String(b.id) === String(bookingId));
+            if (found) landlordId = found.landlordId || found.landlord_id || null;
+          }
+        }
+
+        if (!landlordId && receiptData?.property) {
+          const foundByProp = bookings.find(b => (b.property || '').toLowerCase() === (receiptData.property || '').toLowerCase());
+          if (foundByProp) landlordId = foundByProp.landlordId || foundByProp.landlord_id || null;
+        }
+
+        if (!landlordId && receiptData?.landlordName) {
+          const foundByName = bookings.find(b => (b.landlordName || '').toLowerCase() === (receiptData.landlordName || '').toLowerCase());
+          if (foundByName) landlordId = foundByName.landlordId || foundByName.landlord_id || null;
+        }
+
+        if (!landlordId && payments && payments.length) {
+          const foundInPayments = payments.find(p => (p.landlordName || '').toLowerCase() === (receiptData.landlordName || '').toLowerCase() && (p.landlordId || p.landlord_id));
+          if (foundInPayments) landlordId = foundInPayments.landlordId || foundInPayments.landlord_id || null;
+        }
+
+        if (landlordId) {
+          try {
+            // Ensure we have tenantProfile id and current user
+            const tenantProfileId = tenantProfile?.id;
+            const current = await getCurrentUser();
+            const senderUserId = current?.id;
+
+            // Find existing conversation between tenant and landlord
+            let conversation = null;
+            const { data: existingConv, error: existingConvErr } = await supabase
+              .from('conversations')
+              .select('*')
+              .eq('tenant_id', tenantProfileId)
+              .eq('landlord_id', landlordId)
+              .maybeSingle();
+
+            if (existingConvErr) console.warn('Existing conversation lookup error:', existingConvErr);
+
+            // Debug: dump all relevant context
+            console.log('DEBUG Conversation creation:', {
+              tenantProfileId,
+              landlordId,
+              landlordName,
+              listingIdForConv: receiptData?.listingId || receiptData?.listing_id || selectedBooking?.listingId || selectedBooking?.listing_id || null,
+              receiptData,
+              selectedBooking,
+              bookings,
+              payments
             });
+
+            if (existingConv) {
+              conversation = existingConv;
+            } else {
+              // Create a new conversation (use createConversation helper if possible)
+              const listingIdForConv = receiptData?.listingId || receiptData?.listing_id || selectedBooking?.listingId || selectedBooking?.listing_id || null;
+              try {
+                const { success: convSuccess, conversation: createdConv } = await createConversation(tenantProfileId, landlordId, listingIdForConv);
+                if (convSuccess && createdConv) {
+                  conversation = createdConv;
+                }
+              } catch (e) {
+                console.warn('createConversation helper failed:', e);
+              }
+
+              if (!conversation) {
+                // Fallback: try direct insert. If listingId is missing, insert without it.
+                const insertPayload = listingIdForConv ? { tenant_id: tenantProfileId, landlord_id: landlordId, listing_id: listingIdForConv } : { tenant_id: tenantProfileId, landlord_id: landlordId };
+                const { data: newConv, error: insertErr } = await supabase
+                  .from('conversations')
+                  .insert([insertPayload])
+                  .select()
+                  .single();
+
+                if (insertErr) {
+                  console.error('Conversation insert error:', insertErr);
+                  Alert.alert('Error', `Conversation creation failed: ${insertErr.message || JSON.stringify(insertErr)}`);
+                  conversation = null;
+                } else {
+                  conversation = newConv;
+                }
+              }
+            }
+
+            if (!conversation) throw new Error('Could not create/find conversation');
+
+            // Upload the image to storage and send as message
+            const uploadRes = await uploadMessageImage(uri, senderUserId || tenantProfileId);
+            const imageUrl = uploadRes?.success ? uploadRes.publicUrl : null;
+
+            const messageText = `Payment Receipt${receiptData?.reference ? ' - Ref: ' + receiptData.reference : ''}`;
+
+            // sendMessage will create the message row and the notification for the landlord
+            const sendRes = await sendMessage(conversation.id, senderUserId || tenantProfileId, messageText, imageUrl);
+            if (!sendRes.success) {
+              console.warn('Failed to send message:', sendRes.error);
+              Alert.alert('Warning', 'Receipt saved but message delivery failed.');
+            }
+
+            // Navigate to conversation in chat screen
+            router.push({ pathname: '/(tenant)/chat', params: { conversationId: conversation.id } });
+
+          } catch (err) {
+            console.error('Failed to send receipt to landlord:', err);
+            Alert.alert('Error', 'Failed to send receipt to landlord.');
+          }
         } else {
             Alert.alert("Error", "Landlord information missing for this payment.");
         }
@@ -305,17 +411,44 @@ export default function FinancialsScreen() {
   }));
 
   const upcomingDue = bookings
-    .filter(b => b.status === 'approved' || b.status === 'occupied')
-    .map(b => ({
-      id: `due_${b.id}`,
-      property: b.property || 'Property Name',
-      amount: b.amount,
-      dueDate: calculateNextDueDate(b.moveInDate), 
-      type: 'Rent',
-      bookingId: b.id,
-      landlordId: b.landlordId,
-      landlordName: b.landlordName
-    }));
+    .flatMap(b => {
+      // Show all future unpaid rent for each property (recurring monthly)
+      if (!(b.status === 'approved' || b.status === 'occupied')) return [];
+      const today = new Date();
+      const moveIn = new Date(b.moveInDate);
+      let dueDates = [];
+      let nextDue = new Date(moveIn);
+      // Generate up to 12 future months (or until a payment is found)
+      for (let i = 0; i < 12; i++) {
+        if (nextDue < today) {
+          nextDue.setMonth(nextDue.getMonth() + 1);
+          continue;
+        }
+        const dueDateStr = nextDue.toISOString().split('T')[0];
+        // Check if payment exists for this property and due date
+        const alreadyPaid = payments.some(p => {
+          return (
+            (p.property === b.property || p.property_title === b.property) &&
+            p.payment_date === dueDateStr &&
+            (p.status === 'completed' || p.status === 'paid')
+          );
+        });
+        if (!alreadyPaid) {
+          dueDates.push({
+            id: `due_${b.id}_${dueDateStr}`,
+            property: b.property || 'Property Name',
+            amount: b.amount,
+            dueDate: dueDateStr,
+            type: 'Rent',
+            bookingId: b.id,
+            landlordId: b.landlordId,
+            landlordName: b.landlordName
+          });
+        }
+        nextDue.setMonth(nextDue.getMonth() + 1);
+      }
+      return dueDates;
+    });
 
   const handlePayNow = (item) => {
     setSelectedBooking(item);
@@ -364,9 +497,10 @@ export default function FinancialsScreen() {
         paidDate: newPayment.payment_date,
         property: newPayment.property_title,
         tenantName: nameToUse,
-        landlordName: selectedBooking?.landlordName || 'Landlord',
-        type: 'Rent',
-        status: 'Completed'
+      landlordName: selectedBooking?.landlordName || 'Landlord',
+      landlordId: newPayment.landlord_id || selectedBooking?.landlordId || selectedBooking?.landlord_id || null,
+      type: 'Rent',
+      status: 'Completed'
     };
     
     setPayments(prev => [optimisticPayment, ...prev]);
