@@ -81,7 +81,6 @@ export default function FinancialsScreen() {
       
       // Poll every 10 seconds while screen is focused to check for updated payment statuses
       const pollInterval = setInterval(() => {
-        console.log('📊 Polling for payment updates (tenant)...');
         loadData();
       }, 10000);
 
@@ -176,8 +175,6 @@ export default function FinancialsScreen() {
         .eq('tenant_id', profileId)
         .order('paid_date', { ascending: false });
 
-      console.log('[loadData] Payments fetched:', dbPayments?.length || 0, 'Error:', paymentsError?.message);
-
       let allPayments = [];
 
       if (!paymentsError && dbPayments) {
@@ -201,10 +198,6 @@ export default function FinancialsScreen() {
             reference: p.reference_number || 'N/A',
           };
           
-          if (p.status === 'completed') {
-            console.log('[loadData] Completed payment found:', p.reference_number, 'Date:', p.paid_date);
-          }
-          
           return mapped;
         });
         allPayments = mappedPayments;
@@ -218,8 +211,7 @@ export default function FinancialsScreen() {
       }
 
       allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
-      console.log('[loadData] Final payments count:', allPayments.length);
-      console.log('[loadData] Completed payments:', allPayments.filter(p => p.status === 'completed').length);
+      
       setPayments(allPayments);
 
     } catch (error) {
@@ -317,18 +309,6 @@ export default function FinancialsScreen() {
               if (!candidates.length) candidates = withParticipants.length ? withParticipants : normalized;
               conversation = candidates[0];
             }
-
-            // Debug: dump all relevant context
-            console.log('DEBUG Conversation creation:', {
-              tenantProfileId,
-              landlordId,
-              landlordName,
-              listingIdForConv: receiptData?.listingId || receiptData?.listing_id || selectedBooking?.listingId || selectedBooking?.listing_id || null,
-              receiptData,
-              selectedBooking,
-              bookings,
-              payments
-            });
 
             if (!conversation) {
               // Create a new conversation (use createConversation helper if possible)
@@ -448,32 +428,27 @@ export default function FinancialsScreen() {
     return d.toISOString().split('T')[0];
   };
 
-  const calculateFinancialData = () => {
-    const completedPayments = payments.filter(p => p.status === 'completed' || p.status === 'paid');
-    
-    // Calculate total spent from completed payments
-    const totalSpent = completedPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
-    
-    // Calculate pending from upcomingDue (upcoming rent that hasn't been paid yet)
-    const pendingAmount = upcomingDue.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-    
-    const rentPayments = completedPayments.filter(p => p.type === 'rent');
-    const averageRent = rentPayments.length > 0 
-      ? rentPayments.reduce((sum, p) => sum + p.amount, 0) / rentPayments.length 
-      : 0;
-
-    return {
-      totalSpent,
-      pendingAmount,
-      averageRent: Math.round(averageRent),
-    };
-  };
-
   const paymentHistory = payments.map(p => ({
     ...p,
     type: p.type ? p.type.charAt(0).toUpperCase() + p.type.slice(1) : 'Payment',
     status: p.status ? p.status.charAt(0).toUpperCase() + p.status.slice(1) : 'Unknown'
   }));
+
+  const paidDueKeys = new Set();
+  const paidDueMonthKeys = new Set();
+  payments.forEach(p => {
+    const statusLower = (p.status || '').toLowerCase();
+    if (statusLower !== 'completed' && statusLower !== 'paid') return;
+    const bookingId = String(p.booking_id || p.bookingId || '');
+    if (!bookingId) return;
+    const paymentDateKey = dateKey(p.paid_date || p.date || p.paidDate);
+    if (!paymentDateKey) return;
+    paidDueKeys.add(`${bookingId}_${paymentDateKey}`);
+    const monthKey = paymentDateKey.slice(0, 7);
+    if (monthKey.length === 7) {
+      paidDueMonthKeys.add(`${bookingId}_${monthKey}`);
+    }
+  });
 
   // For each booking/property, return at most ONE upcoming due (the next unpaid month)
   const upcomingDue = bookings
@@ -491,55 +466,66 @@ export default function FinancialsScreen() {
         }
 
         const dueDateStr = nextDue.toISOString().split('T')[0];
+        const dueDateKey = dateKey(dueDateStr);
+        if (!dueDateKey) {
+          nextDue.setMonth(nextDue.getMonth() + 1);
+          continue;
+        }
 
         // Immediate hide if we just paid this specific due (optimistic guard)
         if (justPaidRef.current.has(`${b.id}_${dueDateStr}`)) {
-          return null; // skip returning a due for this month
+          nextDue.setMonth(nextDue.getMonth() + 1);
+          continue;
         }
 
-        const alreadyPaid = payments.some(p => {
-          const paymentDate = dateKey(p.date || p.paidDate || p.paid_date);
-          const statusLower = (p.status || '').toString().toLowerCase();
-          if (String(p.booking_id) !== String(b.id) || !(statusLower === 'completed' || statusLower === 'paid')) {
-            return false;
-          }
-          if (paymentDate === dueDateStr) return true;
-          // Fallback: consider paid if same month and year (handles TZ or boundary issues)
-          if (paymentDate) {
-            const pd = new Date(paymentDate);
-            const dd = new Date(dueDateStr);
-            if (!isNaN(pd) && !isNaN(dd) && pd.getUTCFullYear() === dd.getUTCFullYear() && pd.getUTCMonth() === dd.getUTCMonth()) {
-              return true;
-            }
-          }
-          return false;
-        });
-
-        if (!alreadyPaid) {
-          return {
-            id: `due_${b.id}_${dueDateStr}`,
-            property: b.property || 'Property Name',
-            amount: b.amount,
-            dueDate: dueDateStr,
-            type: 'Rent',
-            bookingId: b.id,
-            listingId: b.listingId,
-            landlordId: b.landlordId,
-            landlordName: b.landlordName,
-            landlordGcash: b.landlordGcash || '',
-            landlordPaymaya: b.landlordPaymaya || '',
-            landlordBank: b.landlordBank || ''
-          };
+        const dueKey = `${b.id}_${dueDateKey}`;
+        const dueMonthKey = `${b.id}_${dueDateKey.slice(0, 7)}`;
+        if (paidDueKeys.has(dueKey) || paidDueMonthKeys.has(dueMonthKey)) {
+          nextDue.setMonth(nextDue.getMonth() + 1);
+          continue;
         }
 
-        // if paid, try next month
-        nextDue.setMonth(nextDue.getMonth() + 1);
+        return {
+          id: `due_${b.id}_${dueDateStr}`,
+          property: b.property || 'Property Name',
+          amount: b.amount,
+          dueDate: dueDateStr,
+          type: 'Rent',
+          bookingId: b.id,
+          listingId: b.listingId,
+          landlordId: b.landlordId,
+          landlordName: b.landlordName,
+          landlordGcash: b.landlordGcash || '',
+          landlordPaymaya: b.landlordPaymaya || '',
+          landlordBank: b.landlordBank || ''
+        };
       }
 
       // No upcoming unpaid due found within the next 12 months
       return null;
     })
     .filter(Boolean);
+
+    const calculateFinancialData = () => {
+        const completedPayments = payments.filter(p => p.status === 'completed' || p.status === 'paid');
+        
+        // Calculate total spent from completed payments
+        const totalSpent = completedPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
+        
+        // Calculate pending from upcomingDue (upcoming rent that hasn't been paid yet)
+        const pendingAmount = upcomingDue.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+        
+        const rentPayments = completedPayments.filter(p => p.type === 'rent');
+        const averageRent = rentPayments.length > 0 
+          ? rentPayments.reduce((sum, p) => sum + p.amount, 0) / rentPayments.length 
+          : 0;
+    
+        return {
+          totalSpent,
+          pendingAmount,
+          averageRent: Math.round(averageRent),
+        };
+      };
 
   const financialData = calculateFinancialData();
 
@@ -578,6 +564,7 @@ export default function FinancialsScreen() {
   // Removed auto-fill of account number; tenant will input their own
 
   const processPayment = async () => {
+    // 1. Validation
     if (!paymentDetails.amount) {
       Alert.alert('Error', 'Please enter amount');
       return;
@@ -588,11 +575,23 @@ export default function FinancialsScreen() {
     }
 
     const amountFloat = parseFloat(paymentDetails.amount);
+    // Use the exact due date from the booking so it matches the "Upcoming Due" logic
     const duePaidDate = (selectedBooking?.dueDate) ? selectedBooking.dueDate : new Date().toISOString().split('T')[0];
-    const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
     
+    const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
     const nameToUse = tenantName || 'Tenant';
 
+    // Map payment methods to database allowed values
+    const paymentMethodMap = {
+      'gcash': 'mobile_wallet',
+      'paymaya': 'mobile_wallet',
+      'bank': 'bank_transfer',
+      'cash': 'cash'
+    };
+    
+    const dbPaymentMethod = paymentMethodMap[paymentMethod] || 'bank_transfer';
+
+    // 2. Prepare Data Objects
     const newPayment = {
       booking_id: selectedBooking?.bookingId,
       listing_id: selectedBooking?.listingId,
@@ -602,57 +601,60 @@ export default function FinancialsScreen() {
       payment_type: 'rent',
       status: 'completed', 
       paid_date: duePaidDate,
-      payment_method: paymentMethod, 
+      payment_method: dbPaymentMethod, 
       reference_number: generatedRef,
-      notes: `Payment made by ${nameToUse}`
+      notes: `Payment made by ${nameToUse} via ${paymentMethod.toUpperCase()}`
     };
 
+    // UI Object (Matches exactly what Payment History needs)
     const optimisticPayment = { 
         ...newPayment, 
         id: `temp_${Date.now()}`, 
         date: duePaidDate, 
         paidDate: duePaidDate,
-        property: selectedBooking?.property,
+        property: selectedBooking?.property || 'Property', // Ensure property name exists
         tenant_name: nameToUse,
         property_title: selectedBooking?.property,
         tenantName: nameToUse,
-      landlordName: selectedBooking?.landlordName || 'Landlord',
-      landlordId: newPayment.landlord_id || selectedBooking?.landlordId || selectedBooking?.landlord_id || null,
-      type: 'Rent',
-      status: 'completed',
-      method: paymentMethod,
-      reference: generatedRef
+        landlordName: selectedBooking?.landlordName || 'Landlord',
+        landlordId: newPayment.landlord_id,
+        type: 'Rent',
+        status: 'completed',
+        method: paymentMethod,
+        reference: generatedRef
     };
     
-    // Mark this booking+due date as just paid for immediate UI reflection
-    if (selectedBooking?.bookingId && duePaidDate) {
-      justPaidRef.current.add(`${selectedBooking.bookingId}_${duePaidDate}`);
-    }
-
+    // 3. Update UI Immediately
+    // Add to History immediately
     setPayments(prev => [optimisticPayment, ...prev]);
     setShowPaymentModal(false);
 
     try {
-        console.log('[processPayment] Inserting payment:', newPayment);
-        const { error, data } = await supabase.from('payments').insert([newPayment]);
+        // 4. Save to Database
+        const { error } = await supabase.from('payments').insert([newPayment]);
         
-        console.log('[processPayment] Insert result - Error:', error?.message, 'Data:', data);
-        
+        // 5. CRITICAL FIX: Save to Local Storage regardless of DB result
+        // This ensures loadData() (which runs on a timer) picks this up 
+        // even if the DB is slow to update.
+        const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+        const existing = existingJson ? JSON.parse(existingJson) : [];
+        existing.push(optimisticPayment);
+        await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existing));
+
         if (error) {
-            console.warn("DB Save failed, saving locally", error);
-            const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-            const existing = existingJson ? JSON.parse(existingJson) : [];
-            existing.push(optimisticPayment);
-            await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existing));
-        } else {
-            console.log('[processPayment] Payment inserted successfully, reloading data...');
-            await loadData();
-        }
+            console.warn("DB Save failed, kept local copy", error);
+            // We don't alert error here because we already saved it locally for the user
+        } 
+
+        // DO NOT CALL await loadData() HERE.
+        // Calling it immediately often fetches old data before the DB is ready.
+        // The local update + AsyncStorage is sufficient.
 
         Alert.alert('Success', `Payment Sent! Ref: ${generatedRef}`);
 
     } catch (err) {
-        Alert.alert('Error', 'Payment failed');
+        console.error(err);
+        Alert.alert('Error', 'An unexpected error occurred, but receipt saved locally.');
     }
   };
 
@@ -689,15 +691,10 @@ export default function FinancialsScreen() {
   };
 
   // Derived UI state for modal validation
-  const availableMethods = selectedBooking
-    ? ['gcash', 'paymaya', 'bank'].filter(m => (
-        m === 'gcash' ? selectedBooking?.landlordGcash : m === 'paymaya' ? selectedBooking?.landlordPaymaya : selectedBooking?.landlordBank
-      ))
-    : [];
-  const hasAvailableMethods = availableMethods.length > 0;
   const amountValid = !!paymentDetails?.amount && !isNaN(parseFloat(paymentDetails.amount)) && parseFloat(paymentDetails.amount) > 0;
   const hasAccountNumber = !!(paymentDetails?.accountNumber && String(paymentDetails.accountNumber).trim());
-  const confirmDisabled = !hasAvailableMethods || !amountValid || !hasAccountNumber;
+  const hasLandlordNumber = !!(paymentDetails?.landlordNumber && String(paymentDetails.landlordNumber).trim());
+  const confirmDisabled = !amountValid || !hasAccountNumber || !hasLandlordNumber || !paymentMethod;
 
   return (
     <>
@@ -882,55 +879,40 @@ export default function FinancialsScreen() {
               <Text style={[styles.summaryValue, {color:Colors.primary}]}>₱{parseFloat(paymentDetails.amount || 0).toLocaleString()}</Text>
             </View>
 
-            {/* Show only the number for the selected payment method */}
-            <View style={{marginVertical:10}}>
-              {paymentMethod === 'gcash' && selectedBooking?.landlordGcash && (
-                <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                  <Text style={styles.summaryLabel}>Sending to:</Text>
-                  <Text style={styles.summaryValue}>{selectedBooking.landlordGcash}</Text>
-                </View>
-              )}
-              {paymentMethod === 'paymaya' && selectedBooking?.landlordPaymaya && (
-                <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                  <Text style={styles.summaryLabel}>Sending to:</Text>
-                  <Text style={styles.summaryValue}>{selectedBooking.landlordPaymaya}</Text>
-                </View>
-              )}
-              {paymentMethod === 'bank' && selectedBooking?.landlordBank && (
-                <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                  <Text style={styles.summaryLabel}>Sending to:</Text>
-                  <Text style={styles.summaryValue}>{selectedBooking.landlordBank}</Text>
-                </View>
-              )}
-            </View>
-
             <View style={styles.formSection}>
-               <Text style={styles.formLabel}>Select Method</Text>
+               <Text style={styles.formLabel}>Payment Method</Text>
                <View style={{flexDirection:'row', gap:10, flexWrap:'wrap'}}>
-                  {availableMethods.length === 0 ? (
-                    <Text style={{ color: '#666', fontStyle: 'italic' }}>No payment methods available for this landlord.</Text>
-                  ) : (
-                    availableMethods.map(m => (
-                      <TouchableOpacity
-                        key={m}
-                        style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
-                        onPress={() => setPaymentMethod(m)}
-                      >
-                        <Text style={[styles.methodText, paymentMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
-                      </TouchableOpacity>
-                    ))
-                  )}
+                  {['gcash', 'paymaya', 'bank'].map(m => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
+                      onPress={() => setPaymentMethod(m)}
+                    >
+                      <Text style={[styles.methodText, paymentMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
+                    </TouchableOpacity>
+                  ))}
                </View>
             </View>
 
             <View style={styles.formSection}>
-              <Text style={styles.formLabel}>Account Number</Text>
+              <Text style={styles.formLabel}>Landlord's Number</Text>
               <TextInput 
                 style={styles.textInput} 
-                placeholder="09xxxxxxxxx or Acc #" 
+                placeholder="Enter landlord's account number" 
+                keyboardType="numeric"
+                value={paymentDetails.landlordNumber || ''}
+                onChangeText={t => setPaymentDetails(p => ({...p, landlordNumber: t}))}
+              />
+            </View>
+
+            <View style={styles.formSection}>
+              <Text style={styles.formLabel}>Your Account Number</Text>
+              <TextInput 
+                style={styles.textInput} 
+                placeholder="Enter your account number" 
                 keyboardType="numeric"
                 value={paymentDetails.accountNumber}
-                 onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
+                onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
               />
             </View>
 
