@@ -99,6 +99,40 @@ export default function CreateListing() {
     'Boarding House'
   ];
 
+  const ROOM_ENUM_MAP = {
+    'Single Room': 'single_room',
+    'Shared Room': 'shared_room',
+    'Studio Unit': 'studio',
+    'Suite': 'suite',
+    'Bed Space': 'bed_space',
+  };
+
+  const PROPERTY_ENUM_MAP = {
+    'Boarding House': 'boarding_house',
+    'Apartment': 'apartment',
+    'Room': 'room',
+    'Dormitory': 'dormitory',
+  };
+
+  const enumToRoomLabel = (enumVal) => {
+    const labels = {
+      single_room: 'Single Room',
+      shared_room: 'Shared Room',
+      studio: 'Studio Unit',
+      suite: 'Suite',
+      bed_space: 'Bed Space',
+    };
+    return (enumVal && labels[enumVal]) ? labels[enumVal] : 'Single Room';
+  };
+
+  const labelToRoomEnum = (label) => {
+    return ROOM_ENUM_MAP[label] || 'single_room';
+  };
+
+  const labelToPropertyEnum = (label) => {
+    return PROPERTY_ENUM_MAP[label] || 'boarding_house';
+  };
+
   const resetForm = () => {
     console.log('Resetting form to Create Mode...');
     setTitle('');
@@ -224,7 +258,9 @@ export default function CreateListing() {
           }
 
           setDescription(existingListing.description ?? existingListing.details ?? '');
-          setHouseType(existingListing.type ?? existingListing.houseType ?? 'Single Room');
+          // Map DB enums to friendly labels if necessary
+          const existingRoomLabel = existingListing.room_type ? enumToRoomLabel(existingListing.room_type) : (existingListing.type || existingListing.houseType);
+          setHouseType(existingRoomLabel ?? 'Single Room');
           setDistance(existingListing.distance ?? '');
           setRules(existingListing.rules ?? []);
           setMaxGuests(String(existingListing.max_guests || existingListing.maxOccupants || ''));
@@ -588,6 +624,8 @@ export default function CreateListing() {
         city: address.split(',').pop()?.trim() || address,
         price: parsedPrice,
         houseType,
+        roomType: labelToRoomEnum(houseType),
+        propertyType: labelToPropertyEnum(houseType),
         distance: distance?.trim() || null,
         availableFrom,
         amenities: amenitiesArray,
@@ -607,6 +645,7 @@ export default function CreateListing() {
 
       console.log(`[validateAndSubmit] Photos array:`, photos);
       console.log(`[validateAndSubmit] Listing data images:`, listingData.images);
+      console.log(`[validateAndSubmit] roomType: ${listingData.roomType}, propertyType: ${listingData.propertyType}`);
 
       let result;
       if ((isEditing || params?.id) && params?.id) {
