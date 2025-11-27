@@ -24,6 +24,7 @@ import {
   uploadMessageImage,
   subscribeToMessages,
   getUserProfile,
+  deleteConversation,
 } from '../../lib/supabaseClient';
 
 export default function ChatScreen() {
@@ -261,6 +262,15 @@ export default function ChatScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Attempt server-side deletion of conversation and messages
+              const user = await getCurrentUser();
+              if (user && user.id) {
+                const res = await deleteConversation(conversationId, user.id, true);
+                if (!res.success) {
+                  throw new Error(res.error || 'Failed to delete conversation on server');
+                }
+              }
+
               setMessages([]);
               router.back();
               Alert.alert('Deleted', 'Conversation has been deleted.');

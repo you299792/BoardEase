@@ -16,6 +16,7 @@ import {
   getCurrentUser,
   getTenantProfile,
   getConversations,
+  deleteConversation,
 } from '../../lib/supabaseClient'; 
 
 export default function Messages() {
@@ -117,17 +118,24 @@ export default function Messages() {
           style: "destructive",
           onPress: async () => {
             try {
+              // Attempt server-side deletion of conversation and messages
+              const user = await getCurrentUser();
+              if (user && user.id) {
+                const res = await deleteConversation(itemToDelete.conversationId, user.id, true);
+                if (!res.success) {
+                  throw new Error(res.error || 'Failed to delete conversation on server');
+                }
+              }
+
               // Remove from local state
               const newMessagesList = allMessages.filter(
                 (item) => item.id !== itemToDelete.id
               );
-              
               setAllMessages(newMessagesList);
-              Alert.alert('Deleted', 'Conversation has been removed from your inbox.');
+              Alert.alert('Deleted', 'Conversation has been removed.');
             } catch (e) {
               console.error("Failed to delete message", e);
               Alert.alert("Error", "Could not delete conversation.");
-              
               loadMessages();
             }
           }
