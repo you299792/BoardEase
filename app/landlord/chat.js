@@ -206,6 +206,7 @@ export default function LandlordChat() {
       let imageUrl = null;
       if (imageUri) {
         const uploadResult = await uploadMessageImage(imageUri, currentUser.id);
+        console.log('[LandlordChat] uploadResult:', uploadResult);
         if (uploadResult.success) imageUrl = uploadResult.publicUrl;
       }
 
@@ -228,7 +229,8 @@ export default function LandlordChat() {
 
       setMessages([optimisticMessage, ...messages]);
 
-      await sendMessage(conversationId, currentUser.id, text.trim() || null, imageUrl);
+      const sendRes = await sendMessage(conversationId, currentUser.id, text.trim() || null, imageUrl);
+      console.log('[LandlordChat] sendRes:', sendRes);
     } catch (error) {
       console.error('Failed to send message', error);
     }
