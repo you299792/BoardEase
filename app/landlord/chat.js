@@ -463,6 +463,7 @@ const styles = StyleSheet.create({
   myMessageText: { color: 'white' },
   otherMessageText: { color: 'black' },
   messageTime: { fontSize: 10, alignSelf: 'flex-end', marginTop: 5, opacity: 0.7 },
+  messageImage: { width: 200, height: 150, borderRadius: 12, marginBottom: 8 },
   senderAvatar: { width: 30, height: 30, borderRadius: 15, marginRight: 5 },
   defaultAvatar: { backgroundColor: '#ddd', alignItems: 'center', justifyContent: 'center' },
   inputContainer: { flexDirection: 'row', padding: 10, backgroundColor: 'white', alignItems: 'center' },
