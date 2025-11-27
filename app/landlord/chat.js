@@ -26,6 +26,7 @@ import {
   uploadMessageImage,
   getListing,
   createBooking,
+  markMessagesAsRead,
 } from '../../lib/supabaseClient';
 
 export default function LandlordChat() {
@@ -148,6 +149,9 @@ export default function LandlordChat() {
       })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       setMessages(transformedMessages);
+
+      // Mark all messages as read for landlord
+      await markMessagesAsRead(targetConversationId, user.id, 'landlord');
 
       const subscription = subscribeToMessages(targetConversationId, (newMsg) => {
         const transformedMsg = {
