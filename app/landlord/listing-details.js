@@ -189,10 +189,11 @@ export default function ListingDetails() {
             scrollEventThrottle={16}
           >
             {listing.images.map((image, index) => (
-              <Image
+              <CachedRemoteImage
                 key={index}
-                source={{ uri: image }}
+                uri={image}
                 style={styles.listingImage}
+                placeholder={null}
               />
             ))}
           </ScrollView>
@@ -232,15 +233,7 @@ export default function ListingDetails() {
             <Ionicons name="location-outline" size={16} color="#666" />
             <Text style={styles.listingLocation}>{listing.location}</Text>
           </View>
-
-          <View style={styles.ratingRow}>
-            <View style={styles.ratingContainer}>
-              <Ionicons name="star" size={18} color="#FFD700" />
-              <Text style={styles.ratingText}>{listing.rating || 'New'}</Text>
-              <Text style={styles.reviewsText}>({listing.reviews || 0} reviews)</Text>
-            </View>
-            <Text style={styles.listingType}>{listing.type || 'Boarding House'}</Text>
-          </View>
+          <Text style={styles.listingType}>{listing.type || 'Boarding House'}</Text>
         </View>
 
         

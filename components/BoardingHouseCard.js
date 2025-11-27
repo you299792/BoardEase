@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import CachedRemoteImage from './CachedRemoteImage';
 import { useFocusEffect } from 'expo-router';
 import { getListingReviews, toggleFavorite, getCurrentUser, getTenantProfile } from '../lib/supabaseClient';
 
@@ -101,10 +102,10 @@ const BoardingHouseCard = ({ house, onPress, onFavoriteChange, isFavoriteProp })
     <TouchableOpacity style={styles.card} onPress={onPress}>
       <View style={styles.imageContainer}>
         {!imageError ? (
-          <Image 
-            source={{ uri: imageUrl }} 
-            style={styles.image} 
-            onError={handleImageError}
+          <CachedRemoteImage
+            uri={imageUrl}
+            style={styles.image}
+            placeholder={null}
           />
         ) : (
           <View style={styles.imagePlaceholder}>

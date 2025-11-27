@@ -28,6 +28,7 @@ import {
   supabase,
 } from '../../lib/supabaseClient';
 import ListingStatsModal from '../../components/ListingStatsModal';
+import CachedRemoteImage from '../../components/CachedRemoteImage';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 const PLACEHOLDER_IMAGE = 'https://via.placeholder.com/800x600?text=No+Image';
@@ -1005,7 +1006,7 @@ export default function LandlordPortal() {
                       style={styles.cardClickable}
                       onPress={() => handleShowListingOverlay(listing)}
                     >
-                      <Image source={{ uri: listing.images?.[0] || PLACEHOLDER_IMAGE }} style={styles.cardImage} />
+                      <CachedRemoteImage uri={listing.images?.[0] || PLACEHOLDER_IMAGE} style={styles.cardImage} placeholder={PLACEHOLDER_IMAGE} />
                       <View style={styles.cardBody}>
                         <Text style={styles.cardTitle} numberOfLines={1}>{listing.title}</Text>
                         <Text style={styles.cardSub} numberOfLines={1}>{listing.city}</Text>

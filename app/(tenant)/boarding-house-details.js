@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import CachedRemoteImage from '../../components/CachedRemoteImage';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import MapView, { Marker } from 'react-native-maps';
 import { supabase } from '../../lib/supabaseClient';
@@ -795,9 +796,10 @@ export default function BoardingHouseDetails() {
                 activeOpacity={0.9}
                 onPress={() => openImageModal(index)}
               >
-                <Image
-                  source={{ uri: image }}
+                <CachedRemoteImage
+                  uri={image}
                   style={styles.houseImage}
+                  placeholder={null}
                 />
               </TouchableOpacity>
             ))}

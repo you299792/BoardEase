@@ -33,6 +33,7 @@ import {
   uploadProfileImage,
   handleError,
 } from '../../lib/supabaseClient';
+import { getCachedImage } from '../../lib/imageCache';
 
 export default function Profile() {
   const [userData, setUserData] = React.useState(null);
@@ -40,6 +41,7 @@ export default function Profile() {
   const [isEditing, setIsEditing] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [uploading, setUploading] = React.useState(false);
+  const [profileImageUri, setProfileImageUri] = React.useState(null);
 
   // Load profile on mount
   useEffect(() => {
@@ -62,6 +64,17 @@ export default function Profile() {
       if (success) {
         setUserData(userData);
         setTenantData(profileData);
+        // Attempt to cache profile image for offline usage
+        try {
+          const imgUrl = userData?.profile_image_url || userData?.profile_image || null;
+          if (imgUrl) {
+            getCachedImage(imgUrl).then((local) => {
+              if (local) setProfileImageUri(local);
+            }).catch(() => {});
+          }
+        } catch (err) {
+          // ignore cache errors
+        }
       } else {
         Alert.alert('Error', 'Failed to load profile');
       }
@@ -158,6 +171,13 @@ export default function Profile() {
 
         if (success) {
           setUserData({ ...userData, profile_image_url: publicUrl });
+          // Cache the newly uploaded image
+          try {
+            const local = await getCachedImage(publicUrl);
+            if (local) setProfileImageUri(local);
+          } catch (err) {
+            // ignore
+          }
           Alert.alert('Success', 'Profile image uploaded');
         } else {
           Alert.alert('Error', error || 'Failed to upload image');
@@ -227,6 +247,13 @@ export default function Profile() {
 
         if (success) {
           setUserData({ ...userData, profile_image_url: publicUrl });
+          // Cache the newly uploaded photo
+          try {
+            const local = await getCachedImage(publicUrl);
+            if (local) setProfileImageUri(local);
+          } catch (err) {
+            // ignore
+          }
           Alert.alert('Success', 'Photo uploaded');
         } else {
           Alert.alert('Error', error || 'Failed to upload photo');
@@ -325,7 +352,7 @@ export default function Profile() {
             disabled={!isEditing}
           >
             <Image
-              source={{ uri: userData?.image || 'https://via.placeholder.com/150' }}
+              source={{ uri: profileImageUri || userData?.profile_image_url || userData?.profile_image || 'https://via.placeholder.com/150' }}
               style={styles.profileImage}
             />
             {isEditing && (

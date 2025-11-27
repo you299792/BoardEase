@@ -20,6 +20,7 @@ import {
   getTenantProfile
 } from '../../lib/supabaseClient';
 import { supabase } from '../../lib/supabaseClient';
+import CachedRemoteImage from '../../components/CachedRemoteImage';
 
 export default function RentedPropertiesScreen() {
   const [properties, setProperties] = useState([]);
@@ -117,7 +118,7 @@ export default function RentedPropertiesScreen() {
         {/* Property Image Header */}
         <View style={styles.imageContainer}>
           {propertyImage ? (
-            <Image source={{ uri: propertyImage }} style={styles.propertyImage} />
+            <CachedRemoteImage uri={propertyImage} style={styles.propertyImage} placeholder={null} />
           ) : (
             <View style={[styles.propertyImage, styles.placeholderImage]}>
               <Ionicons name="home" size={40} color="#ccc" />

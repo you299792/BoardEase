@@ -1,11 +1,18 @@
 import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './landlord/AuthContext';
+import { useEffect } from 'react';
+import { logCacheInfo } from '../lib/cachePersistence';
 
 
 const primaryColor = '#667eea'; 
 
 export default function RootLayout() {
+  // Verify cache persistence on app startup
+  useEffect(() => {
+    logCacheInfo();
+  }, []);
+
   return (
     <AuthProvider>
       <SafeAreaProvider>

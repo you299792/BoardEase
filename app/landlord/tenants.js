@@ -20,6 +20,7 @@ import {
   deleteBooking // Assume this helper function exists or we use supabase directly
 } from '../../lib/supabaseClient';
 import { supabase } from '../../lib/supabaseClient'; // Import supabase directly for delete if helper missing
+import CachedRemoteImage from '../../components/CachedRemoteImage';
 
 export default function MyTenantsScreen() {
   const [tenants, setTenants] = useState([]);
@@ -154,7 +155,7 @@ export default function MyTenantsScreen() {
         <View style={styles.cardHeader}>
           <View style={styles.userInfo}>
             {tenantImage ? (
-              <Image source={{ uri: tenantImage }} style={styles.avatar} />
+              <CachedRemoteImage uri={tenantImage} style={styles.avatar} placeholder={null} />
             ) : (
               <View style={[styles.avatar, styles.avatarPlaceholder]}>
                 <Ionicons name="person" size={20} color="#666" />
