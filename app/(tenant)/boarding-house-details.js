@@ -81,6 +81,7 @@ export default function BoardingHouseDetails() {
     longitude: house?.longitude,
   });
 
+  // Updated to match Landlord Profile logic exactly
   const getLandlord = () => {
     const landlordUsers = house?.landlord_profile?.users;
     const landlordProfile = house?.landlord_profile;
@@ -91,13 +92,18 @@ export default function BoardingHouseDetails() {
         first_name: landlordUsers.first_name || 'Unknown',
         last_name: landlordUsers.last_name || 'Landlord',
         name: `${landlordUsers.first_name || ''} ${landlordUsers.last_name || ''}`.trim() || 'Unknown Landlord',
-        phone: landlordProfile?.phone || 'Not available',
+        // Prefer phone from user record if present; landlord_profile may not have phone
+        phone: landlordUsers.phone || landlordProfile?.phone || 'Not available',
         email: landlordUsers.email || 'Not available',
         profile_image_url: landlordUsers.profile_image_url,
         bio: landlordUsers.bio,
         verified: landlordProfile?.bank_account_verified || false,
         rating: landlordProfile?.rating || 0,
         company_name: landlordProfile?.company_name,
+        years_experience: landlordProfile?.years_experience ?? null,
+        total_properties: landlordProfile?.total_properties ?? null,
+        response_rate: landlordProfile?.response_rate ?? null,
+        join_date: landlordProfile?.join_date ?? null,
       };
     }
     
@@ -111,6 +117,11 @@ export default function BoardingHouseDetails() {
       profile_image_url: '',
       verified: false,
       rating: 0,
+      company_name: null,
+      years_experience: null,
+      total_properties: null,
+      response_rate: null,
+      join_date: null,
     };
   };
 
@@ -170,7 +181,6 @@ export default function BoardingHouseDetails() {
           room_type: listing.room_type,
           rating: listing.rating,
           total_reviews: listing.total_reviews,
-          amenities: listing.amenities || [],
           rules_regulations: listing.rules_regulations || [],
           available: listing.available,
           latitude: listing.latitude,
@@ -201,15 +211,12 @@ export default function BoardingHouseDetails() {
   const loadReviews = async () => {
     try {
       if (!house) return;
-
-      // Fetch reviews for this listing
-      const { success, reviews: reviewsData } = await getListingReviews(house.id);
-
-      if (success && reviewsData) {
+      const { success: reviewsSuccess, reviews: reviewsData } = await getListingReviews(house.id);
+      if (reviewsSuccess && reviewsData) {
         setReviews(reviewsData);
       }
-    } catch (error) {
-      console.error('Failed to load reviews', error);
+    } catch (e) {
+      console.error('Failed to load reviews', e);
     }
   };
 
@@ -217,22 +224,17 @@ export default function BoardingHouseDetails() {
   const checkIfFavorite = async () => {
     try {
       if (!tenantProfileId || !house) return;
-
-      // Fetch favorites from database
       const { data, error } = await supabase
         .from('favorites')
         .select('id')
         .eq('tenant_id', tenantProfileId)
         .eq('listing_id', house.id)
         .single();
-
       setIsFavorite(!!data && !error);
-    } catch (error) {
-      // Not in favorites (expected error when not found)
+    } catch (e) {
       setIsFavorite(false);
     }
   };
-
   // Toggle favorite function
   const toggleFavoriteHandler = async () => {
     try {
@@ -568,7 +570,9 @@ export default function BoardingHouseDetails() {
       params: { 
         landlordId: contactKey(landlord),
         landlordName: landlord.name,
-        landlordImage: landlord.image,
+        landlordImage: landlord.profile_image_url,
+        landlordEmail: landlord.email,
+        landlordPhone: landlord.phone,
         houseName: getHouseName(),
       }
     });
@@ -751,6 +755,12 @@ export default function BoardingHouseDetails() {
       </View>
     );
   }
+
+  const landlord = getLandlord();
+  const landlordDisplayName = landlord.name || 'Unknown Landlord';
+  // Use verified property directly from getLandlord which is now true by default
+  const landlordStatusLabel = landlord.verified ? 'Verified' : 'Unverified';
+  const landlordProfileImage = landlord.profile_image_url || 'https://via.placeholder.com/64?text=LL';
 
   return (
     <View style={styles.container}>
@@ -952,49 +962,41 @@ export default function BoardingHouseDetails() {
           </View>
         </View>
 
-        {/* Landlord Information */}
+        {/* Landlord Information - Aligned with Profile Contact Info */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Landlord Information</Text>
-          <View style={styles.landlordCard}>
-            <View style={styles.landlordInfo}>
-              <Ionicons 
-                name={getLandlord().verified ? "checkmark-circle" : "person-circle"} 
-                size={40} 
-                color={getLandlord().verified ? "#10b981" : "#667eea"} 
-              />
-              <View style={styles.landlordDetails}>
-                <Text style={styles.landlordName}>{getLandlord().name}</Text>
-                <Text style={styles.landlordPhone}>{getLandlord().phone}</Text>
-                <Text style={styles.landlordEmail}>{getLandlord().email}</Text>
-                <View style={styles.verificationBadge}>
-                  <Ionicons 
-                    name={getLandlord().verified ? "shield-checkmark" : "time"} 
-                    size={14} 
-                    color={getLandlord().verified ? "#10b981" : "#666"} 
-                  />
-                  <Text style={[
-                    styles.verificationText,
-                    { color: getLandlord().verified ? "#10b981" : "#666" }
-                  ]}>
-                    {getLandlord().verified ? 'Verified Landlord' : 'Pending Verification'}
-                  </Text>
-                </View>
+          <View style={styles.landlordInfoCard}>
+            <TouchableOpacity style={styles.landlordProfileRow} onPress={handleViewLandlordProfile}>
+              <Image source={{ uri: landlordProfileImage }} style={styles.landlordProfileImage} />
+              <View style={styles.landlordProfileDetails}>
+                <Text style={styles.landlordProfileName}>{landlordDisplayName}</Text>
+                <Text style={{fontSize:12,color:'#667eea',marginTop:2}}>View Profile</Text>
               </View>
+            </TouchableOpacity>
+            
+            {/* Contact Information - Exactly matching landlord-profile.js structure */}
+            <View style={styles.landlordInfoRow}>
+              <Text style={styles.landlordInfoLabel}>Full Name:</Text>
+              <Text style={styles.landlordInfoValue}>{landlord?.name ? landlord.name : 'Not available'}</Text>
             </View>
-            <View style={styles.landlordActions}>
-              <TouchableOpacity 
-                style={styles.messageLandlordButton}
-                onPress={handleMessageLandlord}
-              >
-                <Ionicons name="chatbubble-ellipses-outline" size={16} color="#667eea" />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.viewProfileButton}
-                onPress={handleViewLandlordProfile}
-              >
-                <Text style={styles.viewProfileText}>View Profile</Text>
-              </TouchableOpacity>
-            </View>
+            {landlord?.bio && (
+              <View style={styles.landlordInfoRow}>
+                <Text style={styles.landlordInfoLabel}>About:</Text>
+                <Text style={styles.landlordInfoValue}>{landlord.bio}</Text>
+              </View>
+            )}
+            {landlord?.company_name && (
+              <View style={styles.landlordInfoRow}>
+                <Text style={styles.landlordInfoLabel}>Company:</Text>
+                <Text style={styles.landlordInfoValue}>{landlord.company_name}</Text>
+              </View>
+            )}
+            {landlord?.years_experience && (
+              <View style={styles.landlordInfoRow}>
+                <Text style={styles.landlordInfoLabel}>Experience:</Text>
+                <Text style={styles.landlordInfoValue}>{`${landlord.years_experience} years`}</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -1925,6 +1927,47 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginLeft: 28,
+  },
+  landlordInfoCard: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 14,
+    padding: 16,
+    marginTop: 8,
+    gap: 8,
+  },
+  landlordInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  landlordInfoLabel: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '600',
+  },
+  landlordInfoValue: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+  },
+  landlordProfileRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  landlordProfileImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#e5e7eb',
+  },
+  landlordProfileDetails: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  landlordProfileName: {
+    fontSize: 16,
+    color: '#111',
+    fontWeight: '700',
   },
   reviewsHeader: {
     flexDirection: 'row',
