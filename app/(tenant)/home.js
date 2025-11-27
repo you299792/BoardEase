@@ -91,6 +91,8 @@ export default function Home() {
               totalReviews: listing.total_reviews,
               images: listing.images || [],
               amenities: listing.amenities || [],
+              available: listing.available === undefined ? true : listing.available,
+              status: listing.status || null,
               landlord: {
                 id: listing.landlord_profile?.user_id,
                 name: `${listing.landlord_profile?.users?.first_name} ${listing.landlord_profile?.users?.last_name}`,
