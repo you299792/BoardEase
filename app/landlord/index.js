@@ -749,7 +749,23 @@ export default function LandlordPortal() {
                     <Text style={styles.rating}>{calculateAverageRating()}</Text>
                     <Text style={styles.reviewsCount}>({reviews.length} reviews)</Text>
                   </View>
-                  <Text style={styles.houseType}>{selectedListing.house_type}</Text>
+                  <Text style={styles.houseType}>{
+                    (function() {
+                      const enumVal = selectedListing?.room_type;
+                      const labels = {
+                        single_room: 'Single Room',
+                        shared_room: 'Shared Room',
+                        studio: 'Studio Unit',
+                        suite: 'Suite',
+                        bed_space: 'Bed Space',
+                      };
+                      if (enumVal) return labels[enumVal] || enumVal;
+                      const prop = selectedListing?.property_type;
+                      if (prop === 'apartment') return 'Apartment';
+                      if (prop === 'dormitory') return 'Dormitory';
+                      return 'Boarding House';
+                    })()
+                  }</Text>
                 </View>
               </View>
 
