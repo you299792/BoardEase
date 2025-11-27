@@ -293,16 +293,30 @@ export default function FinancialsScreen() {
             const current = await getCurrentUser();
             const senderUserId = current?.id;
 
-            // Find existing conversation between tenant and landlord
+            // Find existing conversation(s) between tenant and landlord (prefer latest/ matching listing)
             let conversation = null;
-            const { data: existingConv, error: existingConvErr } = await supabase
+            const listingIdForConv = receiptData?.listingId || receiptData?.listing_id || selectedBooking?.listingId || selectedBooking?.listing_id || null;
+            const { data: existingConvs, error: existingConvsErr } = await supabase
               .from('conversations')
               .select('*')
               .eq('tenant_id', tenantProfileId)
               .eq('landlord_id', landlordId)
-              .maybeSingle();
+              .order('updated_at', { ascending: false })
+              .order('created_at', { ascending: false });
 
-            if (existingConvErr) console.warn('Existing conversation lookup error:', existingConvErr);
+            if (existingConvsErr) console.warn('Existing conversation lookup error:', existingConvsErr);
+
+            if (existingConvs && existingConvs.length) {
+              const normalized = existingConvs.filter(Boolean);
+              const withParticipants = normalized.filter(c => c.tenant_id && c.landlord_id);
+              let candidates = withParticipants;
+              if (listingIdForConv) {
+                const byListing = candidates.filter(c => String(c.listing_id || '') === String(listingIdForConv));
+                if (byListing.length) candidates = byListing;
+              }
+              if (!candidates.length) candidates = withParticipants.length ? withParticipants : normalized;
+              conversation = candidates[0];
+            }
 
             // Debug: dump all relevant context
             console.log('DEBUG Conversation creation:', {
@@ -316,11 +330,8 @@ export default function FinancialsScreen() {
               payments
             });
 
-            if (existingConv) {
-              conversation = existingConv;
-            } else {
+            if (!conversation) {
               // Create a new conversation (use createConversation helper if possible)
-              const listingIdForConv = receiptData?.listingId || receiptData?.listing_id || selectedBooking?.listingId || selectedBooking?.listing_id || null;
               try {
                 const { success: convSuccess, conversation: createdConv } = await createConversation(tenantProfileId, landlordId, listingIdForConv);
                 if (convSuccess && createdConv) {
@@ -351,14 +362,14 @@ export default function FinancialsScreen() {
 
             if (!conversation) throw new Error('Could not create/find conversation');
 
-            // Upload the image to storage and send as message
-            const uploadRes = await uploadMessageImage(uri, senderUserId || tenantProfileId);
+            // Upload the image to storage and send as message (use auth user ID for upload)
+            const uploadRes = await uploadMessageImage(uri, senderUserId);
             const imageUrl = uploadRes?.success ? uploadRes.publicUrl : null;
 
             const messageText = `Payment Receipt${receiptData?.reference ? ' - Ref: ' + receiptData.reference : ''}`;
 
-            // sendMessage will create the message row and the notification for the landlord
-            const sendRes = await sendMessage(conversation.id, senderUserId || tenantProfileId, messageText, imageUrl);
+            // sendMessage expects auth user ID (from users table), not profile ID
+            const sendRes = await sendMessage(conversation.id, senderUserId, messageText, imageUrl);
             if (!sendRes.success) {
               console.warn('Failed to send message:', sendRes.error);
               Alert.alert('Warning', 'Receipt saved but message delivery failed.');

@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import {
+  supabase,
   getCurrentUser,
   getConversations,
   getMessages,
@@ -129,20 +130,55 @@ export default function ChatScreen() {
       }
 
       // Subscribe to real-time messages for THIS specific conversation only
-      const newSubscription = subscribeToMessages(convId, (newMsg) => {
+      const newSubscription = subscribeToMessages(convId, async (newMsg) => {
         console.log(`[Chat] New message in conversation ${convId}:`, newMsg);
+        
+        // Fetch sender and receiver profiles for the new message
+        let senderProfile = null;
+        let receiverProfile = null;
+        
+        if (newMsg.sender_id) {
+          const { data: sender } = await supabase
+            .from('users')
+            .select('id, first_name, last_name, profile_image_url, email')
+            .eq('id', newMsg.sender_id)
+            .single();
+          senderProfile = sender;
+        }
+        
+        if (newMsg.receiver_id) {
+          const { data: receiver } = await supabase
+            .from('users')
+            .select('id, first_name, last_name, profile_image_url, email')
+            .eq('id', newMsg.receiver_id)
+            .single();
+          receiverProfile = receiver;
+        }
         
         const transformedMsg = {
           id: newMsg.id,
           sender_id: newMsg.sender_id,
-          sender: newMsg.sender,
-          receiver: newMsg.receiver,
+          sender: senderProfile,
+          receiver: receiverProfile,
           text: newMsg.message_text,
           image: newMsg.media_url,
           timestamp: newMsg.created_at,
           type: newMsg.message_type,
         };
-        setMessages(prev => [transformedMsg, ...prev]);
+        setMessages(prev => {
+          // Remove optimistic message if it matches (same sender, text, and within 3 seconds)
+          const filtered = prev.filter(m => {
+            if (!m.id.toString().startsWith('temp-')) return true;
+            const timeDiff = Math.abs(new Date(m.timestamp) - new Date(transformedMsg.timestamp));
+            const isSameContent = m.sender_id === transformedMsg.sender_id && 
+                                  m.text === transformedMsg.text && 
+                                  m.image === transformedMsg.image;
+            return !(isSameContent && timeDiff < 3000);
+          });
+          // Deduplicate by ID (prevent double-add if subscription fires twice)
+          if (filtered.some(m => m.id === transformedMsg.id)) return filtered;
+          return [transformedMsg, ...filtered];
+        });
       });
 
       setSubscription(newSubscription);
@@ -223,7 +259,7 @@ export default function ChatScreen() {
       };
 
       // Show message immediately (optimistic update)
-      setMessages([optimisticMessage, ...messages]);
+      setMessages(prev => [optimisticMessage, ...prev]);
 
       // Send message to Supabase with conversation ID
       const { success, error } = await sendMessage(
@@ -235,7 +271,7 @@ export default function ChatScreen() {
 
       if (!success) {
         // Remove optimistic message if send failed
-        setMessages(messages => messages.filter(msg => msg.id !== optimisticMessage.id));
+        setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
         Alert.alert('Error', error || 'Failed to send message');
       }
       // On success, real-time subscription will replace the optimistic message with the actual one
@@ -321,7 +357,7 @@ export default function ChatScreen() {
                   : styles.otherMessageText
               }
             >
-              {item.text}
+              {item.text || ''}
             </Text>
           )}
           <Text style={[styles.messageTime, isMyMessage ? styles.myMessageTime : styles.otherMessageTime]}>
