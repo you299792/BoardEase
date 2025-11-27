@@ -13,6 +13,35 @@ const BoardingHouseCard = ({ house, onPress, onFavoriteChange, isFavoriteProp })
   const [tenantProfileId, setTenantProfileId] = useState(null);
   
   const imageUrl = house.images && house.images.length > 0 ? house.images[0] : house.image;
+
+  const getAmenitiesList = () => {
+    if (!house?.amenities) return [];
+    const amenitiesMap = {
+      wifi: 'WiFi',
+      airConditioning: 'Air Conditioning',
+      parking: 'Parking',
+      kitchen: 'Kitchen',
+      laundry: 'Laundry',
+      security: 'Security',
+      furnished: 'Furnished',
+      waterIncluded: 'Water Included',
+      electricityIncluded: 'Electricity Included',
+      petsAllowed: 'Pets Allowed',
+    };
+    if (Array.isArray(house.amenities)) {
+      return house.amenities.map(a => {
+        const key = a?.toString().trim() || '';
+        const lower = key.toLowerCase();
+        const foundKey = Object.keys(amenitiesMap).find(k => k.toLowerCase() === lower);
+        return foundKey ? amenitiesMap[foundKey] : key;
+      });
+    }
+    if (typeof house.amenities === 'object') {
+      return Object.entries(house.amenities).filter(([k, v]) => !!v).map(([k]) => amenitiesMap[k] || k);
+    }
+    return [];
+  };
+  const amenitiesList = getAmenitiesList();
   
   useEffect(() => {
     console.log(`[BoardingHouseCard] House: ${house.name}, Images:`, house.images, `Selected image:`, imageUrl);
@@ -169,14 +198,14 @@ const BoardingHouseCard = ({ house, onPress, onFavoriteChange, isFavoriteProp })
         </View>
         
         <View style={styles.amenitiesContainer}>
-          {house.amenities.slice(0, 3).map((amenity, index) => (
+          {amenitiesList.slice(0, 3).map((amenity, index) => (
             <View key={index} style={styles.amenityTag}>
               <Text style={styles.amenityText}>{amenity}</Text>
             </View>
           ))}
-          {house.amenities.length > 3 && (
+          {amenitiesList.length > 3 && (
             <View style={styles.amenityTag}>
-              <Text style={styles.amenityText}>+{house.amenities.length - 3}</Text>
+              <Text style={styles.amenityText}>+{amenitiesList.length - 3}</Text>
             </View>
           )}
         </View>
