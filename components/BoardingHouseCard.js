@@ -13,6 +13,10 @@ const BoardingHouseCard = ({ house, onPress, onFavoriteChange, isFavoriteProp })
   const [tenantProfileId, setTenantProfileId] = useState(null);
   
   const imageUrl = house.images && house.images.length > 0 ? house.images[0] : house.image;
+  
+  useEffect(() => {
+    console.log(`[BoardingHouseCard] House: ${house.name}, Images:`, house.images, `Selected image:`, imageUrl);
+  }, [house.id]);
 
   useEffect(() => {
     setIsFavorite(isFavoriteProp || false);

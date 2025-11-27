@@ -9,11 +9,20 @@ export default function CachedRemoteImage({ uri, style, placeholder }) {
     let mounted = true;
     const load = async () => {
       try {
-        if (!uri) return;
+        if (!uri) {
+          console.log('[CachedRemoteImage] No URI provided');
+          return;
+        }
+        console.log(`[CachedRemoteImage] Loading image: ${uri}`);
         const cached = await getCachedImage(uri);
-        if (mounted && cached) setLocalUri(cached);
+        if (mounted && cached) {
+          console.log(`[CachedRemoteImage] Cached image found: ${cached}`);
+          setLocalUri(cached);
+        } else if (mounted) {
+          console.log(`[CachedRemoteImage] No cached image, using remote: ${uri}`);
+        }
       } catch (err) {
-        // ignore
+        console.warn('[CachedRemoteImage] Cache load error:', err);
       }
     };
 
@@ -22,7 +31,10 @@ export default function CachedRemoteImage({ uri, style, placeholder }) {
     return () => { mounted = false; };
   }, [uri]);
 
+  const finalUri = localUri || uri || placeholder;
+  console.log(`[CachedRemoteImage] Rendering with URI:`, finalUri);
+
   return (
-    <Image source={{ uri: localUri || uri || placeholder }} style={style} />
+    <Image source={{ uri: finalUri }} style={style} />
   );
 }

@@ -17,7 +17,7 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { Colors } from '../../constants/Colors';
 import { GlobalListingContext } from './_layout';
-import MapView, { Marker } from 'react-native-maps';
+import OpenStreetMap from '../../components/OpenStreetMap';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getCurrentUser,
@@ -584,27 +584,12 @@ export default function LandlordPortal() {
           </View>
           
           {(selectedListing?.latitude && selectedListing?.longitude) ? (
-            <MapView
+            <OpenStreetMap
+              latitude={selectedListing.latitude}
+              longitude={selectedListing.longitude}
+              zoom={15}
               style={styles.fullMap}
-              region={{
-                latitude: selectedListing.latitude,
-                longitude: selectedListing.longitude,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01,
-              }}
-              showsUserLocation={true}
-              showsMyLocationButton={true}
-            >
-              <Marker
-                coordinate={{
-                  latitude: selectedListing.latitude,
-                  longitude: selectedListing.longitude,
-                }}
-                title={selectedListing.title}
-                description={`${selectedListing.address}, ${selectedListing.city}`}
-                pinColor="#667eea"
-              />
-            </MapView>
+            />
           ) : (
             <View style={styles.noLocationContainer}>
               <Ionicons name="location-outline" size={48} color="#ccc" />

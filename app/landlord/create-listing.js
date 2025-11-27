@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker'; 
 import * as Location from 'expo-location';
-import MapView, { Marker } from 'react-native-maps';
+import OpenStreetMap from '../../components/OpenStreetMap';
 import { router, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import { Colors } from '../../constants/Colors';
 import PropertyImageGrid from '../../components/PropertyImageGrid';
@@ -26,6 +26,7 @@ import {
   createListing as createListingDB,
   updateListing as updateListingDB,
   getLandlordListings,
+  uploadListingImage,
 } from '../../lib/supabaseClient'; 
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -385,10 +386,36 @@ export default function CreateListing() {
       });
       if (!result.canceled) {
         const uri = result.assets[0].uri;
-        setter((prev) => [...prev, uri]);
+        console.log(`[pickImage] Selected image URI: ${uri}`);
+        
+        // Show loading indicator
+        Alert.alert('Uploading', 'Please wait while we upload your image...');
+        
+        // Upload to Supabase
+        if (!currentUser?.id) {
+          Alert.alert('Error', 'User not authenticated');
+          return;
+        }
+        
+        const { success, publicUrl, error } = await uploadListingImage(uri, currentUser.id);
+        
+        if (success && publicUrl) {
+          console.log(`[pickImage] Upload result: { success: true, publicUrl: "${publicUrl}" }`);
+          console.log(`[pickImage] Adding public URL to state: ${publicUrl}`);
+          setter((prev) => {
+            const updated = [...prev, publicUrl];
+            console.log(`[pickImage] Updated photos state:`, updated);
+            return updated;
+          });
+          Alert.alert('Success', 'Image uploaded successfully');
+        } else {
+          console.error(`[pickImage] Upload failed: ${error}`);
+          Alert.alert('Error', error || 'Failed to upload image');
+        }
       }
     } catch (err) {
       console.warn('Image pick error', err);
+      Alert.alert('Error', 'Failed to pick image');
     }
   };
 
@@ -577,6 +604,9 @@ export default function CreateListing() {
         latitude: selectedLocation?.latitude || 0,
         longitude: selectedLocation?.longitude || 0,
       };
+
+      console.log(`[validateAndSubmit] Photos array:`, photos);
+      console.log(`[validateAndSubmit] Listing data images:`, listingData.images);
 
       let result;
       if ((isEditing || params?.id) && params?.id) {
@@ -1018,26 +1048,19 @@ export default function CreateListing() {
                   <Text style={styles.mapLoadingText}>Loading map...</Text>
                 </View>
               ) : (
-                <MapView
+                <OpenStreetMap
+                  latitude={currentRegion.latitude}
+                  longitude={currentRegion.longitude}
+                  zoom={14}
                   style={styles.map}
-                  region={currentRegion}
-                  onRegionChangeComplete={handleRegionChange}
-                  onPress={handleMapPress}
-                  mapType={mapType}
-                  showsUserLocation={true}
-                  showsMyLocationButton={false}
-                  showsCompass={true}
-                  showsScale={true}
-                >
-                  {selectedLocation && (
-                    <Marker
-                      coordinate={selectedLocation}
-                      title="Property Location"
-                      description={selectedLocation.address}
-                      pinColor="#667eea"
-                    />
-                  )}
-                </MapView>
+                  onLocationSelect={({ latitude, longitude }) => {
+                    setSelectedLocation({
+                      latitude,
+                      longitude,
+                      address: mapAddress || 'Selected Location',
+                    });
+                  }}
+                />
               )}
             </View>
 

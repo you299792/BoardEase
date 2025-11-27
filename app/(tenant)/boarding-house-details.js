@@ -18,7 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import CachedRemoteImage from '../../components/CachedRemoteImage';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import MapView, { Marker } from 'react-native-maps';
+import OpenStreetMap from '../../components/OpenStreetMap';
 import { supabase } from '../../lib/supabaseClient';
 import {
   getCurrentUser,
@@ -195,6 +195,7 @@ export default function BoardingHouseDetails() {
           total_rooms: listing.total_rooms,
           available_rooms: listing.available_rooms,
         };
+        console.log(`[boarding-house-details] Loaded listing: ${transformedListing.title}, Images:`, transformedListing.images);
         setHouse(transformedListing);
       } else {
         Alert.alert('Error', error || 'Failed to load listing details');
@@ -915,28 +916,12 @@ export default function BoardingHouseDetails() {
             {/* Mini Map Preview */}
             {getHouseLocationData() && (
               <TouchableOpacity style={styles.mapPreview} onPress={openMapModal}>
-                <MapView
+                <OpenStreetMap
+                  latitude={getHouseLocationData().latitude}
+                  longitude={getHouseLocationData().longitude}
+                  zoom={15}
                   style={styles.miniMap}
-                  region={{
-                    latitude: getHouseLocationData().latitude,
-                    longitude: getHouseLocationData().longitude,
-                    latitudeDelta: 0.005,
-                    longitudeDelta: 0.005,
-                  }}
-                  scrollEnabled={false}
-                  zoomEnabled={false}
-                  pitchEnabled={false}
-                  rotateEnabled={false}
-                >
-                  <Marker
-                    coordinate={{
-                      latitude: getHouseLocationData().latitude,
-                      longitude: getHouseLocationData().longitude,
-                    }}
-                    title={getHouseName()}
-                    pinColor="#667eea"
-                  />
-                </MapView>
+                />
                 <View style={styles.mapOverlay}>
                   <Text style={styles.mapPreviewText}>Tap to view full map</Text>
                 </View>
@@ -1217,27 +1202,12 @@ export default function BoardingHouseDetails() {
             </View>
             
             {getHouseLocationData() && (
-              <MapView
+              <OpenStreetMap
+                latitude={getHouseLocationData().latitude}
+                longitude={getHouseLocationData().longitude}
+                zoom={15}
                 style={styles.fullMap}
-                region={{
-                  latitude: getHouseLocationData().latitude,
-                  longitude: getHouseLocationData().longitude,
-                  latitudeDelta: 0.01,
-                  longitudeDelta: 0.01,
-                }}
-                showsUserLocation={true}
-                showsMyLocationButton={true}
-              >
-                <Marker
-                  coordinate={{
-                    latitude: getHouseLocationData().latitude,
-                    longitude: getHouseLocationData().longitude,
-                  }}
-                  title={getHouseName()}
-                  description={getHouseLocation()}
-                  pinColor="#667eea"
-                />
-              </MapView>
+              />
             )}
             
             <View style={styles.mapModalActions}>
