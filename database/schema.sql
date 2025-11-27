@@ -350,7 +350,7 @@ CREATE INDEX IF NOT EXISTS idx_favorites_listing_id ON favorites(listing_id);
 CREATE TABLE IF NOT EXISTS notifications (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  notification_type VARCHAR(50) DEFAULT 'system' CHECK (notification_type IN ('booking_request', 'booking_approved', 'payment_due', 'message', 'review', 'system', 'listing_inquiry', 'payment_completed')),
+  notification_type VARCHAR(50) DEFAULT 'system' CHECK (notification_type IN ('booking_request', 'booking_approved', 'booking_cancelled', 'booking_rejected', 'payment_due', 'message', 'review', 'system', 'listing_inquiry', 'payment_completed')),
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   related_entity_type VARCHAR(50),

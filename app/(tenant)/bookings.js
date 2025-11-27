@@ -162,11 +162,8 @@ export default function Bookings() {
       const { success, error } = await updateBookingStatus(selectedBooking.id, 'cancelled', cancelReason);
 
       if (success) {
-        await sendMessage(
-          selectedBooking.landlordId,
-          `❌ Booking Cancelled\n\nI need to cancel my booking for ${selectedBooking.property}.\nReason: ${cancelReason}`,
-          'cancellation'
-        );
+        // updateBookingStatus already creates a notification for the landlord
+        // No need to send a separate message - the notification is sufficient
 
         setBookings(prev => prev.map(booking =>
           booking.id === selectedBooking.id
