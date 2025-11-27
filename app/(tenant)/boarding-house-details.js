@@ -184,6 +184,23 @@ export default function BoardingHouseDetails() {
     };
   };
 
+  // Helper to safely wrap primitive children (strings/numbers) with <Text> to avoid React Native errors
+  const WrapPrimitiveChildren = ({ children, style }) => {
+    const wrapNode = (node) => {
+      if (node === null || node === undefined) return null;
+      if (typeof node === 'string' || typeof node === 'number') {
+        return <Text style={style}>{node}</Text>;
+      }
+      if (React.isValidElement(node)) {
+        const childProps = node?.props?.children;
+        if (!childProps) return node;
+        return React.cloneElement(node, node.props, React.Children.map(childProps, wrapNode));
+      }
+      return node;
+    };
+    return <>{React.Children.map(children, wrapNode)}</>;
+  };
+
   useEffect(() => {
     loadHouseDetails();
   }, [id]);
@@ -824,7 +841,8 @@ export default function BoardingHouseDetails() {
   const landlordProfileImage = landlord.profile_image_url || 'https://via.placeholder.com/64?text=LL';
 
   return (
-    <View style={styles.container}>
+    <WrapPrimitiveChildren>
+      <View style={styles.container}>
       
       {/* Header */}
       <View style={styles.header}>
@@ -1420,7 +1438,8 @@ export default function BoardingHouseDetails() {
           <Text style={styles.bookButtonText}>Book Now</Text>
         </TouchableOpacity>
       </View>
-    </View>
+      </View>
+    </WrapPrimitiveChildren>
   );
 }
 
