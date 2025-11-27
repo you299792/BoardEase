@@ -16,7 +16,7 @@ import {
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
-import { landlordSignUp, uploadProfileImage } from '../../lib/supabaseClient';
+import { landlordSignUp, uploadProfileImage, supabase } from '../../lib/supabaseClient';
 
 const SignUpForm = () => {
   const [step, setStep] = useState(1);
@@ -58,15 +58,31 @@ const SignUpForm = () => {
   const pickImage = async (field) => {
     if (isLoading) return;
     
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 1,
-    });
+    try {
+      // Request permission first
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow access to your photo library to upload images.');
+        return;
+      }
 
-    if (!result.canceled) {
-      setFormData({ ...formData, [field]: result.assets[0].uri });
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        // Immediately update state to show the image
+        const uri = result.assets[0].uri;
+        setFormData(prev => ({ ...prev, [field]: uri }));
+        // Clear error for this field if it exists
+        setErrors(prev => ({ ...prev, [field]: undefined }));
+      }
+    } catch (error) {
+      console.error('Image picker error:', error);
+      Alert.alert('Error', 'Failed to pick image. Please try again.');
     }
   };
 
@@ -134,7 +150,16 @@ const SignUpForm = () => {
         // Upload profile image if available
         if (formData.profileImage) {
           const uploadResult = await uploadProfileImage(userId, formData.profileImage);
-          if (!uploadResult.success) {
+          if (uploadResult.success) {
+            // Update user's profile_image_url in the database
+            const { error: updateError } = await supabase
+              .from('users')
+              .update({ profile_image_url: uploadResult.publicUrl })
+              .eq('id', userId);
+            if (updateError) {
+              console.warn('Failed to update profile image URL:', updateError);
+            }
+          } else {
             console.warn('Profile image upload failed:', uploadResult.error);
           }
         }
@@ -302,43 +327,61 @@ const SignUpForm = () => {
     <View style={styles.stepContainer}>
       <Text style={styles.stepTitle}>Document Verification</Text>
 
-      <TouchableOpacity
-        style={[styles.uploadButton, errors.profileImage && styles.uploadButtonError]}
-        onPress={() => pickImage('profileImage')}
-        disabled={isLoading}
-      >
-        <MaterialIcons name="add-photo-alternate" size={24} color="#667eea" />
-        <Text style={styles.uploadButtonText}>Upload Profile Picture</Text>
-      </TouchableOpacity>
-      {formData.profileImage && (
-        <Image source={{ uri: formData.profileImage }} style={styles.uploadedImage} />
-      )}
-      {errors.profileImage && <Text style={styles.errorText}>{errors.profileImage}</Text>}
+      <View style={styles.uploadSection}>
+        <Text style={styles.uploadLabel}>Profile Picture *</Text>
+        <TouchableOpacity
+          style={[styles.uploadButton, errors.profileImage && styles.uploadButtonError]}
+          onPress={() => pickImage('profileImage')}
+          disabled={isLoading}
+        >
+          {formData.profileImage ? (
+            <Image source={{ uri: formData.profileImage }} style={styles.previewImage} />
+          ) : (
+            <>
+              <MaterialIcons name="add-photo-alternate" size={32} color="#667eea" />
+              <Text style={styles.uploadButtonText}>Tap to Upload Profile Picture</Text>
+            </>
+          )}
+        </TouchableOpacity>
+        {errors.profileImage && <Text style={styles.errorText}>{errors.profileImage}</Text>}
+      </View>
 
-      <TouchableOpacity
-        style={[styles.uploadButton, errors.idPhoto && styles.uploadButtonError]}
-        onPress={() => pickImage('idPhoto')}
-        disabled={isLoading}
-      >
-        <MaterialIcons name="badge" size={24} color="#667eea" />
-        <Text style={styles.uploadButtonText}>Upload Valid ID</Text>
-      </TouchableOpacity>
-      {formData.idPhoto && (
-        <Image source={{ uri: formData.idPhoto }} style={styles.uploadedImage} />
-      )}
-      {errors.idPhoto && <Text style={styles.errorText}>{errors.idPhoto}</Text>}
+      <View style={styles.uploadSection}>
+        <Text style={styles.uploadLabel}>Valid ID *</Text>
+        <TouchableOpacity
+          style={[styles.uploadButton, errors.idPhoto && styles.uploadButtonError]}
+          onPress={() => pickImage('idPhoto')}
+          disabled={isLoading}
+        >
+          {formData.idPhoto ? (
+            <Image source={{ uri: formData.idPhoto }} style={styles.previewImage} />
+          ) : (
+            <>
+              <MaterialIcons name="badge" size={32} color="#667eea" />
+              <Text style={styles.uploadButtonText}>Tap to Upload Valid ID</Text>
+            </>
+          )}
+        </TouchableOpacity>
+        {errors.idPhoto && <Text style={styles.errorText}>{errors.idPhoto}</Text>}
+      </View>
 
-      <TouchableOpacity
-        style={styles.uploadButton}
-        onPress={() => pickImage('businessPermit')}
-        disabled={isLoading}
-      >
-        <FontAwesome5 name="file-certificate" size={24} color="#667eea" />
-        <Text style={styles.uploadButtonText}>Upload Business Permit (Optional)</Text>
-      </TouchableOpacity>
-      {formData.businessPermit && (
-        <Image source={{ uri: formData.businessPermit }} style={styles.uploadedImage} />
-      )}
+      <View style={styles.uploadSection}>
+        <Text style={styles.uploadLabel}>Business Permit (Optional)</Text>
+        <TouchableOpacity
+          style={styles.uploadButton}
+          onPress={() => pickImage('businessPermit')}
+          disabled={isLoading}
+        >
+          {formData.businessPermit ? (
+            <Image source={{ uri: formData.businessPermit }} style={styles.previewImage} />
+          ) : (
+            <>
+              <FontAwesome5 name="file-certificate" size={28} color="#667eea" />
+              <Text style={styles.uploadButtonText}>Tap to Upload Business Permit</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.termsContainer}>
         <Text style={styles.termsText}>
@@ -410,21 +453,12 @@ const SignUpForm = () => {
 
            
             <View style={styles.buttonContainer}>
-              {step > 1 && (
-                <TouchableOpacity
-                  style={[styles.button, styles.buttonSecondary]}
-                  onPress={() => setStep(step - 1)}
-                  disabled={isLoading}
-                >
-                  <Text style={styles.buttonTextSecondary}>Back</Text>
-                </TouchableOpacity>
-              )}
-
-              {step < 2 ? (
+              {step === 1 ? (
                 <TouchableOpacity 
                   style={[
                     styles.button, 
                     styles.buttonPrimary,
+                    styles.buttonFullWidth,
                     (!formData.firstName || !formData.lastName || !formData.email || !formData.password || !formData.confirmPassword || !formData.phoneNumber) && styles.buttonDisabled,
                     isLoading && styles.buttonLoading
                   ]}
@@ -434,26 +468,36 @@ const SignUpForm = () => {
                   {isLoading ? (
                     <ActivityIndicator color="#fff" size="small" />
                   ) : (
-                    <Text style={styles.buttonTextPrimary}>Continue</Text>
+                    <Text style={styles.buttonTextPrimary}>Continue to Documents</Text>
                   )}
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity 
-                  style={[
-                    styles.button, 
-                    styles.buttonPrimary,
-                    (!formData.profileImage || !formData.idPhoto) && styles.buttonDisabled,
-                    isLoading && styles.buttonLoading
-                  ]}
-                  onPress={handleSubmit}
-                  disabled={!formData.profileImage || !formData.idPhoto || isLoading}
-                >
-                  {isLoading ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.buttonTextPrimary}>Complete Registration</Text>
-                  )}
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    style={[styles.button, styles.buttonSecondary, { flex: 0.35 }]}
+                    onPress={() => setStep(step - 1)}
+                    disabled={isLoading}
+                  >
+                    <Ionicons name="arrow-back" size={20} color="#667eea" />
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[
+                      styles.button, 
+                      styles.buttonPrimary,
+                      { flex: 0.65 },
+                      (!formData.profileImage || !formData.idPhoto) && styles.buttonDisabled,
+                      isLoading && styles.buttonLoading
+                    ]}
+                    onPress={handleSubmit}
+                    disabled={!formData.profileImage || !formData.idPhoto || isLoading}
+                  >
+                    {isLoading ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Text style={styles.buttonTextPrimary}>Complete Registration</Text>
+                    )}
+                  </TouchableOpacity>
+                </>
               )}
             </View>
           </View>
@@ -614,25 +658,42 @@ const styles = StyleSheet.create({
     paddingLeft: 4,
   },
   uploadButton: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
+    borderWidth: 2,
     borderStyle: 'dashed',
     borderColor: '#667eea',
     borderRadius: 12,
     padding: 20,
-    marginBottom: 16,
+    height: 180,
     backgroundColor: '#f8f9fa',
+    overflow: 'hidden',
   },
   uploadButtonError: {
     borderColor: '#ef4444',
   },
   uploadButtonText: {
-    marginLeft: 10,
+    marginTop: 10,
     color: '#667eea',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '500',
+    textAlign: 'center',
+  },
+  uploadSection: {
+    marginBottom: 20,
+  },
+  uploadLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  previewImage: {
+    width: '100%',
+    height: 180,
+    borderRadius: 8,
+    resizeMode: 'cover',
   },
   uploadedImage: {
     width: '100%',
@@ -696,6 +757,9 @@ const styles = StyleSheet.create({
     color: '#667eea',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  buttonFullWidth: {
+    flex: 1,
   },
 });
 
