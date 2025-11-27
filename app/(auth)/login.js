@@ -330,7 +330,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 12,
     borderRadius: 8,
-    gap: 8,
   },
   userTypeButtonActive: {
     backgroundColor: 'white',
@@ -350,7 +349,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   form: {
-    gap: 16,
+    marginTop: 0,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -360,6 +359,7 @@ const styles = StyleSheet.create({
     borderColor: '#e9ecef',
     borderRadius: 12,
     overflow: 'hidden',
+    marginBottom: 16,
   },
   inputIcon: {
     paddingHorizontal: 16,
