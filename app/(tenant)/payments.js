@@ -76,6 +76,16 @@ export default function FinancialsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
+      
+      // Poll every 10 seconds while screen is focused to check for updated payment statuses
+      const pollInterval = setInterval(() => {
+        console.log('📊 Polling for payment updates (tenant)...');
+        loadData();
+      }, 10000);
+
+      return () => {
+        if (pollInterval) clearInterval(pollInterval);
+      };
     }, [])
   );
 
@@ -144,8 +154,10 @@ export default function FinancialsScreen() {
       const { data: dbPayments, error: paymentsError } = await supabase
         .from('payments')
         .select('*')
-        .or(`tenant_id.eq.${profileId},tenant_name.eq.${user.user_metadata?.first_name}`) 
-        .order('payment_date', { ascending: false });
+        .eq('tenant_id', profileId)
+        .order('paid_date', { ascending: false });
+
+      console.log('[loadData] Payments fetched:', dbPayments?.length || 0, 'Error:', paymentsError?.message);
 
       let allPayments = [];
 
@@ -153,22 +165,27 @@ export default function FinancialsScreen() {
         const mappedPayments = dbPayments.map(p => {
           const matchedBooking = currentBookings.find(b => b.landlordId === p.landlord_id);
           const resolvedLandlordName = matchedBooking ? matchedBooking.landlordName : 'Landlord';
-          const resolvedTenantName = p.tenant_name || fetchedTenantName;
 
-          return {
+          const mapped = {
             ...p,
             id: p.id,
-            landlordId: p.landlord_id, // Save ID for chat forwarding
+            landlordId: p.landlord_id,
             landlordName: resolvedLandlordName, 
-            tenantName: resolvedTenantName,
-            property: p.property_title || 'Unknown Property',
+            tenantName: fetchedTenantName,
+            property: matchedBooking?.property || 'Unknown Property',
             amount: parseFloat(p.amount) || 0, 
             status: p.status ? p.status.toLowerCase() : 'pending', 
-            date: p.payment_date || p.created_at,
+            date: p.paid_date || p.created_at,
             type: p.payment_type || 'rent',
-            method: p.method || 'Manual',
-            reference: p.reference || 'N/A',
+            method: p.payment_method || 'Manual',
+            reference: p.reference_number || 'N/A',
           };
+          
+          if (p.status === 'completed') {
+            console.log('[loadData] Completed payment found:', p.reference_number, 'Date:', p.paid_date);
+          }
+          
+          return mapped;
         });
         allPayments = mappedPayments;
       }
@@ -181,6 +198,8 @@ export default function FinancialsScreen() {
       }
 
       allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+      console.log('[loadData] Final payments count:', allPayments.length);
+      console.log('[loadData] Completed payments:', allPayments.filter(p => p.status === 'completed').length);
       setPayments(allPayments);
 
     } catch (error) {
@@ -385,10 +404,12 @@ export default function FinancialsScreen() {
 
   const calculateFinancialData = () => {
     const completedPayments = payments.filter(p => p.status === 'completed' || p.status === 'paid');
-    const pendingPayments = payments.filter(p => p.status === 'pending');
     
+    // Calculate total spent from completed payments
     const totalSpent = completedPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
-    const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
+    
+    // Calculate pending from upcomingDue (upcoming rent that hasn't been paid yet)
+    const pendingAmount = upcomingDue.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
     
     const rentPayments = completedPayments.filter(p => p.type === 'rent');
     const averageRent = rentPayments.length > 0 
@@ -401,8 +422,6 @@ export default function FinancialsScreen() {
       averageRent: Math.round(averageRent),
     };
   };
-
-  const financialData = calculateFinancialData();
 
   const paymentHistory = payments.map(p => ({
     ...p,
@@ -425,14 +444,27 @@ export default function FinancialsScreen() {
           continue;
         }
         const dueDateStr = nextDue.toISOString().split('T')[0];
-        // Check if payment exists for this property and due date
+        // Check if payment exists for this booking and due date (more reliable than property name matching)
         const alreadyPaid = payments.some(p => {
-          return (
-            (p.property === b.property || p.property_title === b.property) &&
-            p.payment_date === dueDateStr &&
+          const paymentDate = (p.date || '').toString().split('T')[0];
+          // Match by booking ID (from the selectedBooking when payment was made)
+          const isMatch = (
+            p.booking_id === b.id &&
+            paymentDate === dueDateStr &&
             (p.status === 'completed' || p.status === 'paid')
           );
+          
+          if (i === 0) {
+            console.log(`[upcomingDue] Booking ID: ${b.id}, Payment booking_id: ${p.booking_id}, Payment Date: ${paymentDate}, Due Date: ${dueDateStr}, Status: ${p.status}, Match: ${isMatch}`);
+          }
+          
+          return isMatch;
         });
+        
+        if (i === 0) {
+          console.log(`[upcomingDue] First month - alreadyPaid=${alreadyPaid}, will ${alreadyPaid ? 'skip' : 'show'} this due`);
+        }
+        
         if (!alreadyPaid) {
           dueDates.push({
             id: `due_${b.id}_${dueDateStr}`,
@@ -449,6 +481,8 @@ export default function FinancialsScreen() {
       }
       return dueDates;
     });
+
+  const financialData = calculateFinancialData();
 
   const handlePayNow = (item) => {
     setSelectedBooking(item);
@@ -478,36 +512,44 @@ export default function FinancialsScreen() {
     const nameToUse = tenantName || 'Tenant';
 
     const newPayment = {
+      booking_id: selectedBooking?.bookingId,
+      listing_id: selectedBooking?.id || selectedBooking?.listingId,
       tenant_id: tenantProfile?.id,
       landlord_id: selectedBooking?.landlordId, 
-      tenant_name: nameToUse,
-      property_title: selectedBooking?.property,
       amount: amountFloat,
       payment_type: 'rent',
       status: 'completed', 
-      payment_date: new Date().toISOString().split('T')[0],
-      method: paymentMethod, 
-      reference: generatedRef
+      paid_date: new Date().toISOString().split('T')[0],
+      payment_method: paymentMethod, 
+      reference_number: generatedRef,
+      notes: `Payment made by ${nameToUse}`
     };
 
     const optimisticPayment = { 
         ...newPayment, 
         id: `temp_${Date.now()}`, 
-        date: newPayment.payment_date, 
-        paidDate: newPayment.payment_date,
-        property: newPayment.property_title,
+        date: newPayment.paid_date, 
+        paidDate: newPayment.paid_date,
+        property: selectedBooking?.property,
+        tenant_name: nameToUse,
+        property_title: selectedBooking?.property,
         tenantName: nameToUse,
       landlordName: selectedBooking?.landlordName || 'Landlord',
       landlordId: newPayment.landlord_id || selectedBooking?.landlordId || selectedBooking?.landlord_id || null,
       type: 'Rent',
-      status: 'Completed'
+      status: 'completed',
+      method: paymentMethod,
+      reference: generatedRef
     };
     
     setPayments(prev => [optimisticPayment, ...prev]);
     setShowPaymentModal(false);
 
     try {
-        const { error } = await supabase.from('payments').insert([newPayment]);
+        console.log('[processPayment] Inserting payment:', newPayment);
+        const { error, data } = await supabase.from('payments').insert([newPayment]);
+        
+        console.log('[processPayment] Insert result - Error:', error?.message, 'Data:', data);
         
         if (error) {
             console.warn("DB Save failed, saving locally", error);
@@ -516,6 +558,7 @@ export default function FinancialsScreen() {
             existing.push(optimisticPayment);
             await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existing));
         } else {
+            console.log('[processPayment] Payment inserted successfully, reloading data...');
             await loadData();
         }
 
