@@ -88,7 +88,16 @@ export default function Home() {
                 location: listing.city,
                 address: listing.address,
                 price: listing.price_per_month,
-                type: listing.room_type,
+                type: (listing.room_type ? (function(enumVal){
+                  const labels = {
+                    single_room: 'Single Room',
+                    shared_room: 'Shared Room',
+                    studio: 'Studio Unit',
+                    suite: 'Suite',
+                    bed_space: 'Bed Space',
+                  };
+                  return labels[enumVal] || enumVal;
+                })(listing.room_type) : 'Boarding House'),
                 rating: listing.rating,
                 totalReviews: listing.total_reviews,
                 images: listing.images || [],
