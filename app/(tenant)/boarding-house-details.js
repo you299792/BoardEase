@@ -67,9 +67,68 @@ export default function BoardingHouseDetails() {
   const getHouseLocation = () => house?.city || 'Location not available';
   const getHousePrice = () => house?.price_per_month || '0';
   const getHouseName = () => house?.title || 'Unknown Property';
-  const getHouseType = () => house?.room_type || 'Boarding House';
+  const getHouseType = () => {
+    const enumVal = house?.room_type;
+    const labels = {
+      single_room: 'Single Room',
+      shared_room: 'Shared Room',
+      studio: 'Studio Unit',
+      suite: 'Suite',
+      bed_space: 'Bed Space',
+    };
+    if (enumVal) return labels[enumVal] || enumVal;
+    // fallback to property type if no room_type
+    const prop = house?.property_type;
+    if (prop === 'apartment') return 'Apartment';
+    if (prop === 'dormitory') return 'Dormitory';
+    return 'Boarding House';
+  };
   const getHouseDescription = () => house?.description || 'No description available.';
-  const getHouseAmenities = () => house?.amenities || [];
+  const getHouseAmenities = () => {
+    if (!house?.amenities) return [];
+    const amenitiesMap = {
+      wifi: 'WiFi',
+      airConditioning: 'Air Conditioning',
+      parking: 'Parking',
+      kitchen: 'Kitchen',
+      laundry: 'Laundry',
+      security: 'Security',
+      furnished: 'Furnished',
+      waterIncluded: 'Water Included',
+      electricityIncluded: 'Electricity Included',
+      petsAllowed: 'Pets Allowed',
+    };
+    // If already an array of strings, normalize values
+    if (Array.isArray(house.amenities)) {
+      return house.amenities.map(a => {
+        if (!a) return a;
+        const key = a.toString().trim();
+        const lower = key.toLowerCase();
+        const foundKey = Object.keys(amenitiesMap).find(k => k.toLowerCase() === lower);
+        return foundKey ? amenitiesMap[foundKey] : key;
+      });
+    }
+    // If amenities saved as object mapping (e.g., {wifi: true, parking: false}), convert to array
+    if (typeof house.amenities === 'object') {
+      const amenitiesMap = {
+        wifi: 'WiFi',
+        airConditioning: 'Air Conditioning',
+        parking: 'Parking',
+        kitchen: 'Kitchen',
+        laundry: 'Laundry',
+        security: 'Security',
+        furnished: 'Furnished',
+        waterIncluded: 'Water Included',
+        electricityIncluded: 'Electricity Included',
+        petsAllowed: 'Pets Allowed',
+      };
+      return Object.entries(house.amenities)
+        .filter(([key, value]) => !!value)
+        .map(([key]) => amenitiesMap[key] || key);
+    }
+    // Fallback: return as-is (could be string or other)
+    return [house.amenities];
+  };
   const getHouseRules = () => house?.rules_regulations || [];
   const getHouseDistance = () => house?.distance || '';
   const getHouseRating = () => house?.rating || 0;
@@ -176,6 +235,7 @@ export default function BoardingHouseDetails() {
           title: listing.title,
           description: listing.description,
           images: listing.images || [],
+          amenities: listing.amenities || [],
           city: listing.city,
           price_per_month: listing.price_per_month,
           room_type: listing.room_type,
@@ -195,7 +255,7 @@ export default function BoardingHouseDetails() {
           total_rooms: listing.total_rooms,
           available_rooms: listing.available_rooms,
         };
-        console.log(`[boarding-house-details] Loaded listing: ${transformedListing.title}, Images:`, transformedListing.images);
+        console.log(`[boarding-house-details] Loaded listing: ${transformedListing.title}, room_type: ${listing.room_type}, property_type: ${listing.property_type}, friendly type: ${getHouseType()}, Images:`, transformedListing.images);
         setHouse(transformedListing);
       } else {
         Alert.alert('Error', error || 'Failed to load listing details');
@@ -1043,14 +1103,18 @@ export default function BoardingHouseDetails() {
         {/* Amenities */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Amenities</Text>
-          <View style={styles.amenitiesGrid}>
-            {getHouseAmenities().map((amenity, index) => (
-              <View key={index} style={styles.amenityItem}>
-                <Ionicons name="checkmark-circle" size={20} color="#10b981" />
-                <Text style={styles.amenityText}>{amenity}</Text>
-              </View>
-            ))}
-          </View>
+          {getHouseAmenities().length === 0 ? (
+            <Text style={styles.noAmenitiesText}>No amenities listed.</Text>
+          ) : (
+            <View style={styles.amenitiesGrid}>
+              {getHouseAmenities().map((amenity, index) => (
+                <View key={index} style={styles.amenityItem}>
+                  <Ionicons name="checkmark-circle" size={20} color="#10b981" />
+                  <Text style={styles.amenityText}>{amenity}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* House Rules */}
@@ -1839,6 +1903,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#333',
     flex: 1,
+  },
+  noAmenitiesText: {
+    fontSize: 14,
+    color: '#888',
+    marginTop: 8,
   },
   propertyDetailsGrid: {
     flexDirection: 'row',
