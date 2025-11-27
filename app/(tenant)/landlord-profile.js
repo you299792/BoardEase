@@ -89,7 +89,16 @@ export default function LandlordProfile() {
             name: listing.title,
             location: listing.city,
             price: listing.price_per_month,
-            type: listing.room_type,
+            type: (function(enumVal) {
+              const labels = {
+                single_room: 'Single Room',
+                shared_room: 'Shared Room',
+                studio: 'Studio Unit',
+                suite: 'Suite',
+                bed_space: 'Bed Space',
+              };
+              return labels[enumVal] || (enumVal || 'Boarding House');
+            })(listing.room_type),
             amenities: listing.amenities || [],
             available: listing.available !== undefined ? listing.available : true,
             landlord: {
