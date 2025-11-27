@@ -429,44 +429,34 @@ export default function FinancialsScreen() {
     status: p.status ? p.status.charAt(0).toUpperCase() + p.status.slice(1) : 'Unknown'
   }));
 
+  // For each booking/property, return at most ONE upcoming due (the next unpaid month)
   const upcomingDue = bookings
-    .flatMap(b => {
-      // Show all future unpaid rent for each property (recurring monthly)
-      if (!(b.status === 'approved' || b.status === 'occupied')) return [];
+    .map(b => {
+      if (!(b.status === 'approved' || b.status === 'occupied')) return null;
       const today = new Date();
       const moveIn = new Date(b.moveInDate);
-      let dueDates = [];
       let nextDue = new Date(moveIn);
-      // Generate up to 12 future months (or until a payment is found)
+
+      // Find the first due date that is today or in the future and not already paid (up to 12 months)
       for (let i = 0; i < 12; i++) {
         if (nextDue < today) {
           nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
+
         const dueDateStr = nextDue.toISOString().split('T')[0];
-        // Check if payment exists for this booking and due date (more reliable than property name matching)
+
         const alreadyPaid = payments.some(p => {
-          const paymentDate = (p.date || '').toString().split('T')[0];
-          // Match by booking ID (from the selectedBooking when payment was made)
-          const isMatch = (
+          const paymentDate = (p.date || p.paidDate || '').toString().split('T')[0];
+          return (
             p.booking_id === b.id &&
             paymentDate === dueDateStr &&
             (p.status === 'completed' || p.status === 'paid')
           );
-          
-          if (i === 0) {
-            console.log(`[upcomingDue] Booking ID: ${b.id}, Payment booking_id: ${p.booking_id}, Payment Date: ${paymentDate}, Due Date: ${dueDateStr}, Status: ${p.status}, Match: ${isMatch}`);
-          }
-          
-          return isMatch;
         });
-        
-        if (i === 0) {
-          console.log(`[upcomingDue] First month - alreadyPaid=${alreadyPaid}, will ${alreadyPaid ? 'skip' : 'show'} this due`);
-        }
-        
+
         if (!alreadyPaid) {
-          dueDates.push({
+          return {
             id: `due_${b.id}_${dueDateStr}`,
             property: b.property || 'Property Name',
             amount: b.amount,
@@ -475,12 +465,17 @@ export default function FinancialsScreen() {
             bookingId: b.id,
             landlordId: b.landlordId,
             landlordName: b.landlordName
-          });
+          };
         }
+
+        // if paid, try next month
         nextDue.setMonth(nextDue.getMonth() + 1);
       }
-      return dueDates;
-    });
+
+      // No upcoming unpaid due found within the next 12 months
+      return null;
+    })
+    .filter(Boolean);
 
   const financialData = calculateFinancialData();
 

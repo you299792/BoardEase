@@ -363,42 +363,33 @@ export default function FinancialsScreen() {
   }));
 
   // Calculate upcoming due payments from bookings
+  // For each booking/property, return at most ONE upcoming due (the next month occurrence)
   const upcomingDue = bookings
-    .flatMap(b => {
-      // Show all future unpaid rent for each property (recurring monthly)
-      if (!(b.status === 'approved' || b.status === 'occupied')) return [];
+    .map(b => {
+      if (!(b.status === 'approved' || b.status === 'occupied')) return null;
       const today = new Date();
       const moveIn = new Date(b.move_in_date);
-      let dueDates = [];
       let nextDue = new Date(moveIn);
-      
-      // Generate up to 12 future months
+
+      // Find the first future due date (today or later) and mark if paid or pending (up to 12 months)
       for (let i = 0; i < 12; i++) {
         if (nextDue < today) {
           nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
+
         const dueDateStr = nextDue.toISOString().split('T')[0];
-        
-        // Check if payment exists for this booking and due date
+
         const paymentForThisDate = payments.find(p => {
           const paymentDate = (p.date || p.paidDate || '').toString().split('T')[0];
-          // Match by booking ID is more reliable than property name
           return (
-            p.booking?.id === b.id &&
-            paymentDate === dueDateStr
-          );
+            p.bookingId === b.id || p.booking?.id === b.id || p.booking_id === b.id
+          ) && paymentDate === dueDateStr;
         });
-        
-        if (i === 0) {
-          console.log(`[upcomingDue] Booking: ${b.title}, ID: ${b.id}, Payment found:`, paymentForThisDate ? 'YES' : 'NO', 'Status:', paymentForThisDate?.status);
-        }
-        
-        // Determine if paid based on payment status
+
         const isPaid = paymentForThisDate && (paymentForThisDate.status === 'completed' || paymentForThisDate.status === 'paid');
-        
-        // Always show the due item, but mark status as paid or pending
-        dueDates.push({
+
+        return {
           id: `due_${b.id}_${dueDateStr}`,
           property: b.title || b.name || 'Property Name',
           tenant: b.tenant_profile?.users?.first_name 
@@ -409,12 +400,12 @@ export default function FinancialsScreen() {
           type: 'Rent',
           bookingId: b.id,
           status: isPaid ? 'paid' : 'pending'
-        });
-        
-        nextDue.setMonth(nextDue.getMonth() + 1);
+        };
       }
-      return dueDates;
-    });
+
+      return null;
+    })
+    .filter(Boolean);
 
   const pendingPaymentsList = payments.filter(payment => payment.status === 'pending');
 
