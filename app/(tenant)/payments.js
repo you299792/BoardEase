@@ -776,7 +776,7 @@ export default function FinancialsScreen() {
             <View style={styles.formSection}>
                <Text style={styles.formLabel}>Select Method</Text>
                <View style={{flexDirection:'row', gap:10, flexWrap:'wrap'}}>
-                  {['cash', 'gcash', 'paymaya', 'bank'].map(m => (
+                  {['gcash', 'paymaya', 'bank'].map(m => (
                     <TouchableOpacity 
                       key={m} 
                       style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
@@ -788,28 +788,20 @@ export default function FinancialsScreen() {
                </View>
             </View>
 
-            {paymentMethod !== 'cash' && (
-                <View style={styles.formSection}>
-                   <Text style={styles.formLabel}>Account Number</Text>
-                   <TextInput 
-                     style={styles.textInput} 
-                     placeholder="09xxxxxxxxx or Acc #" 
-                     keyboardType="numeric"
-                     value={paymentDetails.accountNumber}
-                     onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
-                   />
-                </View>
-            )}
-            
-            {paymentMethod === 'cash' && (
-                <Text style={{fontStyle:'italic', color:'#666', marginVertical:10}}>
-                   Please hand cash directly to your landlord. This record will serve as your proof of payment intent.
-                </Text>
-            )}
+            <View style={styles.formSection}>
+              <Text style={styles.formLabel}>Account Number</Text>
+              <TextInput 
+                style={styles.textInput} 
+                placeholder="09xxxxxxxxx or Acc #" 
+                keyboardType="numeric"
+                value={paymentDetails.accountNumber}
+                onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
+              />
+            </View>
 
             <TouchableOpacity style={styles.confirmButton} onPress={processPayment}>
                <Text style={styles.confirmButtonText}>
-                 {paymentMethod === 'cash' ? 'Record Cash Payment' : 'Confirm Payment'}
+                 Confirm Payment
                </Text>
             </TouchableOpacity>
 
