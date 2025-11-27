@@ -230,6 +230,7 @@ export default function ChatScreen() {
       let imageUrl = null;
       if (imageUri) {
         const uploadResult = await uploadMessageImage(imageUri, currentUser.id);
+        console.log('[Chat] uploadResult:', uploadResult);
         if (uploadResult.success) {
           imageUrl = uploadResult.publicUrl;
         } else {
@@ -262,17 +263,17 @@ export default function ChatScreen() {
       setMessages(prev => [optimisticMessage, ...prev]);
 
       // Send message to Supabase with conversation ID
-      const { success, error } = await sendMessage(
+      const sendRes = await sendMessage(
         conversationId,
         currentUser.id,
         text.trim() || null,
         imageUrl
       );
-
-      if (!success) {
+      console.log('[Chat] sendRes:', sendRes);
+      if (!sendRes.success) {
         // Remove optimistic message if send failed
         setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
-        Alert.alert('Error', error || 'Failed to send message');
+        Alert.alert('Error', sendRes.error || 'Failed to send message');
       }
       // On success, real-time subscription will replace the optimistic message with the actual one
     } catch (error) {
