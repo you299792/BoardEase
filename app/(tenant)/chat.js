@@ -461,11 +461,15 @@ export default function ChatScreen() {
           styles.messageBubble,
           isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble
         ]}>
-          {item.image ? (
+          {/* Show image if present */}
+          {item.image && (
             <TouchableOpacity onPress={() => openImagePreview(item.image)}>
               <Image source={{ uri: item.image }} style={styles.messageImage} />
             </TouchableOpacity>
-          ) : (
+          )}
+          
+          {/* Show text if present */}
+          {item.text && (
             <Text
               style={
                 isMyMessage
@@ -473,7 +477,7 @@ export default function ChatScreen() {
                   : styles.otherMessageText
               }
             >
-              {item.text || ''}
+              {item.text}
             </Text>
           )}
           <Text style={[styles.messageTime, isMyMessage ? styles.myMessageTime : styles.otherMessageTime]}>

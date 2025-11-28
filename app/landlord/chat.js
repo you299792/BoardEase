@@ -673,11 +673,15 @@ export default function LandlordChat() {
         )}
         
         <View style={[styles.messageBubble, isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble]}>
-          {item.image ? (
+          {/* Show image if present */}
+          {item.image && (
             <TouchableOpacity onPress={() => openImagePreview(item.image)}>
               <Image source={{ uri: item.image }} style={styles.messageImage} />
             </TouchableOpacity>
-          ) : (
+          )}
+          
+          {/* Show text if present */}
+          {item.text && (
             <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>{item.text}</Text>
           )}
 

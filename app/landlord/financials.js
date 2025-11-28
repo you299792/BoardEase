@@ -40,6 +40,7 @@ export default function FinancialsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [localPendingPayments, setLocalPendingPayments] = useState([]);
   const [listings, setListings] = useState([]); 
   const [currentUser, setCurrentUser] = useState(null);
   const [landlordProfileId, setLandlordProfileId] = useState(null);
@@ -47,6 +48,10 @@ export default function FinancialsScreen() {
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
   const [showSendReceiptModal, setShowSendReceiptModal] = useState(false);
   const [lastRecordedPayment, setLastRecordedPayment] = useState(null);
+  const manualPaidDueRef = useRef(new Set());
+  const hasDebugged = useRef(false);
+  const isSharingInProgress = useRef(false);
+  const [activeDue, setActiveDue] = useState(null);
   
   const [receiptData, setReceiptData] = useState(null);
 
@@ -62,10 +67,36 @@ export default function FinancialsScreen() {
 
   const singleReceiptRef = useRef();   
 
+  // Merge local pending payments with DB payments to form the effective payments view
+  const mergedPayments = useMemo(() => {
+    const merged = [];
+    const seen = new Set();
+
+    (localPendingPayments || []).forEach(p => {
+      const key = p.reference ? `ref:${p.reference}` : p.id ? `id:${p.id}` : JSON.stringify(p);
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(p);
+      }
+    });
+
+    (payments || []).forEach(p => {
+      const key = p.reference ? `ref:${p.reference}` : p.id ? `id:${p.id}` : JSON.stringify(p);
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(p);
+      }
+    });
+
+    merged.sort((a, b) => new Date(b.createdAt || b.date || b.paidDate || 0) - new Date(a.createdAt || a.date || a.paidDate || 0));
+    console.log('[mergedPayments] count=', merged.length, 'top=', merged[0] ? { id: merged[0].id, reference: merged[0].reference } : null);
+    return merged;
+  }, [payments, localPendingPayments]);
+
   // Memoized lookup maps to quickly determine if a booking/listing/property has been paid for a period
   const paidPeriodsByBooking = useMemo(() => {
     const map = new Map();
-    payments.forEach(payment => {
+    mergedPayments.forEach(payment => {
       const status = (payment.status || '').toLowerCase();
       if (status !== 'completed' && status !== 'paid') return;
 
@@ -82,11 +113,11 @@ export default function FinancialsScreen() {
       map.get(bookingKey).add(periodKey);
     });
     return map;
-  }, [payments]);
+  }, [mergedPayments]);
 
   const paidPeriodsByListing = useMemo(() => {
     const map = new Map();
-    payments.forEach(payment => {
+    mergedPayments.forEach(payment => {
       const status = (payment.status || '').toLowerCase();
       if (status !== 'completed' && status !== 'paid') return;
 
@@ -103,11 +134,11 @@ export default function FinancialsScreen() {
       map.get(listingKey).add(periodKey);
     });
     return map;
-  }, [payments]);
+  }, [mergedPayments]);
 
   const paidPeriodsByProperty = useMemo(() => {
     const map = new Map();
-    payments.forEach(payment => {
+    mergedPayments.forEach(payment => {
       const status = (payment.status || '').toLowerCase();
       if (status !== 'completed' && status !== 'paid') return;
 
@@ -124,10 +155,353 @@ export default function FinancialsScreen() {
       map.get(propertyKey).add(periodKey);
     });
     return map;
-  }, [payments]);
+  }, [mergedPayments]);
+
+  // Debug helper: inspect payments when a due check fails the first time
+  const debugPaymentMatching = (booking, dueDate, propertyName) => {
+    console.log('=== DEBUG PAYMENT MATCHING ===');
+    console.log('Booking:', {
+      id: booking?.id,
+      listing_id: booking?.listing_id,
+      tenant: booking?.tenant_profile?.users?.first_name,
+      property_title: booking?.property_title
+    });
+    console.log('Due Date:', dueDate.toISOString().split('T')[0]);
+    console.log('Property Name:', propertyName);
+  
+    const dueMonth = dueDate.getMonth();
+    const dueYear = dueDate.getFullYear();
+  
+    console.log('All payments available:', mergedPayments.length);
+    mergedPayments.forEach((payment, index) => {
+      const status = (payment.status || '').toLowerCase();
+      const paymentDateRaw = payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date;
+      const paymentDate = new Date(paymentDateRaw);
+      const paymentMonth = paymentDate.getMonth();
+      const paymentYear = paymentDate.getFullYear();
+    
+      console.log(`Payment ${index + 1}:`, {
+        id: payment.id,
+        status,
+        date: paymentDateRaw,
+        monthYear: `${paymentYear}-${paymentMonth}`,
+        dueMonthYear: `${dueYear}-${dueMonth}`,
+        bookingId: payment.bookingId,
+        listingId: payment.listing_id,
+        property: payment.property,
+        tenant: payment.tenantName,
+        matchesDate: paymentMonth === dueMonth && paymentYear === dueYear
+      });
+    });
+    console.log('=== END DEBUG ===');
+  };
+
+  // Temporary debug helper: inspect a sample upcoming due and matching payments
+  const debugSpecificPaymentMatching = () => {
+    console.log('=== SPECIFIC PAYMENT DEBUG ===');
+    try {
+      if (upcomingDue && upcomingDue.length > 0) {
+        const sampleDue = upcomingDue[0];
+        console.log('Sample Due:', sampleDue);
+
+        const matchingPayments = (mergedPayments || []).filter(payment => {
+          const status = (payment.status || '').toLowerCase();
+          if (status !== 'completed' && status !== 'paid') return false;
+
+          const paymentDate = new Date(payment.billingPeriodDate || payment.dueDate || payment.date);
+          const dueDate = new Date(sampleDue.dueDate);
+          if (isNaN(paymentDate.getTime()) || isNaN(dueDate.getTime())) return false;
+
+          return paymentDate.getMonth() === dueDate.getMonth() &&
+                 paymentDate.getFullYear() === dueDate.getFullYear();
+        });
+
+        console.log('Matching payments found:', matchingPayments.length);
+        matchingPayments.forEach(p => {
+          console.log('Matching Payment:', {
+            id: p.id,
+            date: p.billingPeriodDate || p.dueDate || p.date,
+            property: p.property,
+            bookingId: p.bookingId,
+            status: p.status,
+          });
+        });
+      } else {
+        console.log('No upcoming due or no merged payments to debug.');
+      }
+    } catch (e) {
+      console.warn('[debugSpecificPaymentMatching] failed', e);
+    }
+    console.log('=== END SPECIFIC DEBUG ===');
+  };
+
+  // Call the specific debug helper when upcoming dues or merged payments update
+  useEffect(() => {
+    if ((upcomingDue || []).length > 0 && (mergedPayments || []).length > 0) {
+      debugSpecificPaymentMatching();
+    }
+  }, [upcomingDue, mergedPayments]);
+
+  // Improved helper function to check if a due has been paid
+  // Improved helper function to check if a due has been paid
+  const isDuePaid = useCallback((booking, dueDate, propertyName) => {
+  const dueMonth = dueDate.getMonth();
+  const dueYear = dueDate.getFullYear();
+  const periodKey = `${dueYear}-${dueMonth}`;
+  const dueDateStr = dueDate.toISOString().split('T')[0];
+
+  console.log('[isDuePaid] Checking:', {
+    bookingId: booking?.id,
+    dueDate: dueDateStr,
+    periodKey,
+    propertyName,
+    totalPayments: mergedPayments.length
+  });
+
+  console.log('[isDuePaid] Detailed check for:', {
+    bookingId: booking?.id,
+    dueDate: dueDateStr,
+    dueMonthYear: `${dueYear}-${dueMonth}`,
+    propertyName,
+    totalPayments: mergedPayments.length
+  });
+
+  // Log payments that match the exact month/year but fail other matching criteria
+  const dateMatchingPayments = (mergedPayments || []).filter(payment => {
+    const status = (payment.status || '').toLowerCase();
+    if (status !== 'completed' && status !== 'paid') return false;
+
+    const paymentDateRaw = payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date;
+    if (!paymentDateRaw) return false;
+    const paymentDate = new Date(paymentDateRaw);
+    if (isNaN(paymentDate.getTime())) return false;
+
+    const paymentMonth = paymentDate.getMonth();
+    const paymentYear = paymentDate.getFullYear();
+
+    return paymentMonth === dueMonth && paymentYear === dueYear;
+  });
+
+  console.log('[isDuePaid] Payments with matching date:', dateMatchingPayments.length);
+  dateMatchingPayments.forEach(p => {
+    console.log('  -', {
+      id: p.id,
+      property: p.property,
+      bookingId: p.bookingId,
+      listingId: p.listing_id,
+      date: p.billingPeriodDate || p.dueDate || p.date
+    });
+  });
+
+  // 1. Check manual paid references first (for immediate UI updates)
+  const manualKey = `${booking?.id}_${dueDateStr}`;
+  if (manualPaidDueRef.current.has(manualKey)) {
+    console.log('[isDuePaid] ✅ Found in manual paid refs');
+    return true;
+  }
+
+  // 2. Check all merged payments for direct matches
+  const directMatch = mergedPayments.some(payment => {
+    const status = (payment.status || '').toLowerCase();
+    if (status !== 'completed' && status !== 'paid') {
+      return false;
+    }
+
+    // Check if payment date matches the due period
+    const paymentDateRaw = payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date;
+    if (!paymentDateRaw) return false;
+    
+    const paymentDate = new Date(paymentDateRaw);
+    if (isNaN(paymentDate.getTime())) return false;
+
+    const paymentMonth = paymentDate.getMonth();
+    const paymentYear = paymentDate.getFullYear();
+    
+    // Match by month and year with more flexible rules:
+    // - Exact month/year match
+    // - Allow adjacent months (e.g., payment made a month early/late)
+    // - Handle year boundaries (Dec <-> Jan) for cross-year periods
+    const dateMatch = 
+      // Exact month/year match
+      (paymentMonth === dueMonth && paymentYear === dueYear) ||
+      // Allow for payments made in adjacent months for the same period
+      (Math.abs(paymentMonth - dueMonth) <= 1 && paymentYear === dueYear) ||
+      // Handle year boundaries (payment in Dec for Jan due of next year)
+      (paymentMonth === 11 && dueMonth === 0 && paymentYear === dueYear - 1) ||
+      // Handle year boundaries (payment in Jan for Dec due of previous year)
+      (paymentMonth === 0 && dueMonth === 11 && paymentYear === dueYear + 1);
+    if (!dateMatch) return false;
+
+    console.log('[isDuePaid] 🔍 Checking payment:', {
+      paymentId: payment.id,
+      paymentDate: paymentDate.toISOString().split('T')[0],
+      paymentMonth,
+      paymentYear,
+      dateMatch,
+      bookingId: payment.bookingId,
+      listingId: payment.listing_id,
+      property: payment.property
+    });
+
+    // Match by booking ID
+    if (booking?.id && (payment.bookingId === booking.id || payment.booking_id === booking.id)) {
+      console.log('[isDuePaid] ✅ Matched by booking ID');
+      return true;
+    }
+
+    // Match by listing ID
+    if (booking?.listing_id && payment.listing_id === booking.listing_id) {
+      console.log('[isDuePaid] ✅ Matched by listing ID');
+      return true;
+    }
+
+    // Match by property name (case insensitive)
+    const paymentProperty = (payment.property || payment.property_title || '').toLowerCase().trim();
+    const dueProperty = (propertyName || '').toLowerCase().trim();
+    if (dueProperty && paymentProperty === dueProperty) {
+      console.log('[isDuePaid] ✅ Matched by property name:', { paymentProperty, dueProperty });
+      return true;
+    }
+
+    // Match by tenant name (fallback)
+    if (booking?.tenant_profile?.users) {
+      const tenantFirstName = booking.tenant_profile.users.first_name?.toLowerCase() || '';
+      const paymentTenant = (payment.tenantName || '').toLowerCase();
+      if (tenantFirstName && paymentTenant.includes(tenantFirstName)) {
+        console.log('[isDuePaid] ✅ Matched by tenant name');
+        return true;
+      }
+    }
+
+    return false;
+  });
+
+  if (directMatch) {
+    console.log('[isDuePaid] ✅ Final result: true (direct match found)');
+    return true;
+  }
+
+  // 3. Check the memoized period maps (backup check)
+  if (booking?.id) {
+    const bookingPeriods = paidPeriodsByBooking.get(booking.id);
+    if (bookingPeriods?.has(periodKey)) {
+      console.log('[isDuePaid] ✅ Found in booking periods map');
+      return true;
+    }
+  }
+
+  if (booking?.listing_id) {
+    const listingPeriods = paidPeriodsByListing.get(booking.listing_id);
+    if (listingPeriods?.has(periodKey)) {
+      console.log('[isDuePaid] ✅ Found in listing periods map');
+      return true;
+    }
+  }
+
+  const propertyKey = (propertyName || '').toLowerCase();
+  if (propertyKey) {
+    const propertyPeriods = paidPeriodsByProperty.get(propertyKey);
+    if (propertyPeriods?.has(periodKey)) {
+      console.log('[isDuePaid] ✅ Found in property periods map');
+      return true;
+    }
+  }
+  console.log('[isDuePaid] ❌ Final result: false (no matches found)');
+
+  // If this is the first failure, dump debug information to help root-cause
+  if (!hasDebugged.current) {
+    hasDebugged.current = true;
+    try {
+      debugPaymentMatching(booking, dueDate, propertyName);
+    } catch (e) {
+      console.warn('[debugPaymentMatching] failed', e);
+    }
+  }
+
+  return false;
+}, [mergedPayments, paidPeriodsByBooking, paidPeriodsByListing, paidPeriodsByProperty]);
+
+  // Calculate upcoming due payments - FIXED VERSION
+  const upcomingDue = useMemo(() => {
+    return bookings
+      .map(b => {
+        if (!(b.status === 'approved' || b.status === 'occupied')) return null;
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const moveIn = new Date(b.move_in_date);
+        if (isNaN(moveIn.getTime())) return null;
+
+        // Resolve property display name and amount
+        let propertyName = 'Property Name';
+        let propertyAmount = b.total_amount || b.price || 0;
+
+        if (b.listing && (b.listing.title || b.listing.name)) {
+          propertyName = b.listing.title || b.listing.name;
+          propertyAmount = propertyAmount || (b.listing.price || b.listing.rent || 0);
+        } else if (b.property_title) {
+          propertyName = b.property_title;
+        } else {
+          const listMatch = listings.find(l => l.id === b.listing_id || l.id === b.listingId);
+          if (listMatch) {
+            propertyName = listMatch.title || listMatch.name || propertyName;
+            propertyAmount = propertyAmount || (listMatch.price || listMatch.rent || 0);
+          } else if (b.title || b.name) {
+            propertyName = b.title || b.name;
+          }
+        }
+
+        // Find the first unpaid due date
+        for (let i = 0; i < 24; i++) {
+          const nextDue = new Date(moveIn.getFullYear(), moveIn.getMonth() + i, moveIn.getDate());
+          
+          // Skip if due date is in the past
+          if (nextDue < today) {
+            continue;
+          }
+
+          const dueDateStr = nextDue.toISOString().split('T')[0];
+          const manualKey = `${b.id}_${dueDateStr}`;
+          
+          // Skip if manually marked as paid
+          if (manualPaidDueRef.current.has(manualKey)) {
+            continue;
+          }
+          
+          // Check if this due has been paid
+          const isPaid = isDuePaid(b, nextDue, propertyName);
+
+          if (!isPaid) {
+            return {
+              id: `due_${b.id}_${dueDateStr}`,
+              property: propertyName,
+              tenant: b.tenant_profile?.users?.first_name 
+                ? `${b.tenant_profile.users.first_name} ${b.tenant_profile.users.last_name || ''}`.trim()
+                : 'Tenant',
+              amount: propertyAmount || 0,
+              dueDate: dueDateStr,
+              type: 'Rent',
+              bookingId: b.id,
+              listingId: b.listing_id || b.listingId,
+              tenantProfileId: b.tenant_profile?.id || b.tenant_id || b.tenant_profile_id,
+              landlordId: b.landlord_id,
+              status: 'pending'
+            };
+          }
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }, [bookings, listings, isDuePaid]);
+
+  // Add this useEffect to handle immediate UI updates
+  useEffect(() => {
+    console.log('[Payment Update] Payments changed:', mergedPayments.length, 'Local pending:', localPendingPayments.length);
+    // This will trigger re-renders of useMemo calculations including upcomingDue
+  }, [mergedPayments, localPendingPayments]);
 
   // --- UNIFIED DATA LOADING FUNCTION ---
-  // This handles fetching from DB, fetching from Local Storage, and merging them correctly.
   const loadData = async (isSilent = false) => {
     try {
       // Only show spinner if it's a full reload, not a background poll
@@ -197,6 +571,7 @@ export default function FinancialsScreen() {
             amount: parseFloat(p.amount) || 0,
             status: p.status || 'pending',
             date: p.paid_date || p.created_at,
+            createdAt: p.created_at,
             paidDate: p.paid_date,
             billingPeriodDate: p.due_date,
             dueDate: p.due_date,
@@ -217,18 +592,28 @@ export default function FinancialsScreen() {
       // 6. MERGE LOGIC:
       // Create a Set of all Reference Numbers currently in the DB
       const dbReferences = new Set(mappedDbPayments.map(p => p.reference));
-      
+
       // Filter Local payments: Only keep those that are NOT yet in the DB
-      // (If a reference exists in DB, it means it synced successfully, so we use the DB version)
+      // (If a reference exists in DB, it means it synced successfully, so we treat it as synced)
       const unsyncedLocalPayments = localPayments.filter(p => !dbReferences.has(p.reference));
 
-      // Combine DB payments + Unsynced Local payments
-      const finalPayments = [...unsyncedLocalPayments, ...mappedDbPayments];
-      
-      // Sort by Date (Newest first)
-      finalPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+      // If any local payments have now been synced (their reference appears in DB),
+      // remove them from persistent AsyncStorage to clean up local pending state.
+      const matchedLocalPayments = localPayments.filter(p => dbReferences.has(p.reference));
+      if (matchedLocalPayments.length > 0) {
+        try {
+          const cleanedLocal = unsyncedLocalPayments || [];
+          await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(cleanedLocal));
+          console.log('[loadData] Cleaned up local pending payments:', matchedLocalPayments.length);
+        } catch (e) {
+          console.warn('[loadData] Failed to persist cleaned local payments', e);
+        }
+      }
 
-      setPayments(finalPayments);
+      // Store unsynced local payments separately and store DB payments as the canonical server list
+      console.log('[loadData] dbPayments=', mappedDbPayments.length, 'unsyncedLocal=', (unsyncedLocalPayments || []).length);
+      setLocalPendingPayments(unsyncedLocalPayments || []);
+      setPayments(mappedDbPayments || []);
 
     } catch (error) {
       console.error('Failed to load data', error);
@@ -328,133 +713,30 @@ export default function FinancialsScreen() {
 
   // --- CALCULATION LOGIC ---
 
-  // Helper function to check if a due has been paid
-  const isDuePaid = (booking, dueDate, propertyName) => {
-    const dueMonth = dueDate.getMonth();
-    const dueYear = dueDate.getFullYear();
-    const periodKey = `${dueYear}-${dueMonth}`;
+  const paymentHistory = mergedPayments.map(payment => {
+    const paidDateVal = payment.paidDate || payment.paid_date || payment.date || payment.createdAt || null;
+    const displayDate = paidDateVal || payment.createdAt || payment.date || null;
 
-    if (booking?.id) {
-      const bookingPeriods = paidPeriodsByBooking.get(booking.id);
-      if (bookingPeriods?.has(periodKey)) return true;
-    }
-
-    if (booking?.listing_id) {
-      const listingPeriods = paidPeriodsByListing.get(booking.listing_id);
-      if (listingPeriods?.has(periodKey)) return true;
-    }
-
-    const propertyKey = (propertyName || '').toLowerCase();
-    if (propertyKey) {
-      const propertyPeriods = paidPeriodsByProperty.get(propertyKey);
-      if (propertyPeriods?.has(periodKey)) return true;
-    }
-
-    // Fallback to direct scan for legacy/local records without mapped identifiers
-    return payments.some(payment => {
-      const status = (payment.status || '').toLowerCase();
-      if (status !== 'completed' && status !== 'paid') return false;
-
-      const paymentDate = new Date(payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date);
-      if (isNaN(paymentDate.getTime())) return false;
-
-      const dateMatch = paymentDate.getMonth() === dueMonth && paymentDate.getFullYear() === dueYear;
-      if (!dateMatch) return false;
-
-      const bookingMatch = (payment.bookingId === booking.id || payment.booking?.id === booking.id || payment.booking_id === booking.id);
-      if (bookingMatch) return true;
-
-      const listingMatch = payment.listing_id && booking.listing_id && payment.listing_id === booking.listing_id;
-      if (listingMatch) return true;
-
-      const propertyMatch = (payment.property || payment.property_title || '').toLowerCase() === propertyKey;
-      return propertyMatch;
-    });
-  };
-
-  // Calculate upcoming due payments
-  const upcomingDue = bookings
-    .map(b => {
-      if (!(b.status === 'approved' || b.status === 'occupied')) return null;
-      
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // Reset time for accurate comparison
-      
-      const moveIn = new Date(b.move_in_date);
-      if (isNaN(moveIn.getTime())) return null;
-
-      // Resolve property display name and amount first (needed for matching)
-      let propertyName = 'Property Name';
-      let propertyAmount = b.total_amount || b.price || 0;
-
-      if (b.listing && (b.listing.title || b.listing.name)) {
-        propertyName = b.listing.title || b.listing.name;
-        propertyAmount = propertyAmount || (b.listing.price || b.listing.rent || 0);
-      } else if (b.property_title) {
-        propertyName = b.property_title;
-      } else {
-        const listMatch = listings.find(l => l.id === b.listing_id || l.id === b.listingId);
-        if (listMatch) {
-          propertyName = listMatch.title || listMatch.name || propertyName;
-          propertyAmount = propertyAmount || (listMatch.price || listMatch.rent || 0);
-        } else if (b.title || b.name) {
-          propertyName = b.title || b.name;
-        }
-      }
-
-      // Find the first due date (today or later) that is NOT paid
-      // Start from move-in date and iterate through months
-      for (let i = 0; i < 24; i++) {
-        // Calculate the due date for this iteration
-        const nextDue = new Date(moveIn.getFullYear(), moveIn.getMonth() + i, moveIn.getDate());
-        
-        // Skip if due date is in the past
-        if (nextDue < today) {
-          continue;
-        }
-
-        const dueDateStr = nextDue.toISOString().split('T')[0];
-        
-        // Check if this due has been paid
-        const isPaid = isDuePaid(b, nextDue, propertyName);
-
-        if (!isPaid) {
-          return {
-            id: `due_${b.id}_${dueDateStr}`,
-            property: propertyName,
-            tenant: b.tenant_profile?.users?.first_name 
-              ? `${b.tenant_profile.users.first_name} ${b.tenant_profile.users.last_name || ''}`.trim()
-              : 'Tenant',
-            amount: propertyAmount || 0,
-            dueDate: dueDateStr,
-            type: 'Rent',
-            bookingId: b.id,
-            status: 'pending'
-          };
-        }
-      }
-      return null;
-    })
-    .filter(Boolean);
-
-  const paymentHistory = payments.map(payment => ({
-    id: payment.id,
-    tenant: payment.tenantName || 'Tenant',
-    property: payment.property,
-    amount: payment.amount,
-    date: payment.paidDate || payment.date,
-    status: payment.status,
-    type: payment.type || 'rent',
-    method: payment.method || 'Cash',
-    reference: payment.reference || 'N/A',
-  })).sort((a, b) => new Date(b.date) - new Date(a.date));
+    return {
+      id: payment.id,
+      tenant: payment.tenantName || 'Tenant',
+      property: payment.property,
+      amount: payment.amount,
+      paidDate: paidDateVal,
+      date: displayDate,
+      status: payment.status,
+      type: payment.type || 'rent',
+      method: payment.method || 'Cash',
+      reference: payment.reference || 'N/A',
+    };
+  }).sort((a, b) => new Date(b.paidDate || b.date) - new Date(a.paidDate || a.date));
 
   const calculateFinancialDataWithUpcoming = () => {
-    const completedPayments = payments.filter(p => {
+    const completedPayments = mergedPayments.filter(p => {
       const s = (p.status || '').toString().toLowerCase();
       return s === 'completed' || s === 'paid';
     });
-    const pendingPayments = payments.filter(p => {
+    const pendingPayments = mergedPayments.filter(p => {
       const s = (p.status || '').toString().toLowerCase();
       return s === 'pending';
     });
@@ -502,11 +784,11 @@ export default function FinancialsScreen() {
   const upcomingPendingCount = upcomingDue.filter(d => d.status !== 'paid').length;
 
   const paidPayments = useMemo(() => (
-    payments.filter(p => {
+    mergedPayments.filter(p => {
       const s = (p.status || '').toString().toLowerCase();
       return s === 'completed' || s === 'paid';
     })
-  ), [payments]);
+  ), [mergedPayments]);
 
   const handleReminders = () => {
     if (upcomingPendingCount === 0) {
@@ -524,22 +806,31 @@ export default function FinancialsScreen() {
     );
   };
 
-  const captureSingleReceipt = async () => {
-    try {
-      const uri = await captureRef(singleReceiptRef, {
-        format: 'png',
-        quality: 1.0, 
-        result: 'tmpfile'
-      });
+  const captureSingleReceipt = async (ref = singleReceiptRef.current) => {
+    if (!ref) {
+      console.warn('[captureSingleReceipt] No ref provided to capture');
+      setReceiptData(null);
+      return;
+    }
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'image/png',
-          dialogTitle: 'Download Receipt',
-          UTI: 'public.png'
-        });
-      } else {
+    try {
+      const uri = await captureRef(ref, { format: 'png', quality: 0.8 });
+
+      if (isSharingInProgress.current) {
+        console.warn('[captureSingleReceipt] Another share is in progress, skipping');
+        return;
+      }
+
+      if (!(await Sharing.isAvailableAsync())) {
         Alert.alert('Error', 'Sharing is not available on this device');
+        return;
+      }
+
+      isSharingInProgress.current = true;
+      try {
+        await Sharing.shareAsync(uri, { dialogTitle: 'Share Receipt' });
+      } finally {
+        isSharingInProgress.current = false;
       }
     } catch (error) {
       console.error('Single Receipt Export failed:', error);
@@ -550,7 +841,7 @@ export default function FinancialsScreen() {
   };
 
   const handleExportData = async () => {
-    if (payments.length === 0) {
+    if (mergedPayments.length === 0) {
       Alert.alert('No Data', 'You have no data to export.');
       return;
     }
@@ -594,7 +885,7 @@ export default function FinancialsScreen() {
               .header { text-align: center; margin-bottom: 20px; }
               .logo-row { display: flex; align-items: center; justify-content: center; }
               .logo-text { font-size: 40px; font-weight: bold; color: #000; }
-              .tagline { font-size: 16px; color: #555; margin-top: 8px; font-style: italic; text-align: center; }
+              .tagline { font-size: 16; color: #555; margin-top: 8px; font-style: italic; text-align: center; }
               .thick-divider { height: 3px; background-color: #000; margin: 20px 0; }
               .records-title { font-size: 32px; font-weight: bold; color: #000; margin-bottom: 20px; }
               .record-row { display: flex; margin-bottom: 8px; font-size: 18px; }
@@ -608,7 +899,17 @@ export default function FinancialsScreen() {
       `;
 
       const { uri } = await Print.printToFileAsync({ html: htmlContent });
-      await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf', dialogTitle: 'Export Financial Records' });
+      if (isSharingInProgress.current) {
+        console.warn('[handleExportData] Share already in progress, skipping export share');
+        Alert.alert('Please wait', 'Another share is currently in progress.');
+      } else {
+        isSharingInProgress.current = true;
+        try {
+          await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf', dialogTitle: 'Export Financial Records' });
+        } finally {
+          isSharingInProgress.current = false;
+        }
+      }
     } catch (error) {
       console.error('Export PDF failed:', error);
       Alert.alert('Export Failed', 'Could not generate PDF.');
@@ -616,6 +917,7 @@ export default function FinancialsScreen() {
   };
 
   const handleRecordPayment = () => {
+    setActiveDue(null);
     const firstProp = listings.length > 0 ? listings[0] : null;
     setPaymentForm({
       date: new Date().toISOString().split('T')[0],
@@ -626,6 +928,47 @@ export default function FinancialsScreen() {
       status: 'completed',
       method: 'Cash',
     });
+    setShowRecordPaymentModal(true);
+  };
+
+  const handleRecordPaymentFromDue = (dueItem) => {
+    if (!dueItem) {
+      handleRecordPayment();
+      return;
+    }
+
+    const booking = bookings.find(b => b.id === dueItem.bookingId);
+    const tenantName = booking?.tenant_profile?.users
+      ? `${booking.tenant_profile.users.first_name || ''} ${booking.tenant_profile.users.last_name || ''}`.trim()
+      : dueItem.tenant || '';
+
+    const listingId = booking?.listing_id || booking?.listing?.id || dueItem.listingId || null;
+    const tenantProfileId = booking?.tenant_profile?.id || booking?.tenant_id || dueItem.tenantProfileId || null;
+    const landlordIdForDue = booking?.landlord_id || dueItem.landlordId || landlordProfileId;
+    const propertyName = dueItem.property || booking?.listing?.title || booking?.listing?.name || booking?.property_title || '';
+    const amount = parseFloat(dueItem.amount) || booking?.total_amount || booking?.price || 0;
+
+    setActiveDue({
+      bookingId: dueItem.bookingId,
+      dueDate: dueItem.dueDate,
+      listingId,
+      tenantProfileId,
+      landlordId: landlordIdForDue,
+    });
+
+    setPaymentForm(prev => ({
+      ...prev,
+      date: dueItem.dueDate,
+      tenantName: tenantName || prev.tenantName,
+      property: propertyName,
+      amount: amount ? amount.toString() : prev.amount,
+      type: 'rent',
+      status: 'completed',
+      method: 'Cash',
+      listingId,
+      tenantProfileId,
+    }));
+
     setShowRecordPaymentModal(true);
   };
 
@@ -640,54 +983,85 @@ export default function FinancialsScreen() {
     const todayIso = new Date().toISOString().split('T')[0];
     const billingPeriodDate = paymentForm.date;
 
-    // Try to associate with booking - check multiple property name fields
-    const matchedBooking = bookings.find(b => {
-      const propName = b.listing?.title || b.listing?.name || b.title || b.name || '';
-      const formProp = (paymentForm.property || '').toLowerCase();
-      return propName.toLowerCase() === formProp;
-    });
+    let matchedBooking = null;
+    if (activeDue?.bookingId) {
+      matchedBooking = bookings.find(b => b.id === activeDue.bookingId) || null;
+    }
+    if (!matchedBooking) {
+      matchedBooking = bookings.find(b => {
+        const propName = b.listing?.title || b.listing?.name || b.title || b.name || '';
+        const formProp = (paymentForm.property || '').toLowerCase();
+        return propName.toLowerCase() === formProp;
+      }) || null;
+    }
     
-    // Get listing ID - also check paymentForm.listingId which is set when property chip is selected
     const matchedListing = listings.find(l => (l.title || l.name) === paymentForm.property);
-    const listingId = paymentForm.listingId || matchedListing?.id || matchedBooking?.listing_id;
+    const listingId = activeDue?.listingId || paymentForm.listingId || matchedListing?.id || matchedBooking?.listing_id;
+    const tenantProfileIdFromDue = activeDue?.tenantProfileId || paymentForm.tenantProfileId;
+    const landlordIdFromDue = activeDue?.landlordId;
 
     const newUiPayment = {
-      id: `temp_${Date.now()}`,
-      tenantName: paymentForm.tenantName,
-      property: paymentForm.property,
-      amount: amountFloat,
-      type: paymentForm.type,
-      status: paymentForm.status,
-      date: todayIso,
-      paidDate: todayIso,
-      billingPeriodDate,
-      dueDate: billingPeriodDate,
-      method: 'Cash',
-      reference: generatedRef,
-      isLocal: true,
-      bookingId: matchedBooking?.id,
-      booking: matchedBooking ? { id: matchedBooking.id } : undefined,
-      matchedBooking: matchedBooking,
-      listing_id: listingId,
-    };
+    id: `temp_${Date.now()}`,
+    tenantName: paymentForm.tenantName,
+    property: paymentForm.property,
+    property_title: paymentForm.property,
+    amount: amountFloat,
+    type: paymentForm.type,
+    status: paymentForm.status,
+    date: todayIso,
+    paidDate: todayIso,
+    paid_date: todayIso,
+    billingPeriodDate: billingPeriodDate,
+    dueDate: billingPeriodDate,
+    due_date: billingPeriodDate,
+    method: 'Cash',
+    reference: generatedRef,
+    isLocal: true,
+    bookingId: matchedBooking?.id || activeDue?.bookingId,
+    booking: matchedBooking ? { id: matchedBooking.id } : undefined,
+    matchedBooking: matchedBooking,
+    listing_id: listingId,
+    tenantProfileId: tenantProfileIdFromDue || matchedBooking?.tenant_profile?.id || matchedBooking?.tenant_id,
+    landlord_id: landlordIdFromDue || landlordProfileId,
+    // Ensure these critical fields are set for matching
+    booking_id: matchedBooking?.id || activeDue?.bookingId,
+    listingId: listingId,
+  };
+    // Mark this due as paid immediately for UI responsiveness
+    const targetDueKey = activeDue ? `${activeDue.bookingId}_${activeDue.dueDate}` : null;
+    if (targetDueKey) {
+      manualPaidDueRef.current.add(targetDueKey);
+      console.log('[processRecordedPayment] Marked due as paid:', targetDueKey);
+    }
 
     // Optimistic Update
-    setPayments(prev => [newUiPayment, ...prev]);
-    setShowRecordPaymentModal(false);
-
-    // Validate required fields for DB insert
-    // tenant_id can come from: tenant_profile.id (nested), tenant_id (direct), or tenant_profile_id (mapped)
-    const tenantProfileId = matchedBooking?.tenant_profile?.id || matchedBooking?.tenant_id || matchedBooking?.tenant_profile_id;
+    setLocalPendingPayments(prev => [newUiPayment, ...(prev || [])]);
     
-    console.log('[processRecordedPayment] matchedBooking:', matchedBooking?.id, 'tenant_id:', tenantProfileId, 'listing_id:', listingId);
-    
-    if (!tenantProfileId || !listingId) {
-      console.warn('Missing tenant_id or listing_id, saving locally only');
-      Alert.alert('Offline Mode', 'Payment saved locally. Missing tenant or listing info for database sync.');
+    try {
       const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
       const existingPayments = existingJson ? JSON.parse(existingJson) : [];
       existingPayments.push(newUiPayment);
       await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existingPayments));
+    } catch (e) {
+      console.warn('[processRecordedPayment] Failed to persist local payment:', e);
+    }
+    
+    setShowRecordPaymentModal(false);
+
+    // Force immediate UI update by triggering state changes
+    setTimeout(() => {
+      loadData(true); // Silent reload to refresh data
+    }, 500);
+
+    // Validate required fields for DB insert
+    const tenantProfileId = tenantProfileIdFromDue || matchedBooking?.tenant_profile?.id || matchedBooking?.tenant_id || matchedBooking?.tenant_profile_id;
+    const landlordIdToUse = landlordIdFromDue || landlordProfileId;
+    
+    console.log('[processRecordedPayment] matchedBooking:', matchedBooking?.id || activeDue?.bookingId, 'tenant_id:', tenantProfileId, 'listing_id:', listingId);
+    
+    if (!tenantProfileId || !listingId) {
+      console.warn('Missing tenant_id or listing_id, saving locally only');
+      Alert.alert('Offline Mode', 'Payment saved locally. Missing tenant or listing info for database sync.');
       setLastRecordedPayment(newUiPayment);
       setShowSendReceiptModal(true);
       return;
@@ -695,7 +1069,7 @@ export default function FinancialsScreen() {
 
     try {
       const insertRow = {
-        landlord_id: landlordProfileId,
+        landlord_id: landlordIdToUse,
         tenant_id: tenantProfileId,
         listing_id: listingId,
         paid_date: todayIso,
@@ -707,7 +1081,7 @@ export default function FinancialsScreen() {
         reference_number: generatedRef,
       };
 
-      if (matchedBooking?.id) insertRow.booking_id = matchedBooking.id;
+      if (matchedBooking?.id || activeDue?.bookingId) insertRow.booking_id = matchedBooking?.id || activeDue?.bookingId;
 
       console.log('[processRecordedPayment] Inserting payment:', JSON.stringify(insertRow, null, 2));
 
@@ -719,14 +1093,8 @@ export default function FinancialsScreen() {
       console.log('[processRecordedPayment] Insert result:', insertedData, 'Error:', error);
 
       if (error) {
-        console.warn('Supabase insert failed, persisting to local storage:', error);
+        console.warn('Supabase insert failed (will remain in local pending):', error);
         Alert.alert('Offline Mode', `Payment saved locally: ${error.message || 'Connection issue'}`);
-        
-        // Save to Local Storage
-        const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-        const existingPayments = existingJson ? JSON.parse(existingJson) : [];
-        existingPayments.push(newUiPayment);
-        await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existingPayments));
       } else {
         // Successful insert - reload to get proper DB ID and clean up local
         await loadData(true);
@@ -736,8 +1104,12 @@ export default function FinancialsScreen() {
       setShowSendReceiptModal(true);
     } catch (error) {
       console.error("Save error:", error);
+      if (targetDueKey) {
+        manualPaidDueRef.current.delete(targetDueKey);
+      }
       Alert.alert('Error', `Failed to process payment: ${error.message}`);
     }
+    setActiveDue(null);
   };
 
   const handleSendReceipt = async () => {
@@ -747,7 +1119,7 @@ export default function FinancialsScreen() {
       setReceiptData(lastRecordedPayment);
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      const uri = await captureRef(singleReceiptRef, {
+      const uri = await captureRef(singleReceiptRef.current, {
         format: 'png',
         quality: 1.0,
         result: 'tmpfile'
@@ -916,11 +1288,18 @@ export default function FinancialsScreen() {
                   <Text style={styles.propertyName}>{item.property}</Text>
                   <Text style={styles.paymentDate}>Due: {item.dueDate}</Text>
                 </View>
-                <View style={{alignItems:'flex-end', justifyContent:'space-between'}}>
+                <View style={styles.upcomingActions}>
                   <Text style={styles.paymentAmount}>₱{parseFloat(item.amount).toLocaleString()}</Text>
                   <Text style={[styles.statusText, {color: getStatusColor(item.status)}]}>
                     {getStatusText(item.status)}
                   </Text>
+                  <TouchableOpacity
+                    style={styles.recordCashButton}
+                    onPress={() => handleRecordPaymentFromDue(item)}
+                  >
+                    <Feather name="check-circle" size={16} color="#fff" />
+                    <Text style={styles.recordCashText}>Record Cash</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             ))
@@ -1121,7 +1500,13 @@ export default function FinancialsScreen() {
                </View>
 
                <View style={{flexDirection:'row', gap: 10, marginTop: 20, marginBottom: 20}}>
-                  <TouchableOpacity style={[styles.confirmButton, {backgroundColor:'#ccc', flex:1}]} onPress={() => setShowRecordPaymentModal(false)}>
+                  <TouchableOpacity
+                    style={[styles.confirmButton, {backgroundColor:'#ccc', flex:1}]}
+                    onPress={() => {
+                      setShowRecordPaymentModal(false);
+                      setActiveDue(null);
+                    }}
+                  >
                     <Text style={styles.confirmButtonText}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={[styles.confirmButton, {flex:1}]} onPress={processRecordedPayment}>
@@ -1211,6 +1596,9 @@ const styles = StyleSheet.create({
   paymentDate: { fontSize: 12, color: '#999', marginTop: 4 },
   paymentAmount: { color: Colors.primary, fontWeight: 'bold' },
   statusText: { fontSize: 12, textTransform: 'capitalize' },
+  upcomingActions: { alignItems:'flex-end', justifyContent:'space-between', gap: 8 },
+  recordCashButton: { flexDirection:'row', alignItems:'center', backgroundColor: Colors.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, gap: 6 },
+  recordCashText: { color:'#fff', fontSize:12, fontWeight:'600' },
   emptyStateText: { fontSize: 16, color: '#999', textAlign: 'center', marginTop: 20 },
   
   // Modal Styles
