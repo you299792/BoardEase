@@ -309,12 +309,21 @@ export default function Notifications() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Notifications</Text>
-        {notificationList.length > 0 && (
-          <Text style={styles.subtitle}>
-            {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
-          </Text>
-        )}
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Notifications</Text>
+            {notificationList.length > 0 && (
+              <Text style={styles.subtitle}>
+                {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
+              </Text>
+            )}
+          </View>
+          {unreadCount > 0 && (
+            <TouchableOpacity onPress={markAllAsRead} style={styles.markAllButton}>
+              <Text style={styles.markAllButtonText}>Mark all read</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       <FlatList
@@ -362,6 +371,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  markAllButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#667eea',
+    borderRadius: 6,
+  },
+  markAllButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -393,11 +418,6 @@ const styles = StyleSheet.create({
   },
   textContainer: {
     flex: 1,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
   },
   notificationTitle: {
     fontSize: 16,
