@@ -212,11 +212,11 @@ const BoardingHouseCard = ({ house, onPress, onFavoriteChange, isFavoriteProp })
         
         <View style={styles.landlordInfo}>
           <Ionicons 
-            name={house.landlord?.verified ? "checkmark-circle" : "person-circle"} 
+            name="checkmark-circle" 
             size={16} 
-            color={house.landlord?.verified ? "#10b981" : "#666"} 
+            color="#10b981" 
           />
-          <Text style={styles.landlordName} numberOfLines={1}>
+          <Text style={[styles.landlordName, {color: "#10b981", fontWeight: "600"}]} numberOfLines={1}>
             {house.landlord?.name || 'Unknown'}
           </Text>
           {house.landlord?.verified && (
