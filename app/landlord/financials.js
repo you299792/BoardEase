@@ -317,19 +317,9 @@ export default function FinancialsScreen() {
     const paymentMonth = paymentDate.getMonth();
     const paymentYear = paymentDate.getFullYear();
     
-    // Match by month and year with more flexible rules:
-    // - Exact month/year match
-    // - Allow adjacent months (e.g., payment made a month early/late)
-    // - Handle year boundaries (Dec <-> Jan) for cross-year periods
-    const dateMatch = 
-      // Exact month/year match
-      (paymentMonth === dueMonth && paymentYear === dueYear) ||
-      // Allow for payments made in adjacent months for the same period
-      (Math.abs(paymentMonth - dueMonth) <= 1 && paymentYear === dueYear) ||
-      // Handle year boundaries (payment in Dec for Jan due of next year)
-      (paymentMonth === 11 && dueMonth === 0 && paymentYear === dueYear - 1) ||
-      // Handle year boundaries (payment in Jan for Dec due of previous year)
-      (paymentMonth === 0 && dueMonth === 11 && paymentYear === dueYear + 1);
+    // Match by exact month and year only - no adjacent month matching
+    // This ensures November payment only marks November due as paid, not December
+    const dateMatch = (paymentMonth === dueMonth && paymentYear === dueYear);
     if (!dateMatch) return false;
 
     console.log('[isDuePaid] 🔍 Checking payment:', {
@@ -1407,8 +1397,12 @@ export default function FinancialsScreen() {
                                 const booking = bookings.find(b => b.listing_id === item.id);
                                 let dueDate = new Date().toISOString().split('T')[0]; 
                                 let tenantName = '';
+                                let tenantProfileIdFromBooking = null;
                                 
                                 if (booking && (booking.status === 'approved' || booking.status === 'occupied')) {
+                                  // Get tenant profile ID for database insert
+                                  tenantProfileIdFromBooking = booking.tenant_profile?.id || booking.tenant_id || booking.tenant_profile_id || null;
+                                  
                                   // Get tenant name
                                   if (booking.tenant_profile?.users) {
                                     const u = booking.tenant_profile.users;
@@ -1431,6 +1425,18 @@ export default function FinancialsScreen() {
                                     }
                                   }
                                 }
+                                
+                                // Also set activeDue so processRecordedPayment can use it
+                                if (booking && tenantProfileIdFromBooking) {
+                                  setActiveDue({
+                                    bookingId: booking.id,
+                                    dueDate: dueDate,
+                                    listingId: item.id,
+                                    tenantProfileId: tenantProfileIdFromBooking,
+                                    landlordId: booking.landlord_id || landlordProfileId,
+                                  });
+                                }
+                                
                                 setPaymentForm(p => ({
                                     ...p, 
                                     property: propName,
@@ -1438,6 +1444,7 @@ export default function FinancialsScreen() {
                                     date: dueDate,
                                     tenantName: tenantName || p.tenantName,
                                     listingId: item.id,
+                                    tenantProfileId: tenantProfileIdFromBooking,
                                 }));
                             }}
                           >
