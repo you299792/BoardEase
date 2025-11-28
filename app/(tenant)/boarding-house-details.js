@@ -841,8 +841,7 @@ export default function BoardingHouseDetails() {
   const landlordProfileImage = landlord.profile_image_url || 'https://via.placeholder.com/64?text=LL';
 
   return (
-    <WrapPrimitiveChildren>
-      <View style={styles.container}>
+    <View style={styles.container}>
       
       {/* Header */}
       <View style={styles.header}>
@@ -1438,8 +1437,7 @@ export default function BoardingHouseDetails() {
           <Text style={styles.bookButtonText}>Book Now</Text>
         </TouchableOpacity>
       </View>
-      </View>
-    </WrapPrimitiveChildren>
+    </View>
   );
 }
 
