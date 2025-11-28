@@ -28,6 +28,7 @@ import {
   deleteConversation,
 } from '../../lib/supabaseClient';
 import { saveTenantMessages, addMessageToCache } from '../../lib/messageCache';
+import FullScreenImageModal from '../../components/FullScreenImageModal';
 
 export default function ChatScreen() {
   const { conversationId: routeConversationId } = useLocalSearchParams();
@@ -42,6 +43,7 @@ export default function ChatScreen() {
   const [landlordInfo, setLandlordInfo] = useState(null);
   const [houseName, setHouseName] = useState(null);
   const [tenantInfo, setTenantInfo] = useState(null); // Tenant's own profile
+  const [expandedImageUri, setExpandedImageUri] = useState(null);
 
   useEffect(() => {
     loadConversation();
@@ -406,6 +408,13 @@ export default function ChatScreen() {
     );
   };
 
+  const openImagePreview = (uri) => {
+    if (!uri) return;
+    setExpandedImageUri(uri);
+  };
+
+  const closeImagePreview = () => setExpandedImageUri(null);
+
   // Format timestamp to readable format
   const formatMessageTime = (timestamp) => {
     const date = new Date(timestamp);
@@ -453,7 +462,7 @@ export default function ChatScreen() {
           isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble
         ]}>
           {item.image ? (
-            <TouchableOpacity onPress={() => Alert.alert('Image', 'View image full screen')}>
+            <TouchableOpacity onPress={() => openImagePreview(item.image)}>
               <Image source={{ uri: item.image }} style={styles.messageImage} />
             </TouchableOpacity>
           ) : (
@@ -544,6 +553,12 @@ export default function ChatScreen() {
           <Ionicons name="send" size={24} color="white" />
         </TouchableOpacity>
       </View>
+
+      <FullScreenImageModal
+        visible={!!expandedImageUri}
+        imageUri={expandedImageUri}
+        onClose={closeImagePreview}
+      />
     </KeyboardAvoidingView>
   );
 }

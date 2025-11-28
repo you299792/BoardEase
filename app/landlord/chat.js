@@ -30,6 +30,7 @@ import {
 } from '../../lib/supabaseClient';
 import { saveLandlordMessages, addMessageToCache } from '../../lib/messageCache';
 import { getCachedLandlordProfile } from '../../lib/profileCache';
+import FullScreenImageModal from '../../components/FullScreenImageModal';
 
 export default function LandlordChat() {
   const { id, conversationId: routeConversationId, tenantId: paramTenantId, tenantName, tenantImage, property: routeProperty } = useLocalSearchParams();
@@ -55,6 +56,7 @@ export default function LandlordChat() {
   const [landlordProfileId, setLandlordProfileId] = useState(null);
   const [conversationId, setConversationId] = useState(routeConversationId || null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [expandedImageUri, setExpandedImageUri] = useState(null);
 
   useEffect(() => {
     loadConversation();
@@ -470,6 +472,13 @@ export default function LandlordChat() {
     }
   };
 
+  const openImagePreview = (uri) => {
+    if (!uri) return;
+    setExpandedImageUri(uri);
+  };
+
+  const closeImagePreview = () => setExpandedImageUri(null);
+
   const sendLandlordMessage = async (text = '', imageUri = '') => {
     if (!text.trim() && !imageUri) return;
     if (!conversationId || !currentUser) return;
@@ -665,7 +674,9 @@ export default function LandlordChat() {
         
         <View style={[styles.messageBubble, isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble]}>
           {item.image ? (
-            <Image source={{ uri: item.image }} style={styles.messageImage} />
+            <TouchableOpacity onPress={() => openImagePreview(item.image)}>
+              <Image source={{ uri: item.image }} style={styles.messageImage} />
+            </TouchableOpacity>
           ) : (
             <Text style={isMyMessage ? styles.myMessageText : styles.otherMessageText}>{item.text}</Text>
           )}
@@ -746,6 +757,12 @@ export default function LandlordChat() {
         <TextInput style={styles.textInput} value={newMessage} onChangeText={setNewMessage} placeholder="Type a message..." multiline />
         <TouchableOpacity style={styles.sendButton} onPress={handleSend}><Ionicons name="send" size={20} color="white" /></TouchableOpacity>
       </View>
+
+      <FullScreenImageModal
+        visible={!!expandedImageUri}
+        imageUri={expandedImageUri}
+        onClose={closeImagePreview}
+      />
 
       <Modal visible={showBookingModal} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
