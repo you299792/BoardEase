@@ -75,6 +75,57 @@ export default function FinancialsScreen() {
     }
   }, [receiptData, receiptAction]);
 
+  // Real-time subscription for payments updates (when landlord records cash payments)
+  useEffect(() => {
+    let subscription;
+
+    const setupSubscription = async () => {
+      try {
+        const user = await getCurrentUser();
+        if (!user) return;
+
+        // Get tenant profile ID
+        const { data: profile } = await supabase
+          .from('tenant_profile')
+          .select('id')
+          .eq('user_id', user.id)
+          .single();
+
+        if (!profile?.id) return;
+
+        console.log('[Tenant Payments] Setting up real-time subscription for tenant_id:', profile.id);
+
+        subscription = supabase
+          .channel(`payments:tenant_${profile.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'payments',
+              filter: `tenant_id=eq.${profile.id}`
+            },
+            (payload) => {
+              console.log('🔔 [Tenant] Payment update received via Websocket:', payload.eventType);
+              loadData(); // Reload data on real-time event
+            }
+          )
+          .subscribe();
+      } catch (error) {
+        console.error('[Tenant Payments] Error setting up subscription:', error);
+      }
+    };
+
+    setupSubscription();
+
+    return () => {
+      if (subscription) {
+        console.log('[Tenant Payments] Cleaning up subscription');
+        supabase.removeChannel(subscription);
+      }
+    };
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       loadData();
@@ -206,7 +257,16 @@ export default function FinancialsScreen() {
       const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
       if (localData) {
         const localPayments = JSON.parse(localData);
-        const uniqueLocal = localPayments.filter(lp => !allPayments.some(dp => dp.reference === lp.reference));
+        // Only keep local payments that aren't already in the DB (by reference number)
+        const dbReferences = new Set(allPayments.map(p => p.reference || p.reference_number));
+        const uniqueLocal = localPayments.filter(lp => !dbReferences.has(lp.reference));
+        
+        // Clean up synced payments from AsyncStorage
+        if (uniqueLocal.length < localPayments.length) {
+          await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(uniqueLocal));
+          console.log('[Tenant loadData] Cleaned up synced local payments:', localPayments.length - uniqueLocal.length);
+        }
+        
         allPayments = [...uniqueLocal, ...allPayments];
       }
 
@@ -441,7 +501,8 @@ export default function FinancialsScreen() {
     if (statusLower !== 'completed' && statusLower !== 'paid') return;
     const bookingId = String(p.booking_id || p.bookingId || '');
     if (!bookingId) return;
-    const paymentDateKey = dateKey(p.paid_date || p.date || p.paidDate);
+    // Check due_date first (landlord records use this), then fall back to paid_date
+    const paymentDateKey = dateKey(p.due_date || p.paid_date || p.date || p.paidDate);
     if (!paymentDateKey) return;
     paidDueKeys.add(`${bookingId}_${paymentDateKey}`);
     const monthKey = paymentDateKey.slice(0, 7);
@@ -455,33 +516,34 @@ export default function FinancialsScreen() {
     .map(b => {
       if (!(b.status === 'approved' || b.status === 'occupied')) return null;
       const today = new Date();
+      today.setHours(0, 0, 0, 0);
       const moveIn = new Date(b.moveInDate);
-      let nextDue = new Date(moveIn);
+      if (isNaN(moveIn.getTime())) return null;
 
-      // Find the first due date that is today or in the future and not already paid (up to 12 months)
-      for (let i = 0; i < 12; i++) {
+      // Find the first due date that is today or in the future and not already paid (up to 24 months)
+      for (let i = 0; i < 24; i++) {
+        // Use same calculation as landlord's financials.js - create new date each iteration
+        const nextDue = new Date(moveIn.getFullYear(), moveIn.getMonth() + i, moveIn.getDate());
+        
+        // Skip if due date is in the past
         if (nextDue < today) {
-          nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
 
         const dueDateStr = nextDue.toISOString().split('T')[0];
         const dueDateKey = dateKey(dueDateStr);
         if (!dueDateKey) {
-          nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
 
         // Immediate hide if we just paid this specific due (optimistic guard)
         if (justPaidRef.current.has(`${b.id}_${dueDateStr}`)) {
-          nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
 
         const dueKey = `${b.id}_${dueDateKey}`;
         const dueMonthKey = `${b.id}_${dueDateKey.slice(0, 7)}`;
         if (paidDueKeys.has(dueKey) || paidDueMonthKeys.has(dueMonthKey)) {
-          nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
 
@@ -501,7 +563,7 @@ export default function FinancialsScreen() {
         };
       }
 
-      // No upcoming unpaid due found within the next 12 months
+      // No upcoming unpaid due found within the next 24 months
       return null;
     })
     .filter(Boolean);
@@ -601,6 +663,7 @@ export default function FinancialsScreen() {
       payment_type: 'rent',
       status: 'completed', 
       paid_date: duePaidDate,
+      due_date: duePaidDate, // Critical: needed for landlord's isDuePaid matching
       payment_method: dbPaymentMethod, 
       reference_number: generatedRef,
       notes: `Payment made by ${nameToUse} via ${paymentMethod.toUpperCase()}`
@@ -612,6 +675,7 @@ export default function FinancialsScreen() {
         id: `temp_${Date.now()}`, 
         date: duePaidDate, 
         paidDate: duePaidDate,
+        due_date: duePaidDate, // For matching in paid dues check
         property: selectedBooking?.property || 'Property', // Ensure property name exists
         tenant_name: nameToUse,
         property_title: selectedBooking?.property,
@@ -625,6 +689,10 @@ export default function FinancialsScreen() {
     };
     
     // 3. Update UI Immediately
+    // Mark this due as paid immediately for optimistic UI update
+    if (selectedBooking?.bookingId && duePaidDate) {
+      justPaidRef.current.add(`${selectedBooking.bookingId}_${duePaidDate}`);
+    }
     // Add to History immediately
     setPayments(prev => [optimisticPayment, ...prev]);
     setShowPaymentModal(false);
@@ -644,11 +712,13 @@ export default function FinancialsScreen() {
         if (error) {
             console.warn("DB Save failed, kept local copy", error);
             // We don't alert error here because we already saved it locally for the user
-        } 
-
-        // DO NOT CALL await loadData() HERE.
-        // Calling it immediately often fetches old data before the DB is ready.
-        // The local update + AsyncStorage is sufficient.
+        } else {
+            // Successful DB insert - reload after a short delay to get fresh data
+            // This ensures both Upcoming Due and Payment History are in sync
+            setTimeout(() => {
+              loadData();
+            }, 1000);
+        }
 
         Alert.alert('Success', `Payment Sent! Ref: ${generatedRef}`);
 
