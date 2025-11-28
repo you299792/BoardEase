@@ -27,6 +27,7 @@ import {
   getUserProfile,
   deleteConversation,
 } from '../../lib/supabaseClient';
+import { saveTenantMessages, addMessageToCache } from '../../lib/messageCache';
 
 export default function ChatScreen() {
   const { conversationId: routeConversationId } = useLocalSearchParams();
@@ -40,6 +41,7 @@ export default function ChatScreen() {
   const [subscription, setSubscription] = useState(null);
   const [landlordInfo, setLandlordInfo] = useState(null);
   const [houseName, setHouseName] = useState(null);
+  const [tenantInfo, setTenantInfo] = useState(null); // Tenant's own profile
 
   useEffect(() => {
     loadConversation();
@@ -67,6 +69,24 @@ export default function ChatScreen() {
 
       setCurrentUser(user);
 
+      // Fetch tenant's own profile for displaying their avatar
+      try {
+        const { data: tenantUserData } = await supabase
+          .from('users')
+          .select('id, first_name, last_name, profile_image_url')
+          .eq('id', user.id)
+          .single();
+        
+        if (tenantUserData) {
+          setTenantInfo({
+            name: `${tenantUserData.first_name} ${tenantUserData.last_name}`,
+            image: tenantUserData.profile_image_url,
+          });
+        }
+      } catch (err) {
+        console.log('Could not fetch tenant profile:', err);
+      }
+
       // Use conversationId from route params - this is CRITICAL for conversation isolation
       const convId = routeConversationId;
 
@@ -86,6 +106,7 @@ export default function ChatScreen() {
       }
 
       // Get landlord and property info from first message or last conversation update
+      let landlordInfoSet = false;
       if (messagesData.length > 0) {
         // Get info from first message
         const firstMessage = messagesData[0];
@@ -95,17 +116,47 @@ export default function ChatScreen() {
             name: `${firstMessage.receiver.first_name} ${firstMessage.receiver.last_name}`,
             image: firstMessage.receiver.profile_image_url,
           });
+          landlordInfoSet = true;
         } else if (firstMessage.sender && firstMessage.receiver_id === user.id) {
           // Current user is receiver, sender is landlord
           setLandlordInfo({
             name: `${firstMessage.sender.first_name} ${firstMessage.sender.last_name}`,
             image: firstMessage.sender.profile_image_url,
           });
+          landlordInfoSet = true;
         }
 
         // Extract property name from conversation data
         if (firstMessage.conversation?.listing?.title) {
           setHouseName(firstMessage.conversation.listing.title);
+        }
+      }
+      
+      // If we couldn't get landlord info from messages, fetch it from conversation directly
+      if (!landlordInfoSet) {
+        const { data: conversationData } = await supabase
+          .from('conversations')
+          .select(`
+            tenant_id,
+            landlord:landlord_id(
+              user_id,
+              users:user_id(id, first_name, last_name, profile_image_url)
+            ),
+            listing:listing_id(id, title)
+          `)
+          .eq('id', convId)
+          .single();
+        
+        if (conversationData?.landlord?.users) {
+          const landlordUser = conversationData.landlord.users;
+          setLandlordInfo({
+            name: `${landlordUser.first_name} ${landlordUser.last_name}`,
+            image: landlordUser.profile_image_url,
+          });
+        }
+        
+        if (conversationData?.listing?.title) {
+          setHouseName(conversationData.listing.title);
         }
       }
 
@@ -119,9 +170,13 @@ export default function ChatScreen() {
         image: msg.media_url,
         timestamp: msg.created_at,
         type: msg.message_type,
+        conversation_id: convId,
       })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       setMessages(transformedMessages);
+      
+      // 💾 PERMANENTLY SAVE MESSAGES with conversation_id
+      await saveTenantMessages(convId, transformedMessages);
       setConversationId(convId);
 
       // Unsubscribe from previous subscription if exists
@@ -137,22 +192,36 @@ export default function ChatScreen() {
         let senderProfile = null;
         let receiverProfile = null;
         
-        if (newMsg.sender_id) {
-          const { data: sender } = await supabase
-            .from('users')
-            .select('id, first_name, last_name, profile_image_url, email')
-            .eq('id', newMsg.sender_id)
-            .single();
-          senderProfile = sender;
-        }
-        
-        if (newMsg.receiver_id) {
-          const { data: receiver } = await supabase
-            .from('users')
-            .select('id, first_name, last_name, profile_image_url, email')
-            .eq('id', newMsg.receiver_id)
-            .single();
-          receiverProfile = receiver;
+        try {
+          if (newMsg.sender_id) {
+            const { data: sender, error: senderError } = await supabase
+              .from('users')
+              .select('id, first_name, last_name, profile_image_url, email')
+              .eq('id', newMsg.sender_id)
+              .single();
+            
+            if (senderError) {
+              console.warn('[Chat] Error fetching sender profile:', senderError);
+            } else {
+              senderProfile = sender;
+            }
+          }
+          
+          if (newMsg.receiver_id) {
+            const { data: receiver, error: receiverError } = await supabase
+              .from('users')
+              .select('id, first_name, last_name, profile_image_url, email')
+              .eq('id', newMsg.receiver_id)
+              .single();
+            
+            if (receiverError) {
+              console.warn('[Chat] Error fetching receiver profile:', receiverError);
+            } else {
+              receiverProfile = receiver;
+            }
+          }
+        } catch (error) {
+          console.error('[Chat] Error fetching message profiles:', error);
         }
         
         const transformedMsg = {
@@ -164,7 +233,11 @@ export default function ChatScreen() {
           image: newMsg.media_url,
           timestamp: newMsg.created_at,
           type: newMsg.message_type,
+          conversation_id: convId,
         };
+        
+        console.log('[Chat] Transformed message:', transformedMsg);
+        
         setMessages(prev => {
           // Remove optimistic message if it matches (same sender, text, and within 3 seconds)
           const filtered = prev.filter(m => {
@@ -179,6 +252,18 @@ export default function ChatScreen() {
           if (filtered.some(m => m.id === transformedMsg.id)) return filtered;
           return [transformedMsg, ...filtered];
         });
+        
+        // 💾 SAVE NEW MESSAGE to cache
+        addMessageToCache('tenant', convId, transformedMsg);
+        
+        // 🔄 UPDATE LANDLORD INFO if message is from landlord (refreshes profile picture)
+        if (transformedMsg.sender_id !== user.id && transformedMsg.sender) {
+          console.log('[Chat] Updating landlord info with new profile:', transformedMsg.sender);
+          setLandlordInfo({
+            name: `${transformedMsg.sender.first_name} ${transformedMsg.sender.last_name}`,
+            image: transformedMsg.sender.profile_image_url,
+          });
+        }
       });
 
       setSubscription(newSubscription);
@@ -321,10 +406,30 @@ export default function ChatScreen() {
     );
   };
 
+  // Format timestamp to readable format
+  const formatMessageTime = (timestamp) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const isYesterday = new Date(now - 86400000).toDateString() === date.toDateString();
+    
+    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    if (isToday) {
+      return timeStr;
+    } else if (isYesterday) {
+      return `Yesterday ${timeStr}`;
+    } else {
+      return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${timeStr}`;
+    }
+  };
+
   const renderMessage = ({ item }) => {
     const isMyMessage = currentUser && item.sender_id === currentUser.id;
     const senderProfile = item.sender;
     const senderAvatar = senderProfile?.profile_image_url;
+    // 🔄 Use tenantInfo for tenant's own messages (my messages)
+    const myAvatar = tenantInfo?.image || senderAvatar;
 
     return (
       <View
@@ -333,6 +438,7 @@ export default function ChatScreen() {
           isMyMessage ? styles.myMessageContainer : styles.otherMessageContainer,
         ]}
       >
+        {/* Other person's avatar (landlord) - left side */}
         {!isMyMessage && senderAvatar && (
           <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
         )}
@@ -362,14 +468,15 @@ export default function ChatScreen() {
             </Text>
           )}
           <Text style={[styles.messageTime, isMyMessage ? styles.myMessageTime : styles.otherMessageTime]}>
-            {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {formatMessageTime(item.timestamp)}
           </Text>
         </View>
 
-        {isMyMessage && senderAvatar && (
-          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+        {/* My avatar (tenant) - right side */}
+        {isMyMessage && myAvatar && (
+          <Image source={{ uri: myAvatar }} style={styles.senderAvatar} />
         )}
-        {isMyMessage && !senderAvatar && (
+        {isMyMessage && !myAvatar && (
           <View style={[styles.senderAvatar, styles.defaultAvatar]}>
             <Ionicons name="person-circle" size={32} color="#ccc" />
           </View>
@@ -394,7 +501,7 @@ export default function ChatScreen() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
     >
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/(tenant)/messages')}>
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
         {landlordInfo?.image && <Image source={{ uri: landlordInfo.image }} style={styles.avatar} />}

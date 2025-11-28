@@ -272,6 +272,12 @@ export default function LandlordPortal() {
       let bookings = bookingsJson ? JSON.parse(bookingsJson) : []
       let messages = messagesJson ? JSON.parse(messagesJson) : []
 
+      // Ensure messages have conversation_id (FIXED: add fallback if missing)
+      messages = messages.map(m => ({
+        ...m,
+        conversation_id: m.conversation_id || m.conv_id || m.id,
+      }))
+
       // If bookings cache may have multiple listings, filter by listing id if present
       if (Array.isArray(bookings) && listing?.id) {
         // attempt to handle either a flat array of bookings or an object keyed by listing id

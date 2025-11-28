@@ -28,6 +28,8 @@ import {
   createBooking,
   markMessagesAsRead,
 } from '../../lib/supabaseClient';
+import { saveLandlordMessages, addMessageToCache } from '../../lib/messageCache';
+import { getCachedLandlordProfile } from '../../lib/profileCache';
 
 export default function LandlordChat() {
   const { id, conversationId: routeConversationId, tenantId: paramTenantId, tenantName, tenantImage, property: routeProperty } = useLocalSearchParams();
@@ -37,6 +39,12 @@ export default function LandlordChat() {
   const [isLoading, setIsLoading] = useState(true);
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState(null);
+  
+  // Tenant Info State
+  const [tenantInfo, setTenantInfo] = useState(null);
+  
+  // Landlord's Own Profile Info
+  const [landlordInfo, setLandlordInfo] = useState(null);
   
   // Property Details State
   const [propertyPrice, setPropertyPrice] = useState(0);
@@ -63,10 +71,14 @@ export default function LandlordChat() {
       }
       setCurrentUser(user);
 
-      // 1. Get Landlord Profile
+      // 1. Get Landlord Profile with user info
       const { data: landlordProfile, error: profileError } = await supabase
         .from('landlord_profile')
-        .select('id')
+        .select(`
+          id,
+          user_id,
+          users:user_id(id, first_name, last_name, profile_image_url)
+        `)
         .eq('user_id', user.id)
         .single();
 
@@ -76,6 +88,54 @@ export default function LandlordChat() {
         return;
       }
       setLandlordProfileId(landlordProfile.id);
+      
+      // Set landlord's own profile info for displaying in messages
+      // Try multiple sources: database join, direct user fetch, then cache
+      let landlordImageUrl = landlordProfile.users?.profile_image_url;
+      let landlordFirstName = landlordProfile.users?.first_name;
+      let landlordLastName = landlordProfile.users?.last_name;
+      
+      console.log('[Chat] Landlord profile from join:', landlordProfile.users);
+      
+      // If no image from join, try direct users table query
+      if (!landlordImageUrl) {
+        console.log('[Chat] No image from join, trying direct users query...');
+        const { data: directUserData } = await supabase
+          .from('users')
+          .select('id, first_name, last_name, profile_image_url')
+          .eq('id', user.id)
+          .single();
+        
+        if (directUserData?.profile_image_url) {
+          landlordImageUrl = directUserData.profile_image_url;
+          landlordFirstName = directUserData.first_name;
+          landlordLastName = directUserData.last_name;
+          console.log('[Chat] Got landlord image from direct query:', landlordImageUrl);
+        }
+      }
+      
+      // If still no image, try to get from cache
+      if (!landlordImageUrl) {
+        console.log('[Chat] No image from database, trying cache...');
+        try {
+          const cachedProfile = await getCachedLandlordProfile();
+          if (cachedProfile?.userData?.profile_image_url) {
+            landlordImageUrl = cachedProfile.userData.profile_image_url;
+            console.log('[Chat] Using cached landlord profile image:', landlordImageUrl);
+          }
+        } catch (cacheErr) {
+          console.log('[Chat] No cached landlord profile found');
+        }
+      }
+      
+      console.log('[Chat] Final landlord image URL:', landlordImageUrl);
+      
+      setLandlordInfo({
+        id: user.id,
+        first_name: landlordFirstName || '',
+        last_name: landlordLastName || '',
+        profile_image_url: landlordImageUrl,
+      });
 
       // 2. Resolve Conversation ID
       let targetConversationId = routeConversationId;
@@ -126,6 +186,25 @@ export default function LandlordChat() {
 
       if (conversationData?.tenant_id) {
         setTenantProfileId(conversationData.tenant_id);
+        
+        // 🔄 FETCH TENANT INFO to display in header
+        const { data: tenantProfileData } = await supabase
+          .from('tenant_profile')
+          .select(`
+            id,
+            user_id,
+            users:user_id(id, first_name, last_name, profile_image_url)
+          `)
+          .eq('id', conversationData.tenant_id)
+          .single();
+        
+        if (tenantProfileData?.users) {
+          const tenantUser = tenantProfileData.users;
+          setTenantInfo({
+            name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+            image: tenantUser.profile_image_url,
+          });
+        }
       }
 
       // 4. Fetch Messages
@@ -146,25 +225,82 @@ export default function LandlordChat() {
         image: msg.media_url,
         timestamp: msg.created_at,
         type: msg.message_type,
+        conversation_id: targetConversationId,
       })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       setMessages(transformedMessages);
+      
+      // 💾 PERMANENTLY SAVE MESSAGES with conversation_id
+      await saveLandlordMessages(targetConversationId, transformedMessages);
 
       // Mark all messages as read for landlord
       await markMessagesAsRead(targetConversationId, user.id, 'landlord');
 
-      const subscription = subscribeToMessages(targetConversationId, (newMsg) => {
+      const subscription = subscribeToMessages(targetConversationId, async (newMsg) => {
+        console.log(`[Landlord Chat] New message in conversation ${targetConversationId}:`, newMsg);
+        
+        // Fetch sender and receiver profiles for the new message
+        let senderProfile = null;
+        let receiverProfile = null;
+        
+        try {
+          if (newMsg.sender_id) {
+            const { data: sender, error: senderError } = await supabase
+              .from('users')
+              .select('id, first_name, last_name, profile_image_url, email')
+              .eq('id', newMsg.sender_id)
+              .single();
+            
+            if (senderError) {
+              console.warn('[Landlord Chat] Error fetching sender profile:', senderError);
+            } else {
+              senderProfile = sender;
+            }
+          }
+          
+          if (newMsg.receiver_id) {
+            const { data: receiver, error: receiverError } = await supabase
+              .from('users')
+              .select('id, first_name, last_name, profile_image_url, email')
+              .eq('id', newMsg.receiver_id)
+              .single();
+            
+            if (receiverError) {
+              console.warn('[Landlord Chat] Error fetching receiver profile:', receiverError);
+            } else {
+              receiverProfile = receiver;
+            }
+          }
+        } catch (error) {
+          console.error('[Landlord Chat] Error fetching message profiles:', error);
+        }
+        
         const transformedMsg = {
           id: newMsg.id,
           sender_id: newMsg.sender_id,
-          sender: newMsg.sender,
-          receiver: newMsg.receiver,
+          sender: senderProfile,
+          receiver: receiverProfile,
           text: newMsg.message_text,
           image: newMsg.media_url,
           timestamp: newMsg.created_at,
           type: newMsg.message_type,
+          conversation_id: targetConversationId,
         };
+        
+        console.log('[Landlord Chat] Transformed message:', transformedMsg);
+        
         setMessages(prev => [transformedMsg, ...prev]);
+        // 💾 SAVE NEW MESSAGE to cache
+        addMessageToCache('landlord', targetConversationId, transformedMsg);
+        
+        // 🔄 UPDATE TENANT INFO if message is from tenant (refreshes profile picture)
+        if (transformedMsg.sender_id !== currentUser.id && transformedMsg.sender) {
+          console.log('[Landlord Chat] Updating tenant info with new profile:', transformedMsg.sender);
+          setTenantInfo({
+            name: `${transformedMsg.sender.first_name} ${transformedMsg.sender.last_name}`,
+            image: transformedMsg.sender.profile_image_url,
+          });
+        }
       });
 
       return () => {
@@ -357,13 +493,26 @@ export default function LandlordChat() {
   const renderMessage = ({ item }) => {
     const bookingDetails = extractBookingDetails(item);
     const isMyMessage = currentUser && item.sender_id === currentUser.id;
-    const senderProfile = item.sender;
+    
+    // For my messages (landlord), use landlordInfo; for other messages (tenant), use item.sender
+    const senderProfile = isMyMessage ? landlordInfo : item.sender;
     const senderAvatar = senderProfile?.profile_image_url;
+    
+    // Debug logging
+    if (isMyMessage) {
+      console.log('[renderMessage] My message - landlordInfo:', JSON.stringify(landlordInfo));
+      console.log('[renderMessage] senderAvatar:', senderAvatar);
+    }
 
     return (
       <View style={[styles.messageContainer, isMyMessage ? styles.myMessageContainer : styles.otherMessageContainer]}>
-        {!isMyMessage && (
-            senderAvatar ? <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} /> : <View style={[styles.senderAvatar, styles.defaultAvatar]}><Ionicons name="person" size={20}/></View>
+        {!isMyMessage && senderAvatar && (
+          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+        )}
+        {!isMyMessage && !senderAvatar && (
+          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
+            <Ionicons name="person-circle" size={32} color="#ccc" />
+          </View>
         )}
         
         <View style={[styles.messageBubble, isMyMessage ? styles.myMessageBubble : styles.otherMessageBubble]}>
@@ -384,8 +533,17 @@ export default function LandlordChat() {
               <Text style={styles.bookingActionText}>Manage Booking</Text>
             </TouchableOpacity>
           )}
-          <Text style={styles.messageTime}>{new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</Text>
+          <Text style={styles.messageTime}>{formatMessageTime(item.timestamp)}</Text>
         </View>
+
+        {isMyMessage && senderAvatar && (
+          <Image source={{ uri: senderAvatar }} style={styles.senderAvatar} />
+        )}
+        {isMyMessage && !senderAvatar && (
+          <View style={[styles.senderAvatar, styles.defaultAvatar]}>
+            <Ionicons name="person-circle" size={32} color="#ccc" />
+          </View>
+        )}
       </View>
     );
   };
@@ -394,14 +552,33 @@ export default function LandlordChat() {
     return <View style={styles.container}><ActivityIndicator size="large" color="#667eea"/></View>;
   }
 
+  // Format timestamp to readable format
+  const formatMessageTime = (timestamp) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const isYesterday = new Date(now - 86400000).toDateString() === date.toDateString();
+    
+    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    if (isToday) {
+      return timeStr;
+    } else if (isYesterday) {
+      return `Yesterday ${timeStr}`;
+    } else {
+      return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${timeStr}`;
+    }
+  };
+
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+        <TouchableOpacity onPress={() => router.replace('/landlord/inquiries')} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
+        {tenantInfo?.image && <Image source={{ uri: tenantInfo.image }} style={styles.avatar} />}
         <View>
-            <Text style={styles.headerTitle}>{tenantName || 'Tenant'}</Text>
+            <Text style={styles.headerTitle}>{tenantInfo?.name || tenantName || 'Tenant'}</Text>
             <Text style={styles.headerSubtitle}>{currentProperty || 'Property Inquiry'}</Text>
         </View>
         <TouchableOpacity style={{ padding: 8, marginLeft: 'auto' }} onPress={handleDeleteConversation}>
@@ -458,6 +635,7 @@ export default function LandlordChat() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa' },
   header: { flexDirection: 'row', alignItems: 'center', padding: 15, paddingTop: 50, backgroundColor: 'white', borderBottomWidth: 1, borderColor: '#eee' },
+  avatar: { width: 40, height: 40, borderRadius: 20, marginHorizontal: 10 },
   headerTitle: { fontSize: 18, fontWeight: 'bold', marginLeft: 10 },
   headerSubtitle: { fontSize: 12, color: '#666', marginLeft: 10 },
   messageContainer: { flexDirection: 'row', marginVertical: 5, paddingHorizontal: 10 },

@@ -24,13 +24,16 @@ import {
   getLandlordProfile,
   updateLandlordProfile,
   getLandlordListings,
+  uploadProfileImage,
 } from '../../lib/supabaseClient';
+import { saveLandlordProfile } from '../../lib/profileCache';
 
 export default function LandlordProfile() {
   const [currentUser, setCurrentUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [isUsingCachedData, setIsUsingCachedData] = useState(false);
   
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -57,8 +60,10 @@ export default function LandlordProfile() {
 
       if (user) {
         // Load complete landlord profile from database
-        const { success, profile } = await getLandlordProfile(user.id);
+        const { success, profile, fromCache } = await getLandlordProfile(user.id);
         if (success && profile) {
+          setIsUsingCachedData(fromCache || false);
+          
           // Get user data from nested users object
           const userData = profile.users;
           if (userData) {
@@ -74,10 +79,12 @@ export default function LandlordProfile() {
           setYearsExperience(String(profile.years_experience || 0));
         }
         
-        // Fetch the number of listings this landlord has posted
-        const { success: listingsSuccess, listings } = await getLandlordListings(user.id);
-        if (listingsSuccess && listings) {
-          setPropertyCount(listings.length);
+        // Fetch the number of listings this landlord has posted (skip if using cached data)
+        if (!fromCache) {
+          const { success: listingsSuccess, listings } = await getLandlordListings(user.id);
+          if (listingsSuccess && listings) {
+            setPropertyCount(listings.length);
+          }
         }
       }
     } catch (error) {
@@ -153,18 +160,52 @@ export default function LandlordProfile() {
     setIsSaving(true);
     try {
       const [firstName, lastName] = name.trim().split(' ');
+      
+      // 📸 UPLOAD PROFILE IMAGE if it's a local file (not already a URL)
+      let finalPhotoURL = photoURL;
+      if (photoURL && (photoURL.startsWith('file://') || photoURL.startsWith('content://'))) {
+        console.log('[Profile] Uploading new profile image...');
+        const uploadResult = await uploadProfileImage(currentUser.id, photoURL, 'profile.jpg');
+        if (uploadResult.success && uploadResult.publicUrl) {
+          finalPhotoURL = uploadResult.publicUrl;
+          console.log('[Profile] Image uploaded successfully:', finalPhotoURL);
+        } else {
+          console.warn('[Profile] Image upload failed:', uploadResult.error);
+          Alert.alert('Warning', 'Failed to upload profile image, but will save other changes.');
+        }
+      }
+      
       const { success, error } = await updateLandlordProfile(currentUser.id, {
         first_name: firstName || '',
         last_name: lastName || '',
         email: email.trim(),
         phone: phone.trim(),
-        profile_image_url: photoURL,
+        profile_image_url: finalPhotoURL,
         bio: bio.trim(),
         company_name: company.trim(),
         years_experience: parseInt(yearsExperience) || 0,
       });
 
       if (success) {
+        // 💾 SAVE LANDLORD PROFILE PERMANENTLY to AsyncStorage
+        const userData = {
+          id: currentUser.id,
+          first_name: firstName || '',
+          last_name: lastName || '',
+          email: email.trim(),
+          phone: phone.trim(),
+          profile_image_url: finalPhotoURL,
+          bio: bio.trim(),
+        };
+        const profileData = {
+          company_name: company.trim(),
+          years_experience: parseInt(yearsExperience) || 0,
+        };
+        await saveLandlordProfile(currentUser.id, userData, profileData);
+        
+        // Update local state with the uploaded URL
+        setPhotoURL(finalPhotoURL);
+        
         setIsEditing(false);
         Alert.alert('Success', 'Profile updated successfully!');
       } else {
@@ -221,6 +262,16 @@ export default function LandlordProfile() {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 95 : 0} 
       >
         <ScrollView style={styles.page} contentContainerStyle={styles.container}>
+          
+          {/* Offline/Cached Data Banner */}
+          {isUsingCachedData && (
+            <View style={styles.cachedDataBanner}>
+              <Ionicons name="cloud-offline" size={18} color="#ff9800" />
+              <Text style={styles.cachedDataText}>
+                Viewing offline profile data
+              </Text>
+            </View>
+          )}
           
           <View style={styles.profileHeader}>
             <TouchableOpacity 
@@ -752,6 +803,23 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 3,
     marginBottom: 40,
+  },
+  cachedDataBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff3cd',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#ff9800',
+  },
+  cachedDataText: {
+    fontSize: 14,
+    color: '#856404',
+    fontWeight: '500',
   },
   editButtonText: {
     color: Colors.primary,

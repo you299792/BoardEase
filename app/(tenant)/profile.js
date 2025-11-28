@@ -42,6 +42,7 @@ export default function Profile() {
   const [loading, setLoading] = React.useState(true);
   const [uploading, setUploading] = React.useState(false);
   const [profileImageUri, setProfileImageUri] = React.useState(null);
+  const [isUsingCachedData, setIsUsingCachedData] = React.useState(false);
 
   // Load profile on mount
   useEffect(() => {
@@ -59,11 +60,13 @@ export default function Profile() {
         return;
       }
 
-      const { success, user: userData, profile: profileData } = await getTenantProfile(user.id);
+      const { success, user: userData, profile: profileData, fromCache } = await getTenantProfile(user.id);
 
       if (success) {
         setUserData(userData);
         setTenantData(profileData);
+        setIsUsingCachedData(fromCache || false);
+        
         // Attempt to cache profile image for offline usage
         try {
           const imgUrl = userData?.profile_image_url || userData?.profile_image || null;
@@ -344,6 +347,16 @@ export default function Profile() {
       </View>
 
       <ScrollView style={styles.page} contentContainerStyle={styles.scrollContent}>
+        {/* Offline/Cached Data Banner */}
+        {isUsingCachedData && (
+          <View style={styles.cachedDataBanner}>
+            <Ionicons name="cloud-offline" size={18} color="#ff9800" />
+            <Text style={styles.cachedDataText}>
+              Viewing offline profile data
+            </Text>
+          </View>
+        )}
+        
         {/* Profile Header */}
         <View style={styles.profileHeader}>
           <TouchableOpacity 
@@ -691,6 +704,23 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 3,
     marginBottom: 16,
+  },
+  cachedDataBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff3cd',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#ff9800',
+  },
+  cachedDataText: {
+    fontSize: 14,
+    color: '#856404',
+    fontWeight: '500',
   },
   statItem: {
     flex: 1,

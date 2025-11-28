@@ -112,7 +112,8 @@ export default function ListingStatsModal({
 
     if (safeMessages.length > 0) {
       const byConv = safeMessages.reduce((acc, m) => {
-        const key = m.conversation_id ?? m.conv_id ?? 'no_conv'
+        // FIXED: Ensure conversation_id exists - use multiple fallbacks
+        const key = m.conversation_id ?? m.conv_id ?? m.id ?? 'no_conv'
         acc[key] = acc[key] || []
         acc[key].push(m)
         return acc
