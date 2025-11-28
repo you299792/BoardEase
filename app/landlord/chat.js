@@ -43,6 +43,7 @@ export default function LandlordChat() {
   
   // Tenant Info State
   const [tenantInfo, setTenantInfo] = useState(null);
+  const [tenantId, setTenantId] = useState(null);
   
   // Landlord's Own Profile Info
   const [landlordInfo, setLandlordInfo] = useState(null);
@@ -240,6 +241,7 @@ export default function LandlordChat() {
       if (!targetConversationId) {
         const targetTenantId = id || paramTenantId;
         if (targetTenantId) {
+          // Try to find existing conversation
           const { data: existingConv } = await supabase
             .from('conversations')
             .select('id, listing_id, tenant_id')
@@ -249,12 +251,34 @@ export default function LandlordChat() {
 
           if (existingConv) {
             targetConversationId = existingConv.id;
+          } else {
+            // Create a new conversation if one doesn't exist
+            const { data: newConv, error: createError } = await supabase
+              .from('conversations')
+              .insert([
+                {
+                  landlord_id: landlordProfile.id,
+                  tenant_id: targetTenantId,
+                  listing_id: null,
+                }
+              ])
+              .select('id')
+              .single();
+
+            if (createError || !newConv) {
+              console.error('Failed to create conversation:', createError);
+              Alert.alert('Error', 'Failed to create conversation');
+              setIsLoading(false);
+              return;
+            }
+
+            targetConversationId = newConv.id;
           }
         }
       }
 
       if (!targetConversationId) {
-        Alert.alert('Notice', 'Conversation not found.');
+        Alert.alert('Notice', 'Conversation not found or could not be created.');
         setIsLoading(false);
         return;
       }
@@ -301,6 +325,7 @@ export default function LandlordChat() {
             name: `${tenantUser.first_name} ${tenantUser.last_name}`,
             image: tenantUser.profile_image_url,
           });
+          setTenantId(tenantUser.id);
         }
       }
 
@@ -437,6 +462,7 @@ export default function LandlordChat() {
               name: `${transformedMsg.sender.first_name} ${transformedMsg.sender.last_name}`,
               image: transformedMsg.sender.profile_image_url,
             });
+            setTenantId(transformedMsg.sender.id);
           }
         } catch (error) {
           console.error('[Landlord Chat] Realtime handler error:', error);
@@ -478,6 +504,15 @@ export default function LandlordChat() {
   };
 
   const closeImagePreview = () => setExpandedImageUri(null);
+
+  const handleNavigateToTenantProfile = () => {
+    if (tenantId) {
+      router.push({
+        pathname: '/landlord/tenantprofile',
+        params: { tenantId, conversationId },
+      });
+    }
+  };
 
   const sendLandlordMessage = async (text = '', imageUri = '') => {
     if (!text.trim() && !imageUri) return;
@@ -739,11 +774,13 @@ export default function LandlordChat() {
         <TouchableOpacity onPress={() => router.replace('/landlord/inquiries')} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
-        {tenantInfo?.image && <Image source={{ uri: tenantInfo.image }} style={styles.avatar} />}
-        <View>
-            <Text style={styles.headerTitle}>{tenantInfo?.name || tenantName || 'Tenant'}</Text>
-            <Text style={styles.headerSubtitle}>{currentProperty || 'Property Inquiry'}</Text>
-        </View>
+        <TouchableOpacity style={styles.tenantProfileSection} onPress={handleNavigateToTenantProfile}>
+          {tenantInfo?.image && <Image source={{ uri: tenantInfo.image }} style={styles.avatar} />}
+          <View>
+              <Text style={styles.headerTitle}>{tenantInfo?.name || tenantName || 'Tenant'}</Text>
+              <Text style={styles.headerSubtitle}>{currentProperty || 'Property Inquiry'}</Text>
+          </View>
+        </TouchableOpacity>
         <TouchableOpacity style={{ padding: 8, marginLeft: 'auto' }} onPress={handleDeleteConversation}>
           <Ionicons name="trash" size={22} color="#ef4444" />
         </TouchableOpacity>
@@ -804,6 +841,8 @@ export default function LandlordChat() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa' },
   header: { flexDirection: 'row', alignItems: 'center', padding: 15, paddingTop: 50, backgroundColor: 'white', borderBottomWidth: 1, borderColor: '#eee' },
+  backButton: { padding: 8 },
+  tenantProfileSection: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   avatar: { width: 40, height: 40, borderRadius: 20, marginHorizontal: 10 },
   headerTitle: { fontSize: 18, fontWeight: 'bold', marginLeft: 10 },
   headerSubtitle: { fontSize: 12, color: '#666', marginLeft: 10 },
