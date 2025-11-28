@@ -31,7 +31,12 @@ import { saveTenantMessages, addMessageToCache } from '../../lib/messageCache';
 import FullScreenImageModal from '../../components/FullScreenImageModal';
 
 export default function ChatScreen() {
-  const { conversationId: routeConversationId } = useLocalSearchParams();
+  const { 
+    conversationId: routeConversationId, 
+    landlordId: routeLandlordId,
+    landlordName: routeLandlordName,
+    houseName: routeHouseName
+  } = useLocalSearchParams();
 
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
@@ -41,6 +46,7 @@ export default function ChatScreen() {
   const [conversationStatus, setConversationStatus] = useState(null);
   const [subscription, setSubscription] = useState(null);
   const [landlordInfo, setLandlordInfo] = useState(null);
+  const [landlordId, setLandlordId] = useState(null);
   const [houseName, setHouseName] = useState(null);
   const [tenantInfo, setTenantInfo] = useState(null); // Tenant's own profile
   const [expandedImageUri, setExpandedImageUri] = useState(null);
@@ -54,7 +60,7 @@ export default function ChatScreen() {
         subscription.unsubscribe();
       }
     };
-  }, [routeConversationId]);
+  }, [routeConversationId, routeLandlordId]);
 
   const loadConversation = async () => {
     try {
@@ -89,13 +95,94 @@ export default function ChatScreen() {
         console.log('Could not fetch tenant profile:', err);
       }
 
-      // Use conversationId from route params - this is CRITICAL for conversation isolation
-      const convId = routeConversationId;
+      // Use conversationId from route params - or try to find/create one
+      let convId = routeConversationId;
+
+      // If no conversationId, try to find/create one using landlordId
+      if (!convId && routeLandlordId) {
+        try {
+          // First, get current tenant's profile ID
+          const { data: tenantProfile } = await supabase
+            .from('tenant_profile')
+            .select('id')
+            .eq('user_id', user.id)
+            .single();
+
+          if (!tenantProfile) {
+            Alert.alert('Error', 'Tenant profile not found');
+            setIsLoading(false);
+            return;
+          }
+
+          // Get landlord profile ID from landlord user ID
+          const { data: landlordProfile } = await supabase
+            .from('landlord_profile')
+            .select('id')
+            .eq('user_id', routeLandlordId)
+            .single();
+
+          if (!landlordProfile) {
+            Alert.alert('Error', 'Landlord profile not found');
+            setIsLoading(false);
+            return;
+          }
+
+          // Try to find existing conversation
+          const { data: existingConv } = await supabase
+            .from('conversations')
+            .select('id')
+            .eq('tenant_id', tenantProfile.id)
+            .eq('landlord_id', landlordProfile.id)
+            .maybeSingle();
+
+          if (existingConv) {
+            convId = existingConv.id;
+          } else {
+            // Create new conversation
+            const { data: newConv, error: createError } = await supabase
+              .from('conversations')
+              .insert([
+                {
+                  tenant_id: tenantProfile.id,
+                  landlord_id: landlordProfile.id,
+                  listing_id: null,
+                }
+              ])
+              .select('id')
+              .single();
+
+            if (createError || !newConv) {
+              Alert.alert('Error', 'Failed to create conversation');
+              setIsLoading(false);
+              return;
+            }
+
+            convId = newConv.id;
+          }
+        } catch (err) {
+          console.error('Error finding/creating conversation:', err);
+          Alert.alert('Error', 'Failed to start conversation');
+          setIsLoading(false);
+          return;
+        }
+      }
 
       if (!convId) {
-        Alert.alert('Error', 'Conversation ID is missing');
+        Alert.alert('Error', 'Conversation ID is missing or could not be created');
         setIsLoading(false);
         return;
+      }
+
+      // Set landlord info from route params if provided
+      if (routeLandlordName) {
+        setLandlordInfo({
+          name: routeLandlordName,
+          image: null,
+        });
+      }
+
+      if (routeHouseName) {
+        setHouseName(routeHouseName);
       }
 
       // Fetch messages for this specific conversation
@@ -118,6 +205,7 @@ export default function ChatScreen() {
             name: `${firstMessage.receiver.first_name} ${firstMessage.receiver.last_name}`,
             image: firstMessage.receiver.profile_image_url,
           });
+          setLandlordId(firstMessage.receiver.id);
           landlordInfoSet = true;
         } else if (firstMessage.sender && firstMessage.receiver_id === user.id) {
           // Current user is receiver, sender is landlord
@@ -125,6 +213,7 @@ export default function ChatScreen() {
             name: `${firstMessage.sender.first_name} ${firstMessage.sender.last_name}`,
             image: firstMessage.sender.profile_image_url,
           });
+          setLandlordId(firstMessage.sender.id);
           landlordInfoSet = true;
         }
 
@@ -155,6 +244,7 @@ export default function ChatScreen() {
             name: `${landlordUser.first_name} ${landlordUser.last_name}`,
             image: landlordUser.profile_image_url,
           });
+          setLandlordId(landlordUser.id);
         }
         
         if (conversationData?.listing?.title) {
@@ -265,6 +355,7 @@ export default function ChatScreen() {
             name: `${transformedMsg.sender.first_name} ${transformedMsg.sender.last_name}`,
             image: transformedMsg.sender.profile_image_url,
           });
+          setLandlordId(transformedMsg.sender.id);
         }
       });
 
@@ -415,6 +506,15 @@ export default function ChatScreen() {
 
   const closeImagePreview = () => setExpandedImageUri(null);
 
+  const handleNavigateToLandlordProfile = () => {
+    if (landlordId) {
+      router.push({
+        pathname: '/(tenant)/landlord-profile',
+        params: { landlordId },
+      });
+    }
+  };
+
   // Format timestamp to readable format
   const formatMessageTime = (timestamp) => {
     const date = new Date(timestamp);
@@ -517,18 +617,20 @@ export default function ChatScreen() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/(tenant)/messages')}>
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
-        {landlordInfo?.image && <Image source={{ uri: landlordInfo.image }} style={styles.avatar} />}
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>{landlordInfo?.name || 'Loading...'}</Text>
-          {houseName && <Text style={styles.headerSubtitle}>Regarding: {houseName}</Text>}
-          {conversationStatus ? (
-            <View style={styles.statusBadge}>
-              <Text style={styles.statusText}>
-                {conversationStatus === 'ready_to_book' ? 'Booking Request' : (conversationStatus === 'interested' ? 'Interested' : conversationStatus)}
-              </Text>
-            </View>
-          ) : null}
-        </View>
+        <TouchableOpacity style={styles.landlordProfileSection} onPress={handleNavigateToLandlordProfile}>
+          {landlordInfo?.image && <Image source={{ uri: landlordInfo.image }} style={styles.avatar} />}
+          <View style={styles.headerInfo}>
+            <Text style={styles.headerTitle}>{landlordInfo?.name || 'Loading...'}</Text>
+            {houseName && <Text style={styles.headerSubtitle}>Regarding: {houseName}</Text>}
+            {conversationStatus ? (
+              <View style={styles.statusBadge}>
+                <Text style={styles.statusText}>
+                  {conversationStatus === 'ready_to_book' ? 'Booking Request' : (conversationStatus === 'interested' ? 'Interested' : conversationStatus)}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </TouchableOpacity>
         <TouchableOpacity style={{ padding: 8 }} onPress={handleDeleteConversation}>
           <Ionicons name="trash" size={22} color="#ef4444" />
         </TouchableOpacity>
@@ -584,6 +686,11 @@ const styles = StyleSheet.create({
   },
   backButton: {
     padding: 8,
+  },
+  landlordProfileSection: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   avatar: {
     width: 40,
