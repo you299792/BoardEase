@@ -443,6 +443,10 @@ CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 
 -- ============================================================================
+-- 18. ID_VERIFICATION TABLE - Landlord ID verification documents
+-- ============================================================================
+
+-- ============================================================================
 -- ENTITY RELATIONSHIP DIAGRAM & DOCUMENTATION
 -- ============================================================================
 /*
@@ -472,7 +476,8 @@ CORE ENTITIES:
 │   ├── 1-to-many ──> BOOKINGS (via landlord_id)
 │   ├── 1-to-many ──> PAYMENTS (via landlord_id)
 │   ├── 1-to-many ──> INQUIRIES (via landlord_id)
-│   └── 1-to-many ──> CONVERSATIONS (via landlord_id)
+│   ├── 1-to-many ──> CONVERSATIONS (via landlord_id)
+│   └── 1-to-many ──> ID_VERIFICATION (via landlord_id)
 │
 ├── LISTINGS (owned by LANDLORD_PROFILE)
 │   ├── 1-to-many ──> BOOKINGS (via listing_id)
