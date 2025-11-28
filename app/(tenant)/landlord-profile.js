@@ -77,7 +77,7 @@ export default function LandlordProfile() {
             rating: combinedRating,
             totalReviews: totalReviews,
             verified: profile.bank_account_verified,
-            joinDate: profile.users?.created_at ? new Date(profile.users.created_at).getFullYear() : null,
+            joinDate: profile.users?.created_at || null,
             bio: profile.users?.bio,
           };
           setLandlord(landlordData);
@@ -178,12 +178,12 @@ export default function LandlordProfile() {
 
           <View style={styles.userTypeContainer}>
             <Ionicons 
-              name={landlord.verified ? "shield-checkmark" : "shield-outline"} 
+              name="checkmark-circle" 
               size={16} 
-              color={landlord.verified ? "#10b981" : "#666"} 
+              color="#10b981" 
             />
-            <Text style={[styles.userType, {color: landlord.verified ? "#10b981" : "#666"}]}> 
-              {landlord.verified ? 'Verified Landlord' : 'Not Verified'}
+            <Text style={[styles.userType, {color: "#10b981"}]}> 
+              Verified Landlord
             </Text>
 
             {landlord.yearsExperience ? (
@@ -211,21 +211,11 @@ export default function LandlordProfile() {
             <Text style={styles.statValue}>{otherListings.length}</Text>
             <Text style={styles.statLabel}>Properties</Text>
           </View>
-
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.rating || 0}</Text>
-            <Text style={styles.statLabel}>Rating</Text>
-          </View>
-
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.totalReviews || 0}</Text>
-            <Text style={styles.statLabel}>Reviews</Text>
-          </View>
         </View>
 
         {landlord.joinDate ? (
           <View style={styles.joinDateRow}>
-            <Text style={styles.joinDateText}>Member since {landlord.joinDate}</Text>
+            <Text style={styles.joinDateText}>Member since {new Date(landlord.joinDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</Text>
           </View>
         ) : null}
 
