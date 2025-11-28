@@ -94,6 +94,33 @@ export default function NotificationsScreen() {
     setRefreshing(false);
   };
 
+  const markAllAsRead = async () => {
+    try {
+      // Mark all unread notifications as read in Supabase
+      const unreadNotifications = notificationList.filter(item => !item.is_read);
+      
+      if (unreadNotifications.length === 0) {
+        Alert.alert('Info', 'All notifications are already read');
+        return;
+      }
+
+      // Mark each unread notification as read
+      for (const notification of unreadNotifications) {
+        await markNotificationAsRead(notification.id);
+      }
+
+      // Update local state
+      setNotificationList(prev => 
+        prev.map(item => ({ ...item, is_read: true }))
+      );
+
+      Alert.alert('Success', 'All notifications marked as read');
+    } catch (error) {
+      console.error('Failed to mark all as read', error);
+      Alert.alert('Error', 'Failed to mark notifications as read');
+    }
+  };
+
   const getNotificationIcon = (notificationType) => {
     switch (notificationType) {
       case 'booking_request':
@@ -264,12 +291,21 @@ export default function NotificationsScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Notifications</Text>
-        {notificationList.length > 0 && (
-          <Text style={styles.subtitle}>
-            {notificationList.filter(item => !item.is_read).length} unread
-          </Text>
-        )}
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Notifications</Text>
+            {notificationList.length > 0 && (
+              <Text style={styles.subtitle}>
+                {notificationList.filter(item => !item.is_read).length} unread
+              </Text>
+            )}
+          </View>
+          {notificationList.filter(item => !item.is_read).length > 0 && (
+            <TouchableOpacity onPress={markAllAsRead} style={styles.markAllButton}>
+              <Text style={styles.markAllButtonText}>Mark all read</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       <FlatList
@@ -316,6 +352,22 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: '#666',
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  markAllButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#667eea',
+    borderRadius: 6,
+  },
+  markAllButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
   },
   loadingContainer: {
     flex: 1,
