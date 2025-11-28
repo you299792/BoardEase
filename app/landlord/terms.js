@@ -1,172 +1,178 @@
-import React, { useCallback, useLayoutEffect } from 'react';
-import { ScrollView, Text, StyleSheet, BackHandler, TouchableOpacity, Platform } from 'react-native';
-import { Stack, router, useNavigation } from 'expo-router';
-import { Colors } from '../../constants/Colors';
-import { useFocusEffect } from '@react-navigation/native';
+import React from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 
-export default function TermsOfServiceScreen() {
-  const navigation = useNavigation();
+const TERMS_OF_SERVICE = `
+1. Acceptance of Terms
+By accessing or using the Boarding House Finder app, you agree to be bound by these Terms of Service (ToS). We reserve the right to modify these terms at any time.
 
-  // 1. Hide the Bottom Tab Bar when this screen is active
-  useLayoutEffect(() => {
-    // Attempt to hide the tab bar in the parent navigator
-    navigation.getParent()?.setOptions({
-      tabBarStyle: { display: 'none' },
-    });
+2. User Conduct
+Users must act respectfully. You are solely responsible for all content, including listings, images, and text, that you submit to the platform. Misrepresentation of properties is strictly prohibited.
 
-    return () => {
-      // Restore the tab bar when leaving
-      navigation.getParent()?.setOptions({
-        tabBarStyle: undefined, 
-      });
-    };
-  }, [navigation]);
+3. Listing Accuracy
+We act as a listing platform only. We do not verify the complete accuracy of all listings and strongly recommend that Tenants perform their own due diligence, including physical inspection and legal agreement review, before making any payment or commitment.
 
-  const handleBack = () => {
-    router.replace('/landlord/privacy-security');
-  };
+4. Payments and Bookings
+All financial transactions and lease agreements are solely between the Tenant and the Landlord. We are not a party to any lease agreement and are not liable for any disputes arising from them.
 
-  // 2. Handle System Back Action
-  useFocusEffect(
-    useCallback(() => {
-      const handleBackPress = () => {
-        handleBack();
-        return true; 
-      };
+5. Termination
+We may terminate or suspend your access immediately, without prior notice, for any reason, including without limitation if you breach these ToS.
+`;
 
-      // Only add listener on Android
-      let backHandlerSubscription;
-      if (Platform.OS === 'android') {
-        backHandlerSubscription = BackHandler.addEventListener(
-          'hardwareBackPress', 
-          handleBackPress
-        );
-      }
+const PRIVACY_POLICY = `
+1. Information We Collect
+We collect personal information that you voluntarily provide when registering, posting listings, or communicating with other users. This includes: Name, Email, Phone Number, Location data, and User Preferences.
 
-      return () => {
-        if (backHandlerSubscription) {
-          backHandlerSubscription.remove();
-        }
-      };
-    }, []) 
-  );
+2. How We Use Your Information
+Your data is used to provide and improve the service, match you with relevant listings, facilitate communication between users, and for security purposes.
 
+3. Sharing Your Information
+We share your contact information with other users (Landlords or Tenants) only when you explicitly initiate contact (e.g., sending a message or inquiry). We do not sell your personal data to third parties.
+
+4. Data Security
+We employ industry-standard security measures to protect your information from unauthorized access. However, no internet-based service can guarantee absolute security.
+
+THANKS FOR READING OUR TERMS OF SERVICE AND PRIVACY POLICY. GIVE US A CALL IF YOU HAVE ANY QUESTIONS!
+`;
+
+
+export default function TermsAndPrivacyScreen() {
   return (
-    <>
-      <Stack.Screen
-        options={{
-          title: 'Terms of Service',
-          headerShown: true,
-          headerStyle: { backgroundColor: Colors.primary },
-          headerTintColor: '#fff',
-          headerTitleStyle: { fontWeight: 'bold' },
-          headerLeft: () => (
-            <TouchableOpacity onPress={handleBack}>
-              <Ionicons 
-                name="arrow-back" 
-                size={24} 
-                color="#fff" 
-                style={{ marginLeft: 10 }} 
-              />
-            </TouchableOpacity>
-          ),
-        }}
-      />
-      <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-        <Text style={styles.lastUpdated}>Last Updated: July 26, 2024</Text>
+    <View style={styles.container}>
+      {/* Header Section */}
+      <View style={[styles.header, styles.subHeader]}>
+        {/* Back Button on the Left */}
+        <TouchableOpacity 
+            style={styles.backToMenuButton} 
+            onPress={() => router.back()}
+        >
+            <Ionicons name="chevron-back" size={24} color="#667eea" />
+        </TouchableOpacity>
+        <Text style={styles.title}>Terms & Privacy</Text>
+        {/* Placeholder to keep title centered */}
+        <View style={styles.backToMenuPlaceholder} />
+      </View>
 
-        <Text style={styles.paragraph}>
-          Please read these Terms of Service ("Terms") carefully before using the Board-Ease mobile application. By accessing or using the Service, you agree to be bound by these Terms.
-        </Text>
-
-        <Text style={styles.heading}>1. Acceptance of Terms</Text>
-        <Text style={styles.paragraph}>
-          By creating an account or accessing Board-Ease, you agree to comply with these Terms and all applicable laws and regulations. If you do not agree with any part of these Terms, you are prohibited from using this service.
-        </Text>
-
-        <Text style={styles.heading}>2. User Accounts</Text>
-        <Text style={styles.subheading}>A. Registration</Text>
-        <Text style={styles.paragraph}>
-          To use certain features of the app, you must register for an account. You agree to provide accurate, current, and complete information during the registration process.
-        </Text>
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         
-        <Text style={styles.heading}>3. Landlord Responsibilities</Text>
-        <Text style={styles.listItem}>• You represent and warrant that you own or have the legal right to lease the properties you list.</Text>
-        <Text style={styles.listItem}>• You agree to provide accurate descriptions, photos, and pricing for your listings.</Text>
-        <Text style={styles.listItem}>• You must comply with all local housing laws, including fair housing regulations.</Text>
+        <View style={styles.policySection}>
+          <Text style={styles.policyTitle}>Terms of Service</Text>
+          <Text style={styles.policyText}>{TERMS_OF_SERVICE.trim()}</Text>
+        </View>
 
-        <Text style={styles.heading}>4. Prohibited Activities</Text>
-        <Text style={styles.paragraph}>
-          You agree not to engage in any of the following prohibited activities:
-        </Text>
-        <Text style={styles.listItem}>• Using the service for any illegal purpose.</Text>
-        <Text style={styles.listItem}>• Harassing, abusing, or harming another person.</Text>
-        <Text style={styles.listItem}>• Attempting to interfere with or compromise the system integrity or security.</Text>
-
-        <Text style={styles.heading}>5. Payments and Fees</Text>
-        <Text style={styles.paragraph}>
-          Board-Ease may facilitate payments between landlords and tenants. We utilize third-party payment processors, and their terms and conditions apply to your transactions.
-        </Text>
-
-        <Text style={styles.heading}>6. Limitation of Liability</Text>
-        <Text style={styles.paragraph}>
-          In no event shall Board-Ease be liable for any indirect, incidental, special, consequential, or punitive damages resulting from your access to or use of the Service.
-        </Text>
-
-        <Text style={styles.heading}>7. Contact Us</Text>
-        <Text style={styles.paragraph}>
-          If you have any questions about these Terms, please contact us at: legal@boardease.com
-        </Text>
+        <View style={styles.policySection}>
+          <Text style={styles.policyTitle}>Privacy Policy</Text>
+          <Text style={styles.policyText}>{PRIVACY_POLICY.trim()}</Text>
+        </View>
+        
+        <View style={{ height: 40 }} />
       </ScrollView>
-    </>
+
+      {/* Persistent Back Button (Action Bar) */}
+      <View style={styles.bottomActionBar}>
+        <TouchableOpacity style={styles.bottomBackButton} onPress={() => router.back()}>
+            <Text style={styles.bottomBackButtonText}>Back to Home</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 20,
     backgroundColor: 'white',
+
+    borderBottomWidth: 1, 
+    borderBottomColor: '#f5f5f5', 
   },
-  contentContainer: {
-    padding: 20,
-    paddingBottom: 40,
+  subHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  lastUpdated: {
-    fontSize: 12,
-    color: '#666',
-    fontStyle: 'italic',
-    marginBottom: 20,
-    textAlign: 'center',
-  },
-  heading: {
-    fontSize: 22,
+  title: {
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#333',
-    marginTop: 24,
-    marginBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-    paddingBottom: 8,
+    flex: 1,
+    textAlign: 'center',
   },
-  subheading: {
+  content: {
+    flex: 1,
+    paddingTop: 10,
+  },
+  backToMenuButton: {
+    padding: 8,
+  },
+  backToMenuPlaceholder: {
+    width: 40, 
+  },
+
+  policySection: {
+    marginHorizontal: 20,
+    marginTop: 10,
+    marginBottom: 10,
+    padding: 15,
+    backgroundColor: 'white',
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  policyTitle: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#444',
-    marginTop: 16,
-    marginBottom: 8,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e5e5',
+    paddingBottom: 5,
   },
-  paragraph: {
-    fontSize: 16,
-    lineHeight: 24,
+  policyText: {
+    fontSize: 14,
     color: '#555',
-    marginBottom: 12,
+    lineHeight: 22,
+    paddingHorizontal: 5,
   },
-  listItem: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: '#555',
-    marginBottom: 8,
-    marginLeft: 16,
+  
+  bottomActionBar: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 24,
+    backgroundColor: 'white',
+    borderTopWidth: 1,
+    borderTopColor: '#e5e5e5',
   },
+  bottomBackButton: {
+    backgroundColor: '#667eea',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 8,
+  },
+  bottomBackButtonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  }
 });
