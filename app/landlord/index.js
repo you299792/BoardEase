@@ -797,7 +797,7 @@ export default function LandlordPortal() {
                   </View>
                   <View style={styles.statItem}>
                     <Ionicons name="star" size={20} color="#fbbf24" />
-                    <Text style={styles.statValue}>{selectedListing.rating?.toFixed(1) || '0'}</Text>
+                    <Text style={styles.statValue}>{calculateAverageRating()}</Text>
                     <Text style={styles.statLabel}>Rating</Text>
                   </View>
                 </View>
