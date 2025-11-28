@@ -46,7 +46,6 @@ export default function CreateListing() {
   const [address, setAddress] = useState('');
   const [rent, setRent] = useState('');
   const [description, setDescription] = useState('');
-  const [virtualTour, setVirtualTour] = useState('');
   const [houseType, setHouseType] = useState('Single Room');
   const [distance, setDistance] = useState('');
   const [rules, setRules] = useState([]);
@@ -75,7 +74,6 @@ export default function CreateListing() {
     petsAllowed: false,
   });
   const [photos, setPhotos] = useState([]);
-  const [floorPlans, setFloorPlans] = useState([]);
   
   // Real Google Maps Location State
   const [showMapModal, setShowMapModal] = useState(false);
@@ -139,7 +137,6 @@ export default function CreateListing() {
     setAddress('');
     setRent('');
     setDescription('');
-    setVirtualTour('');
     setHouseType('Single Room');
     setDistance('');
     setRules([]);
@@ -167,7 +164,6 @@ export default function CreateListing() {
       petsAllowed: false,
     });
     setPhotos([]);
-    setFloorPlans([]);
     
     setIsEditing(false);
     setHeading('Create Property Listing');
@@ -889,9 +885,6 @@ export default function CreateListing() {
           multiline
         />
 
-        <Text style={styles.label}>Virtual Tour Link (optional)</Text>
-        <TextInput style={styles.input} placeholder="https://" value={virtualTour} onChangeText={setVirtualTour} autoCapitalize="none" />
-
         <Text style={styles.section}>Availability</Text>
         <View style={styles.availabilityContainer}>
           <View style={styles.availabilityRow}>
@@ -986,13 +979,6 @@ export default function CreateListing() {
           images={photos}
           onAdd={() => pickImage(setPhotos)}
           onRemove={removeAt(setPhotos)}
-        />
-
-        <Text style={[styles.label, { marginTop: 12 }]}>Floor Plans (images)</Text>
-        <PropertyImageGrid
-          images={floorPlans}
-          onAdd={() => pickImage(setFloorPlans)}
-          onRemove={removeAt(setFloorPlans)}
         />
 
         <TouchableOpacity style={styles.submitBtn} onPress={validateAndSubmit} disabled={isSubmitting}>
@@ -1443,12 +1429,13 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     overflow: 'hidden',
+    paddingBottom: 20,
   },
   mapModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 20,
+    padding: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#e5e5e5',
   },
@@ -1461,16 +1448,16 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   mapModalSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#666',
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 16,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 12,
   },
   searchContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    marginBottom: 12,
     gap: 8,
   },
   searchInput: {
@@ -1489,11 +1476,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   mapContainer: {
-    height: 300,
-    marginHorizontal: 20,
+    flex: 1,
+    minHeight: 400,
+    marginHorizontal: 16,
     borderRadius: 12,
     overflow: 'hidden',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   map: {
     width: '100%',
@@ -1512,14 +1500,15 @@ const styles = StyleSheet.create({
   mapControls: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    marginBottom: 12,
   },
   mapControlButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    padding: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     backgroundColor: '#f8f9fa',
     borderRadius: 10,
     borderWidth: 1,
@@ -1528,25 +1517,25 @@ const styles = StyleSheet.create({
   mapControlText: {
     color: '#667eea',
     fontWeight: '600',
-    fontSize: 14,
+    fontSize: 13,
   },
   selectedLocationInfo: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f0fdf4',
-    padding: 16,
-    marginHorizontal: 20,
+    padding: 12,
+    marginHorizontal: 16,
     borderRadius: 10,
     borderLeftWidth: 4,
     borderLeftColor: '#10b981',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   selectedLocationText: {
     flex: 1,
     marginLeft: 12,
   },
   selectedLocationTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#065f46',
     marginBottom: 2,
@@ -1558,7 +1547,8 @@ const styles = StyleSheet.create({
   mapModalButtons: {
     flexDirection: 'row',
     gap: 12,
-    padding: 20,    paddingTop: 0,
+    paddingHorizontal: 16,
+    paddingTop: 0,
   },
   ruleInput: {
     borderWidth: 1,
