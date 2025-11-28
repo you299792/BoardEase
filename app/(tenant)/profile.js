@@ -7,7 +7,7 @@
  * - storage/profile-images: Upload profile pictures
  */
 
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   KeyboardAvoidingView,
@@ -32,22 +32,54 @@ import {
   updateTenantProfile,
   uploadProfileImage,
   handleError,
+  getFavorites,
+  getTenantBookings,
 } from '../../lib/supabaseClient';
 import { getCachedImage } from '../../lib/imageCache';
 
 export default function Profile() {
-  const [userData, setUserData] = React.useState(null);
-  const [tenantData, setTenantData] = React.useState(null);
-  const [isEditing, setIsEditing] = React.useState(false);
-  const [loading, setLoading] = React.useState(true);
-  const [uploading, setUploading] = React.useState(false);
-  const [profileImageUri, setProfileImageUri] = React.useState(null);
-  const [isUsingCachedData, setIsUsingCachedData] = React.useState(false);
+  const [userData, setUserData] = useState(null);
+  const [tenantData, setTenantData] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [profileImageUri, setProfileImageUri] = useState(null);
+  const [isUsingCachedData, setIsUsingCachedData] = useState(false);
+  const [savedCount, setSavedCount] = useState(0);
+  const [appliedCount, setAppliedCount] = useState(0);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
 
   // Load profile on mount
   useEffect(() => {
     loadProfile();
   }, []);
+
+  // Reload stats when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      if (tenantProfileId) {
+        loadStats(tenantProfileId);
+      }
+    }, [tenantProfileId])
+  );
+
+  const loadStats = async (tenantId) => {
+    try {
+      // Fetch favorites count
+      const { success: favSuccess, favorites } = await getFavorites(tenantId);
+      if (favSuccess && favorites) {
+        setSavedCount(favorites.length);
+      }
+
+      // Fetch bookings count
+      const { success: bookSuccess, bookings } = await getTenantBookings(tenantId);
+      if (bookSuccess && bookings) {
+        setAppliedCount(bookings.length);
+      }
+    } catch (error) {
+      console.error('Load stats error:', error);
+    }
+  };
 
   const loadProfile = async () => {
     try {
@@ -66,6 +98,12 @@ export default function Profile() {
         setUserData(userData);
         setTenantData(profileData);
         setIsUsingCachedData(fromCache || false);
+        setTenantProfileId(profileData?.id);
+        
+        // Load stats
+        if (profileData?.id) {
+          loadStats(profileData.id);
+        }
         
         // Attempt to cache profile image for offline usage
         try {
@@ -292,9 +330,8 @@ export default function Profile() {
   };
 
   const stats = [
-    { label: 'Saved', value: '12', icon: 'heart' },
-    { label: 'Viewed', value: '24', icon: 'eye' },
-    { label: 'Applied', value: '5', icon: 'document-text' },
+    { label: 'Saved', value: savedCount.toString(), icon: 'heart' },
+    { label: 'Applied', value: appliedCount.toString(), icon: 'document-text' },
   ];
 
   const contactInfo = [
@@ -398,7 +435,9 @@ export default function Profile() {
           )}
           
           <View style={styles.verificationSection}>
-            <Text style={styles.joinDate}>Member since 2023</Text>
+            <Text style={styles.joinDate}>
+              Member since {userData?.created_at ? new Date(userData.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+            </Text>
           </View>
         </View>
 
