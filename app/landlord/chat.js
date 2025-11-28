@@ -72,7 +72,7 @@ export default function LandlordChat() {
       setCurrentUser(user);
 
       // 1. Get Landlord Profile with user info
-      const { data: landlordProfile, error: profileError } = await supabase
+      let { data: landlordProfile, error: profileError } = await supabase
         .from('landlord_profile')
         .select(`
           id,
@@ -80,7 +80,102 @@ export default function LandlordChat() {
           users:user_id(id, first_name, last_name, profile_image_url)
         `)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
+
+      // If no profile exists, create one
+      if (!landlordProfile && !profileError) {
+        console.log('[Chat] No landlord profile found, creating one...');
+        
+        // First, ensure user exists in users table
+        const { data: existingUser } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', user.id)
+          .maybeSingle();
+        
+        if (!existingUser) {
+          console.log('[Chat] User not in users table, checking by email...');
+          
+          // Check if user exists with same email (different ID)
+          const { data: emailUser } = await supabase
+            .from('users')
+            .select('id, user_type')
+            .eq('email', user.email || '')
+            .maybeSingle();
+          
+          if (emailUser) {
+            console.log('[Chat] User found by email, checking for landlord profile...');
+            
+            // Check if landlord profile exists for this user
+            const { data: existingProfile } = await supabase
+              .from('landlord_profile')
+              .select(`
+                id,
+                user_id,
+                users:user_id(id, first_name, last_name, profile_image_url)
+              `)
+              .eq('user_id', emailUser.id)
+              .maybeSingle();
+            
+            if (existingProfile) {
+              landlordProfile = existingProfile;
+            } else {
+              // Create landlord profile for existing user
+              console.log('[Chat] Creating landlord profile for existing user...');
+              const { error: createProfileError } = await supabase
+                .from('landlord_profile')
+                .insert({ user_id: emailUser.id });
+              
+              if (!createProfileError) {
+                const { data: newProfile } = await supabase
+                  .from('landlord_profile')
+                  .select(`
+                    id,
+                    user_id,
+                    users:user_id(id, first_name, last_name, profile_image_url)
+                  `)
+                  .eq('user_id', emailUser.id)
+                  .single();
+                landlordProfile = newProfile;
+              }
+            }
+          } else {
+            // Create new user
+            const { error: userCreateError } = await supabase
+              .from('users')
+              .insert({
+                id: user.id,
+                email: user.email || '',
+                phone: user.user_metadata?.phone || '',
+                user_type: 'landlord',
+                first_name: user.user_metadata?.first_name || '',
+                last_name: user.user_metadata?.last_name || '',
+              });
+            
+            if (userCreateError) {
+              console.error('[Chat] Failed to create user:', userCreateError);
+            }
+          }
+        }
+        
+        const { error: createError } = await supabase
+          .from('landlord_profile')
+          .insert({ user_id: user.id });
+        
+        if (!createError) {
+          // Fetch the newly created profile
+          const { data: newProfile } = await supabase
+            .from('landlord_profile')
+            .select(`
+              id,
+              user_id,
+              users:user_id(id, first_name, last_name, profile_image_url)
+            `)
+            .eq('user_id', user.id)
+            .single();
+          landlordProfile = newProfile;
+        }
+      }
 
       if (profileError || !landlordProfile) {
         console.error('Error fetching landlord profile:', profileError);
@@ -237,69 +332,112 @@ export default function LandlordChat() {
       await markMessagesAsRead(targetConversationId, user.id, 'landlord');
 
       const subscription = subscribeToMessages(targetConversationId, async (newMsg) => {
-        console.log(`[Landlord Chat] New message in conversation ${targetConversationId}:`, newMsg);
-        
-        // Fetch sender and receiver profiles for the new message
-        let senderProfile = null;
-        let receiverProfile = null;
-        
         try {
-          if (newMsg.sender_id) {
-            const { data: sender, error: senderError } = await supabase
-              .from('users')
-              .select('id, first_name, last_name, profile_image_url, email')
-              .eq('id', newMsg.sender_id)
-              .single();
-            
-            if (senderError) {
-              console.warn('[Landlord Chat] Error fetching sender profile:', senderError);
-            } else {
-              senderProfile = sender;
+          if (!newMsg) {
+            console.warn('[Landlord Chat] Received empty realtime payload');
+            return;
+          }
+          if (!newMsg.id) {
+            console.warn('[Landlord Chat] Payload missing id, skipping:', newMsg);
+            return;
+          }
+
+          console.log(`[Landlord Chat] New message in conversation ${targetConversationId}:`, newMsg);
+          
+          // Fetch sender and receiver profiles for the new message
+          let senderProfile = null;
+          let receiverProfile = null;
+          
+          try {
+            if (newMsg.sender_id) {
+              const { data: sender, error: senderError } = await supabase
+                .from('users')
+                .select('id, first_name, last_name, profile_image_url, email')
+                .eq('id', newMsg.sender_id)
+                .single();
+              
+              if (senderError) {
+                console.warn('[Landlord Chat] Error fetching sender profile:', senderError);
+              } else {
+                senderProfile = sender;
+              }
             }
+            
+            if (newMsg.receiver_id) {
+              const { data: receiver, error: receiverError } = await supabase
+                .from('users')
+                .select('id, first_name, last_name, profile_image_url, email')
+                .eq('id', newMsg.receiver_id)
+                .single();
+              
+              if (receiverError) {
+                console.warn('[Landlord Chat] Error fetching receiver profile:', receiverError);
+              } else {
+                receiverProfile = receiver;
+              }
+            }
+          } catch (profileError) {
+            console.error('[Landlord Chat] Error fetching message profiles:', profileError);
           }
           
-          if (newMsg.receiver_id) {
-            const { data: receiver, error: receiverError } = await supabase
-              .from('users')
-              .select('id, first_name, last_name, profile_image_url, email')
-              .eq('id', newMsg.receiver_id)
-              .single();
-            
-            if (receiverError) {
-              console.warn('[Landlord Chat] Error fetching receiver profile:', receiverError);
-            } else {
-              receiverProfile = receiver;
+          const transformedMsg = {
+            id: newMsg.id,
+            sender_id: newMsg.sender_id,
+            sender: senderProfile,
+            receiver: receiverProfile,
+            text: newMsg.message_text,
+            image: newMsg.media_url,
+            timestamp: newMsg.created_at,
+            type: newMsg.message_type,
+            conversation_id: targetConversationId,
+          };
+          
+          console.log('[Landlord Chat] Transformed message:', transformedMsg);
+          
+          setMessages(prev => {
+            try {
+              const basePrev = Array.isArray(prev) ? prev : [];
+              const sanitizedPrev = basePrev.filter(entry => {
+                const isValid = entry && typeof entry === 'object';
+                if (!isValid) {
+                  console.warn('[Landlord Chat] Dropping invalid message entry:', entry);
+                }
+                return isValid;
+              });
+
+              const filtered = sanitizedPrev.filter(existingMsg => {
+                const existingId = existingMsg?.id;
+                if (!existingId) return true;
+                if (!existingId.toString().startsWith('temp-')) return true;
+
+                const sameSender = existingMsg?.sender_id === transformedMsg.sender_id;
+                const sameText = (existingMsg?.text || '') === (transformedMsg.text || '');
+                const sameImage = (existingMsg?.image || '') === (transformedMsg.image || '');
+                return !(sameSender && sameText && sameImage);
+              });
+
+              const alreadyExists = filtered.some(existing => existing?.id === transformedMsg.id);
+              if (alreadyExists) return filtered;
+              return [transformedMsg, ...filtered];
+            } catch (stateError) {
+              console.error('[Landlord Chat] Message state reducer failed:', stateError);
+              return Array.isArray(prev) ? prev : [];
             }
+          });
+          // 💾 SAVE NEW MESSAGE to cache
+          addMessageToCache('landlord', targetConversationId, transformedMsg);
+          
+          // 🔄 UPDATE TENANT INFO if message is from tenant (refreshes profile picture)
+          const landlordUserId = currentUser?.id ?? user?.id ?? null;
+          if (landlordUserId && transformedMsg.sender_id !== landlordUserId && transformedMsg.sender) {
+            console.log('[Landlord Chat] Updating tenant info with new profile:', transformedMsg.sender);
+            setTenantInfo({
+              name: `${transformedMsg.sender.first_name} ${transformedMsg.sender.last_name}`,
+              image: transformedMsg.sender.profile_image_url,
+            });
           }
         } catch (error) {
-          console.error('[Landlord Chat] Error fetching message profiles:', error);
-        }
-        
-        const transformedMsg = {
-          id: newMsg.id,
-          sender_id: newMsg.sender_id,
-          sender: senderProfile,
-          receiver: receiverProfile,
-          text: newMsg.message_text,
-          image: newMsg.media_url,
-          timestamp: newMsg.created_at,
-          type: newMsg.message_type,
-          conversation_id: targetConversationId,
-        };
-        
-        console.log('[Landlord Chat] Transformed message:', transformedMsg);
-        
-        setMessages(prev => [transformedMsg, ...prev]);
-        // 💾 SAVE NEW MESSAGE to cache
-        addMessageToCache('landlord', targetConversationId, transformedMsg);
-        
-        // 🔄 UPDATE TENANT INFO if message is from tenant (refreshes profile picture)
-        if (transformedMsg.sender_id !== currentUser.id && transformedMsg.sender) {
-          console.log('[Landlord Chat] Updating tenant info with new profile:', transformedMsg.sender);
-          setTenantInfo({
-            name: `${transformedMsg.sender.first_name} ${transformedMsg.sender.last_name}`,
-            image: transformedMsg.sender.profile_image_url,
-          });
+          console.error('[Landlord Chat] Realtime handler error:', error);
         }
       });
 
@@ -336,6 +474,8 @@ export default function LandlordChat() {
     if (!text.trim() && !imageUri) return;
     if (!conversationId || !currentUser) return;
 
+    let optimisticMessage = null;
+
     try {
       const { success: profileSuccess, user: userProfile } = await getUserProfile(currentUser.id);
       
@@ -348,7 +488,7 @@ export default function LandlordChat() {
 
       setNewMessage('');
 
-      const optimisticMessage = {
+      optimisticMessage = {
         id: `temp-${Date.now()}`,
         sender_id: currentUser.id,
         sender: {
@@ -363,12 +503,20 @@ export default function LandlordChat() {
         type: imageUrl ? 'image' : 'text',
       };
 
-      setMessages([optimisticMessage, ...messages]);
+      setMessages(prev => [optimisticMessage, ...((prev || []).filter(Boolean))]);
 
       const sendRes = await sendMessage(conversationId, currentUser.id, text.trim() || null, imageUrl);
       console.log('[LandlordChat] sendRes:', sendRes);
+      if (!sendRes.success) {
+        setMessages(prev => (prev || []).filter(msg => msg && msg.id !== optimisticMessage.id));
+        Alert.alert('Error', sendRes.error || 'Failed to send message');
+      }
     } catch (error) {
       console.error('Failed to send message', error);
+      if (optimisticMessage) {
+        setMessages(prev => (prev || []).filter(msg => msg && msg.id !== optimisticMessage.id));
+      }
+      Alert.alert('Error', 'Failed to send message');
     }
   };
 

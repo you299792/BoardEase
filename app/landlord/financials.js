@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -62,6 +62,70 @@ export default function FinancialsScreen() {
 
   const singleReceiptRef = useRef();   
 
+  // Memoized lookup maps to quickly determine if a booking/listing/property has been paid for a period
+  const paidPeriodsByBooking = useMemo(() => {
+    const map = new Map();
+    payments.forEach(payment => {
+      const status = (payment.status || '').toLowerCase();
+      if (status !== 'completed' && status !== 'paid') return;
+
+      const periodDateRaw = payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date;
+      if (!periodDateRaw) return;
+      const paidDate = new Date(periodDateRaw);
+      if (isNaN(paidDate.getTime())) return;
+      const periodKey = `${paidDate.getFullYear()}-${paidDate.getMonth()}`;
+
+      const bookingKey = payment.bookingId || payment.booking_id || payment.booking?.id;
+      if (!bookingKey) return;
+
+      if (!map.has(bookingKey)) map.set(bookingKey, new Set());
+      map.get(bookingKey).add(periodKey);
+    });
+    return map;
+  }, [payments]);
+
+  const paidPeriodsByListing = useMemo(() => {
+    const map = new Map();
+    payments.forEach(payment => {
+      const status = (payment.status || '').toLowerCase();
+      if (status !== 'completed' && status !== 'paid') return;
+
+      const periodDateRaw = payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date;
+      if (!periodDateRaw) return;
+      const paidDate = new Date(periodDateRaw);
+      if (isNaN(paidDate.getTime())) return;
+      const periodKey = `${paidDate.getFullYear()}-${paidDate.getMonth()}`;
+
+      const listingKey = payment.listing_id || payment.listingId;
+      if (!listingKey) return;
+
+      if (!map.has(listingKey)) map.set(listingKey, new Set());
+      map.get(listingKey).add(periodKey);
+    });
+    return map;
+  }, [payments]);
+
+  const paidPeriodsByProperty = useMemo(() => {
+    const map = new Map();
+    payments.forEach(payment => {
+      const status = (payment.status || '').toLowerCase();
+      if (status !== 'completed' && status !== 'paid') return;
+
+      const periodDateRaw = payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date;
+      if (!periodDateRaw) return;
+      const paidDate = new Date(periodDateRaw);
+      if (isNaN(paidDate.getTime())) return;
+      const periodKey = `${paidDate.getFullYear()}-${paidDate.getMonth()}`;
+
+      const propertyKey = (payment.property || payment.property_title || '').toLowerCase();
+      if (!propertyKey) return;
+
+      if (!map.has(propertyKey)) map.set(propertyKey, new Set());
+      map.get(propertyKey).add(periodKey);
+    });
+    return map;
+  }, [payments]);
+
   // --- UNIFIED DATA LOADING FUNCTION ---
   // This handles fetching from DB, fetching from Local Storage, and merging them correctly.
   const loadData = async (isSilent = false) => {
@@ -99,17 +163,20 @@ export default function FinancialsScreen() {
       if (bookingsSuccess) setBookings(dbBookings || []);
 
       // 3. Fetch Payments from DB (Source of Truth)
+      console.log('[loadData] Fetching payments for landlord_id:', currentProfileId);
       const { data: dbPayments, error: paymentsError } = await supabase
         .from('payments')
         .select(`
-            id, tenant_id, amount, status, paid_date, created_at,
-            payment_type, payment_method, reference_number, listing_id,
+          id, tenant_id, amount, status, paid_date, created_at, due_date,
+            payment_type, payment_method, reference_number, listing_id, booking_id,
             tenant:tenant_id(id, user_id),
             booking:booking_id(id),
             listing:listing_id(title)
         `)
         .eq('landlord_id', currentProfileId)
         .order('paid_date', { ascending: false });
+
+      console.log('[loadData] Payments fetched:', dbPayments?.length, 'Error:', paymentsError);
 
       // 4. Map DB Payments to UI Format
       let mappedDbPayments = [];
@@ -131,10 +198,14 @@ export default function FinancialsScreen() {
             status: p.status || 'pending',
             date: p.paid_date || p.created_at,
             paidDate: p.paid_date,
+            billingPeriodDate: p.due_date,
+            dueDate: p.due_date,
             type: p.payment_type || 'rent',
             method: p.payment_method || 'Bank Transfer',
             reference: p.reference_number || 'N/A',
-            source: 'db'
+            source: 'db',
+            bookingId: p.booking_id,  // Add bookingId for isDuePaid matching
+            booking_id: p.booking_id, // Also include underscore version
           };
         });
       }
@@ -257,69 +328,114 @@ export default function FinancialsScreen() {
 
   // --- CALCULATION LOGIC ---
 
+  // Helper function to check if a due has been paid
+  const isDuePaid = (booking, dueDate, propertyName) => {
+    const dueMonth = dueDate.getMonth();
+    const dueYear = dueDate.getFullYear();
+    const periodKey = `${dueYear}-${dueMonth}`;
+
+    if (booking?.id) {
+      const bookingPeriods = paidPeriodsByBooking.get(booking.id);
+      if (bookingPeriods?.has(periodKey)) return true;
+    }
+
+    if (booking?.listing_id) {
+      const listingPeriods = paidPeriodsByListing.get(booking.listing_id);
+      if (listingPeriods?.has(periodKey)) return true;
+    }
+
+    const propertyKey = (propertyName || '').toLowerCase();
+    if (propertyKey) {
+      const propertyPeriods = paidPeriodsByProperty.get(propertyKey);
+      if (propertyPeriods?.has(periodKey)) return true;
+    }
+
+    // Fallback to direct scan for legacy/local records without mapped identifiers
+    return payments.some(payment => {
+      const status = (payment.status || '').toLowerCase();
+      if (status !== 'completed' && status !== 'paid') return false;
+
+      const paymentDate = new Date(payment.billingPeriodDate || payment.dueDate || payment.due_date || payment.date);
+      if (isNaN(paymentDate.getTime())) return false;
+
+      const dateMatch = paymentDate.getMonth() === dueMonth && paymentDate.getFullYear() === dueYear;
+      if (!dateMatch) return false;
+
+      const bookingMatch = (payment.bookingId === booking.id || payment.booking?.id === booking.id || payment.booking_id === booking.id);
+      if (bookingMatch) return true;
+
+      const listingMatch = payment.listing_id && booking.listing_id && payment.listing_id === booking.listing_id;
+      if (listingMatch) return true;
+
+      const propertyMatch = (payment.property || payment.property_title || '').toLowerCase() === propertyKey;
+      return propertyMatch;
+    });
+  };
+
   // Calculate upcoming due payments
   const upcomingDue = bookings
     .map(b => {
       if (!(b.status === 'approved' || b.status === 'occupied')) return null;
+      
       const today = new Date();
+      today.setHours(0, 0, 0, 0); // Reset time for accurate comparison
+      
       const moveIn = new Date(b.move_in_date);
-      let nextDue = new Date(moveIn);
+      if (isNaN(moveIn.getTime())) return null;
 
-      // Find the first future due date (today or later)
-      for (let i = 0; i < 12; i++) {
+      // Resolve property display name and amount first (needed for matching)
+      let propertyName = 'Property Name';
+      let propertyAmount = b.total_amount || b.price || 0;
+
+      if (b.listing && (b.listing.title || b.listing.name)) {
+        propertyName = b.listing.title || b.listing.name;
+        propertyAmount = propertyAmount || (b.listing.price || b.listing.rent || 0);
+      } else if (b.property_title) {
+        propertyName = b.property_title;
+      } else {
+        const listMatch = listings.find(l => l.id === b.listing_id || l.id === b.listingId);
+        if (listMatch) {
+          propertyName = listMatch.title || listMatch.name || propertyName;
+          propertyAmount = propertyAmount || (listMatch.price || listMatch.rent || 0);
+        } else if (b.title || b.name) {
+          propertyName = b.title || b.name;
+        }
+      }
+
+      // Find the first due date (today or later) that is NOT paid
+      // Start from move-in date and iterate through months
+      for (let i = 0; i < 24; i++) {
+        // Calculate the due date for this iteration
+        const nextDue = new Date(moveIn.getFullYear(), moveIn.getMonth() + i, moveIn.getDate());
+        
+        // Skip if due date is in the past
         if (nextDue < today) {
-          nextDue.setMonth(nextDue.getMonth() + 1);
           continue;
         }
 
         const dueDateStr = nextDue.toISOString().split('T')[0];
+        
+        // Check if this due has been paid
+        const isPaid = isDuePaid(b, nextDue, propertyName);
 
-        const paymentForThisDate = payments.find(p => {
-          const paymentDate = (p.date || p.paidDate || '').toString().split('T')[0];
-          return (
-            (p.bookingId === b.id || p.booking?.id === b.id || p.booking_id === b.id) && 
-            paymentDate === dueDateStr
-          );
-        });
-
-        const isPaid = paymentForThisDate && (paymentForThisDate.status === 'completed' || paymentForThisDate.status === 'paid');
-
-        // Resolve property display name and amount
-        let propertyName = 'Property Name';
-        let propertyAmount = b.total_amount || b.price || 0;
-
-        if (b.listing && (b.listing.title || b.listing.name)) {
-          propertyName = b.listing.title || b.listing.name;
-          propertyAmount = propertyAmount || (b.listing.price || b.listing.rent || 0);
-        } else if (b.property_title) {
-          propertyName = b.property_title;
-        } else {
-          const listMatch = listings.find(l => l.id === b.listing_id || l.id === b.listingId);
-          if (listMatch) {
-            propertyName = listMatch.title || listMatch.name || propertyName;
-            propertyAmount = propertyAmount || (listMatch.price || listMatch.rent || 0);
-          } else if (b.title || b.name) {
-            propertyName = b.title || b.name;
-          }
+        if (!isPaid) {
+          return {
+            id: `due_${b.id}_${dueDateStr}`,
+            property: propertyName,
+            tenant: b.tenant_profile?.users?.first_name 
+              ? `${b.tenant_profile.users.first_name} ${b.tenant_profile.users.last_name || ''}`.trim()
+              : 'Tenant',
+            amount: propertyAmount || 0,
+            dueDate: dueDateStr,
+            type: 'Rent',
+            bookingId: b.id,
+            status: 'pending'
+          };
         }
-
-        return {
-          id: `due_${b.id}_${dueDateStr}`,
-          property: propertyName,
-          tenant: b.tenant_profile?.users?.first_name 
-            ? `${b.tenant_profile.users.first_name} ${b.tenant_profile.users.last_name || ''}`.trim()
-            : 'Tenant',
-          amount: propertyAmount || 0,
-          dueDate: dueDateStr,
-          type: 'Rent',
-          bookingId: b.id,
-          status: isPaid ? 'paid' : 'pending'
-        };
       }
       return null;
     })
-    .filter(Boolean)
-    .filter(item => item.status === 'pending');
+    .filter(Boolean);
 
   const paymentHistory = payments.map(payment => ({
     id: payment.id,
@@ -331,7 +447,7 @@ export default function FinancialsScreen() {
     type: payment.type || 'rent',
     method: payment.method || 'Cash',
     reference: payment.reference || 'N/A',
-  }));
+  })).sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const calculateFinancialDataWithUpcoming = () => {
     const completedPayments = payments.filter(p => {
@@ -384,6 +500,13 @@ export default function FinancialsScreen() {
     .filter(d => d.status !== 'paid')
     .reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
   const upcomingPendingCount = upcomingDue.filter(d => d.status !== 'paid').length;
+
+  const paidPayments = useMemo(() => (
+    payments.filter(p => {
+      const s = (p.status || '').toString().toLowerCase();
+      return s === 'completed' || s === 'paid';
+    })
+  ), [payments]);
 
   const handleReminders = () => {
     if (upcomingPendingCount === 0) {
@@ -514,12 +637,19 @@ export default function FinancialsScreen() {
     
     const amountFloat = parseFloat(paymentForm.amount);
     const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    const todayIso = new Date().toISOString().split('T')[0];
+    const billingPeriodDate = paymentForm.date;
 
-    // Try to associate with booking
+    // Try to associate with booking - check multiple property name fields
     const matchedBooking = bookings.find(b => {
-      const propName = b.listing?.title || b.title || b.name || '';
-      return propName === (paymentForm.property || '');
+      const propName = b.listing?.title || b.listing?.name || b.title || b.name || '';
+      const formProp = (paymentForm.property || '').toLowerCase();
+      return propName.toLowerCase() === formProp;
     });
+    
+    // Get listing ID - also check paymentForm.listingId which is set when property chip is selected
+    const matchedListing = listings.find(l => (l.title || l.name) === paymentForm.property);
+    const listingId = paymentForm.listingId || matchedListing?.id || matchedBooking?.listing_id;
 
     const newUiPayment = {
       id: `temp_${Date.now()}`,
@@ -528,38 +658,65 @@ export default function FinancialsScreen() {
       amount: amountFloat,
       type: paymentForm.type,
       status: paymentForm.status,
-      date: paymentForm.date,
-      paidDate: paymentForm.date,
+      date: todayIso,
+      paidDate: todayIso,
+      billingPeriodDate,
+      dueDate: billingPeriodDate,
       method: 'Cash',
       reference: generatedRef,
       isLocal: true,
       bookingId: matchedBooking?.id,
       booking: matchedBooking ? { id: matchedBooking.id } : undefined,
-      matchedBooking: matchedBooking, 
+      matchedBooking: matchedBooking,
+      listing_id: listingId,
     };
 
     // Optimistic Update
     setPayments(prev => [newUiPayment, ...prev]);
     setShowRecordPaymentModal(false);
 
+    // Validate required fields for DB insert
+    // tenant_id can come from: tenant_profile.id (nested), tenant_id (direct), or tenant_profile_id (mapped)
+    const tenantProfileId = matchedBooking?.tenant_profile?.id || matchedBooking?.tenant_id || matchedBooking?.tenant_profile_id;
+    
+    console.log('[processRecordedPayment] matchedBooking:', matchedBooking?.id, 'tenant_id:', tenantProfileId, 'listing_id:', listingId);
+    
+    if (!tenantProfileId || !listingId) {
+      console.warn('Missing tenant_id or listing_id, saving locally only');
+      Alert.alert('Offline Mode', 'Payment saved locally. Missing tenant or listing info for database sync.');
+      const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+      const existingPayments = existingJson ? JSON.parse(existingJson) : [];
+      existingPayments.push(newUiPayment);
+      await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existingPayments));
+      setLastRecordedPayment(newUiPayment);
+      setShowSendReceiptModal(true);
+      return;
+    }
+
     try {
       const insertRow = {
-        landlord_id: currentUser?.id,
-        paid_date: paymentForm.date,
-        tenant_name: paymentForm.tenantName,
-        property_title: paymentForm.property,
+        landlord_id: landlordProfileId,
+        tenant_id: tenantProfileId,
+        listing_id: listingId,
+        paid_date: todayIso,
+        due_date: billingPeriodDate,
         amount: amountFloat,
         payment_type: paymentForm.type,
         status: paymentForm.status,
-        payment_method: 'Cash',
+        payment_method: 'cash',
         reference_number: generatedRef,
       };
 
       if (matchedBooking?.id) insertRow.booking_id = matchedBooking.id;
 
-      const { error } = await supabase
+      console.log('[processRecordedPayment] Inserting payment:', JSON.stringify(insertRow, null, 2));
+
+      const { data: insertedData, error } = await supabase
         .from('payments')
-        .insert([insertRow]);
+        .insert([insertRow])
+        .select();
+
+      console.log('[processRecordedPayment] Insert result:', insertedData, 'Error:', error);
 
       if (error) {
         console.warn('Supabase insert failed, persisting to local storage:', error);
@@ -775,13 +932,13 @@ export default function FinancialsScreen() {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Payment History</Text>
           </View>
-          {payments.filter(p => p.status === 'completed' || p.status === 'paid').length === 0 ? (
+          {paidPayments.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>No payment history.</Text>
             </View>
           ) : (
-            payments
-              .filter(p => p.status === 'completed' || p.status === 'paid')
+            paidPayments
+              .slice()
               .sort((a, b) => new Date(b.date) - new Date(a.date))
               .slice(0, 10) // Show last 10
               .map((item) => (
@@ -870,23 +1027,38 @@ export default function FinancialsScreen() {
                                 const price = item.price || item.rent || '';
                                 const booking = bookings.find(b => b.listing_id === item.id);
                                 let dueDate = new Date().toISOString().split('T')[0]; 
+                                let tenantName = '';
+                                
                                 if (booking && (booking.status === 'approved' || booking.status === 'occupied')) {
+                                  // Get tenant name
+                                  if (booking.tenant_profile?.users) {
+                                    const u = booking.tenant_profile.users;
+                                    tenantName = `${u.first_name || ''} ${u.last_name || ''}`.trim();
+                                  }
+                                  
+                                  // Calculate next unpaid due date
                                   const today = new Date();
+                                  today.setHours(0, 0, 0, 0);
                                   const moveIn = new Date(booking.move_in_date);
-                                  let nextDue = new Date(moveIn);
-                                  for (let i = 0; i < 12; i++) {
+                                  
+                                  for (let i = 0; i < 24; i++) {
+                                    const nextDue = new Date(moveIn.getFullYear(), moveIn.getMonth() + i, moveIn.getDate());
                                     if (nextDue >= today) {
-                                      dueDate = nextDue.toISOString().split('T')[0];
-                                      break;
+                                      // Check if this due is already paid
+                                      if (!isDuePaid(booking, nextDue, propName)) {
+                                        dueDate = nextDue.toISOString().split('T')[0];
+                                        break;
+                                      }
                                     }
-                                    nextDue.setMonth(nextDue.getMonth() + 1);
                                   }
                                 }
                                 setPaymentForm(p => ({
                                     ...p, 
                                     property: propName,
                                     amount: price.toString(),
-                                    date: dueDate
+                                    date: dueDate,
+                                    tenantName: tenantName || p.tenantName,
+                                    listingId: item.id,
                                 }));
                             }}
                           >
