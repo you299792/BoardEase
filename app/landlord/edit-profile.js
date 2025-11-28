@@ -43,6 +43,7 @@ export default function LandlordProfile() {
   const [yearsExperience, setYearsExperience] = useState('');
   const [photoURL, setPhotoURL] = useState('');
   const [propertyCount, setPropertyCount] = useState(0);
+  const [createdAt, setCreatedAt] = useState(null);
   
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [smsNotifications, setSmsNotifications] = useState(true);
@@ -70,6 +71,7 @@ export default function LandlordProfile() {
             setName(`${userData.first_name || ''} ${userData.last_name || ''}`.trim() || userData.email);
             setEmail(userData.email || '');
             setPhone(userData.phone || '');
+            setCreatedAt(userData.created_at || null);
             // Set photoURL to null unless one exists
             setPhotoURL(userData.profile_image_url || null);
           }
@@ -339,7 +341,9 @@ export default function LandlordProfile() {
                   Verified Landlord
                 </Text>
               </View>
-              <Text style={styles.joinDate}>Member since 2024</Text>
+              <Text style={styles.joinDate}>
+                Member since {createdAt ? new Date(createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+              </Text>
             </View>
           </View>
 
