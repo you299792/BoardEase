@@ -83,14 +83,20 @@ export default function LandlordMenuScreen() {
       description: 'Manage your account information',
       screen: 'profile',
     },
-    // --- NEW ITEM: MY TENANTS ---
+    
+    {
+      icon: 'shield-checkmark',
+      title: 'Verification',
+      description: 'Verify your account status',
+      screen: 'verify',
+    },
+  
     {
       icon: 'people', 
       title: 'My Tenants',
       description: 'View currently occupied properties',
       screen: 'tenants',
     },
-    // ----------------------------
     {
       icon: 'chatbubbles',
       title: 'Tenant Inquiries',
@@ -126,8 +132,10 @@ export default function LandlordMenuScreen() {
   const handleMenuPress = (item) => {
     if (item.screen === 'profile') {
       router.push('/landlord/edit-profile');
+    } else if (item.screen === 'verify') {
+      router.push('/landlord/verify'); // Navigates to the new verify.js file
     } else if (item.screen === 'tenants') {
-      router.push('/landlord/tenants'); // Navigates to the new file
+      router.push('/landlord/tenants');
     } else if (item.screen === 'inquiries') {
       router.push('/landlord/inquiries');
     } else if (item.screen === 'financials') {
