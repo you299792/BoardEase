@@ -177,8 +177,10 @@ export default function LandlordLayout() {
         <Tabs.Screen name="add-payment-form" options={{ href: null }} />
         <Tabs.Screen name="chat" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="privacy" options={{ href: null }} />
-        <Tabs.Screen name="terms" options={{ href: null }} />
+        <Tabs.Screen name="terms" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="AuthContext" options={{ href: null }} />
+        <Tabs.Screen name="tenantprofile" options={{ href: null, headerShown: false }} />
+        <Tabs.Screen name="verify" options={{ href: null, headerShown: false }} />
       </Tabs>
     </GlobalListingContext.Provider>
   );
