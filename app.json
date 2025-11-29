@@ -23,7 +23,6 @@
         "backgroundColor": "#FFFFFF"
       },
       "permissions": [
-        "android.permission.RECORD_AUDIO",
         "android.permission.RECORD_AUDIO"
       ],
       "package": "com.anonymous.boardease"
@@ -40,6 +39,12 @@
     "scheme": "boardease",
     "experiments": {
       "tsconfigPaths": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "900db2ce-8964-4ee2-86eb-10d44123695c"
+      }
     }
   }
 }
