@@ -132,6 +132,18 @@ export default function Profile() {
     loadProfile(); // Reload to discard changes
   };
 
+  const confirmCancelEdit = () => {
+    Alert.alert(
+      'Confirm Cancel',
+      'Discard changes? All unsaved changes will be lost.',
+      [
+        { text: 'Continue Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { handleCancelEdit(); } },
+      ],
+      { cancelable: true }
+    );
+  }
+
   const handleSaveProfile = async () => {
     try {
       setLoading(true);
@@ -181,6 +193,18 @@ export default function Profile() {
       setLoading(false);
     }
   };
+
+  const confirmSaveProfile = () => {
+    Alert.alert(
+      'Confirm Save',
+      'Save changes to your profile?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: () => { handleSaveProfile(); } },
+      ],
+      { cancelable: true }
+    );
+  }
 
   const pickImage = async () => {
     try {
@@ -419,12 +443,14 @@ export default function Profile() {
                 value={userData?.first_name || ''}
                 onChangeText={(text) => setUserData({...userData, first_name: text})}
                 placeholder="First name"
+                placeholderTextColor="#999"
               />
               <TextInput
                 style={styles.editNameInput}
                 value={userData?.last_name || ''}
                 onChangeText={(text) => setUserData({...userData, last_name: text})}
                 placeholder="Last name"
+                placeholderTextColor="#999"
               />
             </>
           ) : (
@@ -463,6 +489,7 @@ export default function Profile() {
               value={userData?.bio || ''}
               onChangeText={(text) => setUserData({...userData, bio: text})}
               placeholder="Tell us about yourself and what you're looking for..."
+              placeholderTextColor="#999"
               multiline
               numberOfLines={4}
               textAlignVertical="top"
@@ -480,12 +507,14 @@ export default function Profile() {
               <TextInput
                 style={styles.input}
                 placeholder="Occupation"
+                placeholderTextColor="#999"
                 value={tenantData?.occupation || ''}
                 onChangeText={(text) => setTenantData({...tenantData, occupation: text})}
               />
               <TextInput
                 style={styles.input}
                 placeholder="Min Budget"
+                placeholderTextColor="#999"
                 value={String(tenantData?.budget_min || '')}
                 keyboardType="decimal-pad"
                 onChangeText={(text) => setTenantData({...tenantData, budget_min: parseFloat(text) || 0})}
@@ -493,6 +522,7 @@ export default function Profile() {
               <TextInput
                 style={styles.input}
                 placeholder="Max Budget"
+                placeholderTextColor="#999"
                 value={String(tenantData?.budget_max || '')}
                 keyboardType="decimal-pad"
                 onChangeText={(text) => setTenantData({...tenantData, budget_max: parseFloat(text) || 0})}
@@ -500,6 +530,7 @@ export default function Profile() {
               <TextInput
                 style={[styles.input, { height: 80 }]}
                 placeholder="Preferences"
+                placeholderTextColor="#999"
                 value={tenantData?.preferences || ''}
                 multiline
                 numberOfLines={4}
@@ -532,6 +563,7 @@ export default function Profile() {
                     value={userData?.email || ''}
                     editable={false}
                     placeholder="Email address"
+                    placeholderTextColor="#999"
                     keyboardType="email-address"
                   />
                 ) : (
@@ -552,6 +584,7 @@ export default function Profile() {
                     value={userData?.phone || ''}
                     onChangeText={(text) => setUserData({...userData, phone: text})}
                     placeholder="Phone number"
+                    placeholderTextColor="#999"
                     keyboardType="phone-pad"
                   />
                 ) : (
@@ -580,12 +613,14 @@ export default function Profile() {
               <TextInput
                 style={styles.input}
                 placeholder="Contact Name"
+                placeholderTextColor="#999"
                 value={tenantData?.emergency_contact_name || ''}
                 onChangeText={(text) => setTenantData({...tenantData, emergency_contact_name: text})}
               />
               <TextInput
                 style={styles.input}
                 placeholder="Contact Phone"
+                placeholderTextColor="#999"
                 value={tenantData?.emergency_contact_phone || ''}
                 keyboardType="phone-pad"
                 onChangeText={(text) => setTenantData({...tenantData, emergency_contact_phone: text})}
@@ -604,7 +639,7 @@ export default function Profile() {
           <View style={styles.editActions}>
             <TouchableOpacity 
               style={styles.saveButton}
-              onPress={handleSaveProfile}
+              onPress={confirmSaveProfile}
               disabled={loading}
             >
               <Ionicons name="checkmark" size={20} color="white" />
@@ -613,7 +648,7 @@ export default function Profile() {
             
             <TouchableOpacity 
               style={styles.cancelButton}
-              onPress={handleCancelEdit}
+              onPress={confirmCancelEdit}
               disabled={loading}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>

@@ -143,6 +143,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="e.g., Walter White"
+              placeholderTextColor="#999"
               value={formState.cardholderName}
               onChangeText={(val) => handleInputChange('cardholderName', val)}
             />
@@ -150,6 +151,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="•••• •••• •••• ••••"
+              placeholderTextColor="#999"
               keyboardType="number-pad"
               value={formState.cardNumber}
               onChangeText={(val) => handleInputChange('cardNumber', val)}
@@ -160,6 +162,7 @@ export default function AddPaymentFormScreen() {
                 <TextInput
                   style={styles.input}
                   placeholder="MM/YY"
+                  placeholderTextColor="#999"
                   value={formState.expiryDate}
                   onChangeText={(val) => handleInputChange('expiryDate', val)}
                 />
@@ -169,6 +172,7 @@ export default function AddPaymentFormScreen() {
                 <TextInput
                   style={styles.input}
                   placeholder="123"
+                  placeholderTextColor="#999"
                   keyboardType="number-pad"
                   value={formState.cvv}
                   onChangeText={(val) => handleInputChange('cvv', val)}
@@ -184,6 +188,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="e.g., BDO Unibank"
+              placeholderTextColor="#999"
               value={formState.bankName}
               onChangeText={(val) => handleInputChange('bankName', val)}
             />
@@ -191,6 +196,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="e.g., Walter White"
+              placeholderTextColor="#999"
               value={formState.accountHolderName}
               onChangeText={(val) => handleInputChange('accountHolderName', val)}
             />
@@ -198,6 +204,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="Enter bank account number"
+              placeholderTextColor="#999"
               keyboardType="number-pad"
               value={formState.accountNumber}
               onChangeText={(val) => handleInputChange('accountNumber', val)}
@@ -212,6 +219,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="As registered on the account"
+              placeholderTextColor="#999"
               value={formState.fullName}
               onChangeText={(val) => handleInputChange('fullName', val)}
             />
@@ -219,6 +227,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="+63 9XX XXX XXXX"
+              placeholderTextColor="#999"
               keyboardType="phone-pad"
               value={formState.phoneNumber}
               onChangeText={(val) => {
@@ -244,6 +253,7 @@ export default function AddPaymentFormScreen() {
             <TextInput
               style={styles.input}
               placeholder="your.email@example.com"
+              placeholderTextColor="#999"
               keyboardType="email-address"
               autoCapitalize="none"
               value={formState.paypalEmail}

@@ -1373,12 +1373,12 @@ export default function FinancialsScreen() {
 
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Date</Text>
-                 <TextInput style={styles.textInput} value={paymentForm.date} placeholder="YYYY-MM-DD" onChangeText={t => setPaymentForm(p => ({...p, date: t}))} />
+                 <TextInput style={styles.textInput} value={paymentForm.date} placeholder="YYYY-MM-DD" placeholderTextColor="#999" onChangeText={t => setPaymentForm(p => ({...p, date: t}))} />
                </View>
 
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Tenant</Text>
-                 <TextInput style={styles.textInput} value={paymentForm.tenantName} placeholder="Name" onChangeText={t => setPaymentForm(p => ({...p, tenantName: t}))} />
+                 <TextInput style={styles.textInput} value={paymentForm.tenantName} placeholder="Name" placeholderTextColor="#999" onChangeText={t => setPaymentForm(p => ({...p, tenantName: t}))} />
                </View>
 
                <View style={styles.formSection}>
@@ -1454,19 +1454,20 @@ export default function FinancialsScreen() {
                      })}
                    </ScrollView>
                  ) : (
-                   <TextInput style={styles.textInput} value={paymentForm.property} placeholder="Room/Unit" onChangeText={t => setPaymentForm(p => ({...p, property: t}))} />
+                   <TextInput style={styles.textInput} value={paymentForm.property} placeholder="Room/Unit" placeholderTextColor="#999" onChangeText={t => setPaymentForm(p => ({...p, property: t}))} />
                  )}
                </View>
 
                <View style={styles.formSection}>
                  <Text style={styles.formLabel}>Amount (₱)</Text>
-                 <TextInput 
+                  <TextInput 
                     style={[styles.textInput, {backgroundColor: '#f0f0f0', color: '#555'}]} 
                     value={String(paymentForm.amount)} 
                     editable={false}
                     selectTextOnFocus={false}
                     placeholder="0.00" 
-                 />
+                    placeholderTextColor="#999"
+                  />
                </View>
 
                <View style={styles.formSection}>

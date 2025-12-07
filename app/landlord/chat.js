@@ -795,7 +795,7 @@ export default function LandlordChat() {
 
       <View style={styles.inputContainer}>
         <TouchableOpacity style={styles.attachButton} onPress={pickImage}><Ionicons name="image" size={24} color="#667eea" /></TouchableOpacity>
-        <TextInput style={styles.textInput} value={newMessage} onChangeText={setNewMessage} placeholder="Type a message..." multiline />
+        <TextInput style={styles.textInput} value={newMessage} onChangeText={setNewMessage} placeholder="Type a message..." placeholderTextColor="#999" multiline />
         <TouchableOpacity style={styles.sendButton} onPress={handleSend}><Ionicons name="send" size={20} color="white" /></TouchableOpacity>
       </View>
 

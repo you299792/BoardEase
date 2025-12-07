@@ -653,6 +653,7 @@ export default function ChatScreen() {
           value={newMessage}
           onChangeText={setNewMessage}
           placeholder="Type your message..."
+          placeholderTextColor="#999"
           multiline
         />
         <TouchableOpacity style={styles.sendButton} onPress={handleSend}>

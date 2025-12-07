@@ -1,6 +1,7 @@
 // app/landlord/AuthContext.js
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase, handleInvalidSession } from '../../lib/supabaseClient';
 
 const AuthContext = createContext();
 
@@ -11,16 +12,63 @@ export const AuthProvider = ({ children }) => {
   // Load user from storage on app start
   useEffect(() => {
     loadUser();
+    
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('[AuthContext] Auth event:', event);
+      
+      if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
+        // Clear local user state
+        setUser(null);
+        await AsyncStorage.removeItem('@landlord_user');
+      } else if (event === 'TOKEN_REFRESHED' && session) {
+        console.log('[AuthContext] Token refreshed successfully');
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, []);
 
   const loadUser = async () => {
     try {
+      // First check Supabase session
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.error('[AuthContext] Session error:', error.message);
+        // Handle invalid refresh token
+        if (error.message.includes('Refresh Token') || error.message.includes('Invalid')) {
+          await handleInvalidSession();
+          setUser(null);
+          await AsyncStorage.removeItem('@landlord_user');
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      if (!session) {
+        // No valid session, clear local storage
+        setUser(null);
+        await AsyncStorage.removeItem('@landlord_user');
+        setIsLoading(false);
+        return;
+      }
+
+      // Session is valid, load user from storage
       const userJson = await AsyncStorage.getItem('@landlord_user');
       if (userJson) {
         setUser(JSON.parse(userJson));
       }
     } catch (error) {
       console.error('Failed to load user:', error);
+      // Handle refresh token errors
+      if (error.message && (error.message.includes('Refresh Token') || error.message.includes('Invalid'))) {
+        await handleInvalidSession();
+        setUser(null);
+        await AsyncStorage.removeItem('@landlord_user');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -39,6 +87,8 @@ export const AuthProvider = ({ children }) => {
     try {
       setUser(null);
       await AsyncStorage.removeItem('@landlord_user');
+      // Sign out from Supabase as well
+      await supabase.auth.signOut();
     } catch (error) {
       console.error('Failed to remove user:', error);
     }

@@ -1,4 +1,4 @@
-import React, { useContext, useState, useEffect } from 'react';
+ import React, { useContext, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import { GlobalListingContext } from './_layout';
 import {
   getCurrentUser,
   deleteListing as deleteListingFromDB,
+  getListing,
 } from '../../lib/supabaseClient';
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -28,18 +29,50 @@ export default function ListingDetails() {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [listing, setListing] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const foundListing = listings.find(l => l.id === id);
-    if (foundListing) {
-      setListing(foundListing);
+    const fetchListing = async () => {
+      try {
+        setIsLoading(true);
+        const { success, listing: dbListing, error } = await getListing(id);
+        
+        if (success && dbListing) {
+          console.log('[ListingDetails] Fetched listing from DB:', {
+            id: dbListing.id,
+            created_at: dbListing.created_at,
+            title: dbListing.title,
+          });
+          setListing(dbListing);
+        } else {
+          console.error('[ListingDetails] Failed to fetch listing:', error);
+          Alert.alert('Error', 'Failed to load listing details');
+        }
+      } catch (err) {
+        console.error('[ListingDetails] Error fetching listing:', err);
+        Alert.alert('Error', 'Failed to load listing details');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (id) {
+      fetchListing();
     }
-  }, [id, listings]);
+  }, [id]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </View>
+    );
+  }
 
   if (!listing) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color={Colors.primary} />
+        <Text>Listing not found</Text>
       </View>
     );
   }
@@ -280,6 +313,19 @@ export default function ListingDetails() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Property Details</Text>
           <Text style={styles.description}>{listing.description || 'No description provided.'}</Text>
+          
+          {(listing.created_at || listing.createdAt) && (
+            <View style={styles.createdAtContainer}>
+              <Ionicons name="calendar-outline" size={16} color="#666" />
+              <Text style={styles.createdAtText}>
+                Listed on {new Date(listing.created_at || listing.createdAt).toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                })}
+              </Text>
+            </View>
+          )}
           
           <View style={styles.detailsGrid}>
             <View style={styles.detailItem}>
@@ -622,6 +668,24 @@ const styles = StyleSheet.create({
   activityText: {
     fontSize: 14,
     color: '#666',
+  },
+  createdAtContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#f0f9ff',
+    borderRadius: 8,
+    marginBottom: 16,
+    borderLeftWidth: 3,
+    borderLeftColor: '#667eea',
+  },
+  createdAtText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+    flex: 1,
   },
   dangerZone: {
     borderWidth: 1,

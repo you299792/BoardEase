@@ -8,6 +8,7 @@ import {
   FlatList,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import FilterModal from '../../components/FilterModal';
@@ -23,6 +24,7 @@ export default function Home() {
   const [listings, setListings] = useState([]);
   const [filteredListings, setFilteredListings] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [favorites, setFavorites] = useState([]);
   const [tenantProfileId, setTenantProfileId] = useState(null);
   const [userData, setUserData] = useState(null);
@@ -126,6 +128,17 @@ export default function Home() {
     }
   };
 
+  const onRefresh = async () => {
+    try {
+      setRefreshing(true);
+      await loadData();
+    } catch (e) {
+      console.error('Refresh failed:', e);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
 
   const applyFilters = (filters) => {
     // Validate price range
@@ -139,6 +152,14 @@ export default function Home() {
 
     setActiveFilters(filters);
     setFilterModalVisible(false);
+  };
+
+  // Clear all filters and search query
+  const clearFilters = () => {
+    setActiveFilters(null);
+    setSearchQuery('');
+    // Reset filtered listings to full list
+    setFilteredListings(listings);
   };
 
   const applyFiltersAndSearch = () => {
@@ -245,7 +266,18 @@ export default function Home() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#667eea"]}
+            tintColor="#667eea"
+          />
+        }
+      >
         {/* ... (rest of your JSX is unchanged) ... */}
          <View style={styles.searchContainer}>
           <SearchBar

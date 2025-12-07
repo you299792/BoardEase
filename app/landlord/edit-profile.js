@@ -75,8 +75,8 @@ export default function LandlordProfile() {
             // Set photoURL to null unless one exists
             setPhotoURL(userData.profile_image_url || null);
           }
-          // Load landlord-specific data
-          setBio(profile.bio || '');
+          // Load landlord-specific data (bio is on the nested users object)
+          setBio((userData && userData.bio) || '');
           setCompany(profile.company_name || '');
           setYearsExperience(String(profile.years_experience || 0));
         }
@@ -221,10 +221,34 @@ export default function LandlordProfile() {
     }
   };
 
+  const confirmSave = () => {
+    Alert.alert(
+      'Confirm Save',
+      'Save changes to your profile?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: () => { handleSave(); } },
+      ],
+      { cancelable: true }
+    );
+  }
+
   const handleCancel = () => {
     loadProfileData();
     setIsEditing(false);
   };
+
+  const confirmCancel = () => {
+    Alert.alert(
+      'Discard changes?',
+      'Are you sure you want to discard your changes? All unsaved changes will be lost.',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { handleCancel(); } },
+      ],
+      { cancelable: true }
+    );
+  }
 
   const contactInfo = [
     { label: 'Email', value: email, icon: 'mail' },
@@ -245,9 +269,14 @@ export default function LandlordProfile() {
           headerTitleStyle: {
             fontWeight: 'bold',
           },
+          headerLeft: () => (
+            <TouchableOpacity onPress={() => router.replace('/landlord/menu')} style={{ paddingLeft: 12 }}>
+              <Ionicons name="arrow-back" size={24} color="#fff" />
+            </TouchableOpacity>
+          ),
           headerRight: () => (
             <TouchableOpacity 
-              onPress={() => setIsEditing(!isEditing)} 
+              onPress={() => { if (isEditing) { handleCancel(); } else { setIsEditing(true); } }} 
               style={{ paddingRight: 16 }}
             >
               <Ionicons 
@@ -305,18 +334,21 @@ export default function LandlordProfile() {
                   value={name}
                   onChangeText={setName}
                   placeholder="Your name"
+                  placeholderTextColor="#999"
                 />
                 <TextInput
                   style={styles.editCompanyInput}
                   value={company}
                   onChangeText={setCompany}
                   placeholder="Company name"
+                  placeholderTextColor="#999"
                 />
                 <TextInput
                   style={styles.editCompanyInput}
                   value={yearsExperience}
                   onChangeText={setYearsExperience}
                   placeholder="Years of experience"
+                  placeholderTextColor="#999"
                   keyboardType="numeric"
                 />
               </>
@@ -369,6 +401,7 @@ export default function LandlordProfile() {
                 value={bio}
                 onChangeText={setBio}
                 placeholder="Tell tenants about yourself and your experience..."
+                placeholderTextColor="#999"
                 multiline
                 numberOfLines={4}
                 textAlignVertical="top"
@@ -401,6 +434,7 @@ export default function LandlordProfile() {
                         value={email}
                         onChangeText={setEmail}
                         placeholder="Email address"
+                        placeholderTextColor="#999"
                         keyboardType="email-address"
                       />
                     ) : isEditing && contact.label === 'Phone' ? (
@@ -409,6 +443,7 @@ export default function LandlordProfile() {
                         value={phone}
                         onChangeText={setPhone}
                         placeholder="Phone number"
+                        placeholderTextColor="#999"
                         keyboardType="phone-pad"
                       />
                     ) : (
@@ -470,7 +505,7 @@ export default function LandlordProfile() {
             <View style={styles.editActions}>
               <TouchableOpacity 
                 style={styles.saveButton}
-                onPress={handleSave}
+                onPress={confirmSave}
               >
                 <Ionicons name="checkmark" size={20} color="white" />
                 <Text style={styles.saveButtonText}>Save Changes</Text>
@@ -478,7 +513,7 @@ export default function LandlordProfile() {
               
               <TouchableOpacity 
                 style={styles.cancelButton}
-                onPress={handleCancel}
+                onPress={confirmCancel}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>

@@ -74,6 +74,9 @@ export default function CreateListing() {
     petsAllowed: false,
   });
   const [photos, setPhotos] = useState([]);
+  const [customAmenities, setCustomAmenities] = useState([]);
+  const [newCustomAmenity, setNewCustomAmenity] = useState('');
+  const [showCustomAmenitiesModal, setShowCustomAmenitiesModal] = useState(false);
   
   // Real Google Maps Location State
   const [showMapModal, setShowMapModal] = useState(false);
@@ -164,6 +167,7 @@ export default function CreateListing() {
       petsAllowed: false,
     });
     setPhotos([]);
+    setCustomAmenities([]);
     
     setIsEditing(false);
     setHeading('Create Property Listing');
@@ -308,15 +312,35 @@ export default function CreateListing() {
             electricityIncluded: false,
             petsAllowed: false,
           };
+          const customArr = [];
           if (existingListing.amenities && Array.isArray(existingListing.amenities)) {
+            // Map readable amenity labels to internal amenity keys
+            const labelToKeyMap = {
+              wifi: 'wifi',
+              airconditioning: 'airConditioning',
+              parking: 'parking',
+              kitchen: 'kitchen',
+              laundry: 'laundry',
+              security: 'security',
+              furnished: 'furnished',
+              waterincluded: 'waterIncluded',
+              electricityincluded: 'electricityIncluded',
+              petsallowed: 'petsAllowed',
+            };
+
             existingListing.amenities.forEach(amenity => {
-              const key = amenity.toLowerCase().replace(/\s+/g, '');
-              if (amenitiesObj.hasOwnProperty(key)) {
-                amenitiesObj[key] = true;
+              const sanitized = amenity.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const mappedKey = labelToKeyMap[sanitized];
+              if (mappedKey && amenitiesObj.hasOwnProperty(mappedKey)) {
+                amenitiesObj[mappedKey] = true;
+              } else {
+                // This is a custom amenity; keep original capitalization
+                if (!customArr.includes(amenity)) customArr.push(amenity);
               }
             });
           }
           setAmenities(amenitiesObj);
+          setCustomAmenities(customArr);
 
           setPhotos(existingListing.images || existingListing.photos || []);
 
@@ -479,6 +503,18 @@ export default function CreateListing() {
     setNewRule('');
   };
 
+  // Custom amenities management
+  const openCustomAmenitiesModal = () => { setShowCustomAmenitiesModal(true); };
+  const closeCustomAmenitiesModal = () => { setShowCustomAmenitiesModal(false); setNewCustomAmenity(''); };
+  const addCustomAmenity = () => {
+    const clean = newCustomAmenity.trim();
+    if (!clean) return;
+    setCustomAmenities(prev => prev.includes(clean) ? prev : [...prev, clean]);
+    setNewCustomAmenity('');
+    setShowCustomAmenitiesModal(false);
+  };
+  const removeCustomAmenity = (index) => setCustomAmenities(prev => prev.filter((_, i) => i !== index));
+
   // Real Google Maps Location Functions
   const openMapModal = async () => {
     setShowMapModal(true);
@@ -580,9 +616,11 @@ export default function CreateListing() {
       petsAllowed: 'Pets Allowed',
     };
 
-    return Object.entries(amenities)
+    const base = Object.entries(amenities)
       .filter(([key, value]) => value)
       .map(([key]) => amenitiesMap[key] || key);
+    const customs = Array.isArray(customAmenities) ? customAmenities.filter(Boolean) : [];
+    return base.concat(customs);
   };
 
   const handleRentChange = (text) => {
@@ -637,6 +675,8 @@ export default function CreateListing() {
         images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
         latitude: selectedLocation?.latitude || 0,
         longitude: selectedLocation?.longitude || 0,
+        // Include timestamp for listings that don't have created_at from DB
+        createdAt: new Date().toISOString(),
       };
 
       console.log(`[validateAndSubmit] Photos array:`, photos);
@@ -646,24 +686,25 @@ export default function CreateListing() {
       let result;
       if ((isEditing || params?.id) && params?.id) {
         result = await updateListingDB(params.id, listingData);
-        if (result.success) {
+          if (result.success) {
           try {
-            const updatedRecord = result.listing || { ...listingData, id: params.id };
+            // Preserve the returned listing with all DB fields including created_at
+            const updatedRecord = result.listing ? {
+              ...result.listing,  // Get all fields from DB response including created_at
+              ...listingData,     // Overlay local data
+            } : { ...listingData, id: params.id };
             if (typeof updateListing === 'function') updateListing(params.id, updatedRecord);
           } catch (err) {
             console.warn('Error updating context after update:', err);
           }
 
-          Alert.alert('Success', 'Listing updated successfully!', [
+            Alert.alert('Success', 'Listing updated successfully!', [
             {
               text: 'OK',
               onPress: () => {
                 resetForm();
-                if (router.canGoBack()) {
-                  router.back();
-                } else {
-                  router.replace('/landlord');
-                }
+                // Redirect to blank Create Listing view (clear edit params)
+                router.replace('/landlord/create-listing');
               },
             },
           ]);
@@ -674,7 +715,21 @@ export default function CreateListing() {
         result = await createListingDB(listingData, currentUser.id);
         if (result.success) {
           try {
-            if (typeof addListing === 'function') addListing(result.listing || { ...listingData });
+            // Preserve the returned listing with all DB fields including created_at
+            // Prioritize DB-returned created_at over local createdAt
+            // Use the DB response directly - it has all fields including created_at
+            const listingToAdd = result.listing || { ...listingData, createdAt: new Date().toISOString() };
+            // Ensure createdAt field exists as fallback
+            if (!listingToAdd.createdAt && listingToAdd.created_at) {
+              listingToAdd.createdAt = listingToAdd.created_at;
+            }
+            console.log('[CreateListing] Listing to add to context:', {
+              id: listingToAdd.id,
+              created_at: listingToAdd.created_at,
+              createdAt: listingToAdd.createdAt,
+              title: listingToAdd.title,
+            });
+            if (typeof addListing === 'function') addListing(listingToAdd);
           } catch (err) {
             console.warn('Error adding created listing to context:', err);
           }
@@ -684,7 +739,8 @@ export default function CreateListing() {
               text: 'OK',
               onPress: () => {
                 resetForm();
-                router.replace('/landlord');
+                // After creation also reset to a blank Create Listing.
+                router.replace('/landlord/create-listing');
               },
             },
           ]);
@@ -700,6 +756,20 @@ export default function CreateListing() {
     }
   };
 
+  // Confirm the listing details before submission
+  const confirmAndSubmitListing = () => {
+    const action = isEditing ? 'update this listing' : 'create this listing';
+    Alert.alert(
+      isEditing ? 'Confirm Update' : 'Confirm Create',
+      isEditing ? 'Are you sure you want to save the changes to this listing?' : 'Are you sure the details are correct? Proceed to create the listing?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Confirm', onPress: () => validateAndSubmit() },
+      ],
+      { cancelable: true }
+    );
+  };
+
   const handleCancel = () => {
     try {
       if (router.canGoBack()) {
@@ -710,6 +780,20 @@ export default function CreateListing() {
     } catch (e) {
       router.replace('/landlord');
     }
+  };
+
+  // Confirm before cancelling (discarding) the form
+  const confirmCancel = () => {
+    const message = isEditing ? 'Discard changes? All unsaved changes will be lost.' : 'Cancel creating listing? Your current inputs will not be saved.';
+    Alert.alert(
+      'Confirm Cancel',
+      message,
+      [
+        { text: 'Continue Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { resetForm(); /* clear params by going to a blank create view */ router.replace('/landlord/create-listing'); } },
+      ],
+      { cancelable: true }
+    );
   };
 
   return (
@@ -724,7 +808,7 @@ export default function CreateListing() {
         )}
 
         <Text style={styles.label}>Title</Text>
-        <TextInput style={styles.input} placeholder="e.g., Cozy 2BR near downtown" value={title} onChangeText={setTitle} />
+        <TextInput style={styles.input} placeholder="e.g., Cozy 2BR near downtown" placeholderTextColor="#999" value={title} onChangeText={setTitle} />
 
         <View style={styles.locationSection}>
           <View style={styles.locationHeader}>
@@ -738,6 +822,7 @@ export default function CreateListing() {
           <TextInput 
             style={styles.input} 
             placeholder="Full address" 
+            placeholderTextColor="#999"
             value={address} 
             onChangeText={setAddress} 
           />
@@ -781,6 +866,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.input}
               placeholder="0"
+              placeholderTextColor="#999"
               keyboardType="numeric"
               value={rent}
               onChangeText={handleRentChange}
@@ -788,7 +874,7 @@ export default function CreateListing() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.label}>Distance</Text>
-            <TextInput style={styles.input} placeholder="e.g., 1.2 km from XU" value={distance} onChangeText={setDistance} />
+            <TextInput style={styles.input} placeholder="e.g., 1.2 km from XU" placeholderTextColor="#999" value={distance} onChangeText={setDistance} />
           </View>
         </View>
 
@@ -798,6 +884,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.input}
               placeholder="e.g., 10"
+              placeholderTextColor="#999"
               keyboardType="number-pad"
               value={totalRooms}
               onChangeText={setTotalRooms}
@@ -808,6 +895,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.input}
               placeholder="e.g., 2"
+              placeholderTextColor="#999"
               keyboardType="number-pad"
               value={availableRooms}
               onChangeText={setAvailableRooms}
@@ -816,7 +904,7 @@ export default function CreateListing() {
         </View>
 
         <Text style={styles.label}>Max Guests per Room</Text>
-        <TextInput style={styles.input} placeholder="e.g., 2" keyboardType="number-pad" value={maxGuests} onChangeText={setMaxGuests} />
+        <TextInput style={styles.input} placeholder="e.g., 2" placeholderTextColor="#999" keyboardType="number-pad" value={maxGuests} onChangeText={setMaxGuests} />
 
         <View style={styles.rowInputs}>
           <View style={{ flex: 1, marginRight: 12 }}>
@@ -824,6 +912,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.input}
               placeholder="e.g., 3"
+              placeholderTextColor="#999"
               keyboardType="number-pad"
               value={bedrooms}
               onChangeText={setBedrooms}
@@ -834,6 +923,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.input}
               placeholder="e.g., 2"
+              placeholderTextColor="#999"
               keyboardType="number-pad"
               value={bathrooms}
               onChangeText={setBathrooms}
@@ -844,11 +934,11 @@ export default function CreateListing() {
         <View style={styles.rowInputs}>
           <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={styles.label}>Size (Sq. Ft.)</Text>
-            <TextInput style={styles.input} placeholder="e.g., 500" keyboardType="number-pad" value={size} onChangeText={setSize} />
+            <TextInput style={styles.input} placeholder="e.g., 500" placeholderTextColor="#999" keyboardType="number-pad" value={size} onChangeText={setSize} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.label}>Min. Stay (Days)</Text>
-            <TextInput style={styles.input} placeholder="e.g., 30" keyboardType="number-pad" value={minStay} onChangeText={setMinStay} />
+            <TextInput style={styles.input} placeholder="e.g., 30" placeholderTextColor="#999" keyboardType="number-pad" value={minStay} onChangeText={setMinStay} />
           </View>
         </View>
 
@@ -880,6 +970,7 @@ export default function CreateListing() {
         <TextInput
           style={[styles.input, { height: 120 }]}
           placeholder="Describe the property, layout, nearby points of interest..."
+          placeholderTextColor="#999"
           value={description}
           onChangeText={setDescription}
           multiline
@@ -897,6 +988,7 @@ export default function CreateListing() {
               <TextInput
                 style={styles.input}
                 placeholder="e.g., Immediately, March 2024"
+                placeholderTextColor="#999"
                 value={availableFrom}
                 onChangeText={setAvailableFrom}
               />
@@ -904,7 +996,13 @@ export default function CreateListing() {
           )}
         </View>
 
-        <Text style={styles.section}>Amenities</Text>
+        <View style={styles.rulesHeader}>
+          <Text style={styles.section}>Amenities</Text>
+          <TouchableOpacity style={styles.addRuleButton} onPress={openCustomAmenitiesModal}>
+            <Ionicons name="add-circle" size={20} color="#667eea" />
+            <Text style={styles.addRuleText}>Add Amenity</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.amenitiesBox}>
           <View style={styles.amenitiesRow}>
             <Text style={styles.amenityText}>Wi-Fi</Text>
@@ -948,6 +1046,20 @@ export default function CreateListing() {
           </View>
         </View>
 
+        {customAmenities.length > 0 && (
+          <View style={styles.rulesList}>
+            {customAmenities.map((amenity, index) => (
+              <View key={index} style={styles.ruleItem}>
+                <Ionicons name="information-circle" size={16} color="#667eea" />
+                <Text style={styles.ruleText}>{amenity}</Text>
+                <TouchableOpacity onPress={() => removeCustomAmenity(index)} style={styles.removeRuleButton}>
+                  <Ionicons name="close-circle" size={16} color="#ef4444" />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+
         <View style={styles.rulesSection}>
           <View style={styles.rulesHeader}>
             <Text style={styles.section}>House Rules</Text>
@@ -981,7 +1093,7 @@ export default function CreateListing() {
           onRemove={removeAt(setPhotos)}
         />
 
-        <TouchableOpacity style={styles.submitBtn} onPress={validateAndSubmit} disabled={isSubmitting}>
+        <TouchableOpacity style={styles.submitBtn} onPress={confirmAndSubmitListing} disabled={isSubmitting}>
           {isSubmitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
@@ -989,7 +1101,7 @@ export default function CreateListing() {
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel}>
+        <TouchableOpacity style={styles.cancelBtn} onPress={confirmCancel}>
           <Text style={styles.cancelText}>
             {isEditing ? 'Cancel Edit' : 'Cancel'}
           </Text>
@@ -1009,6 +1121,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.ruleInput}
               placeholder="Enter a house rule (e.g., No smoking inside rooms)"
+              placeholderTextColor="#999"
               value={newRule}
               onChangeText={setNewRule}
               multiline
@@ -1027,6 +1140,44 @@ export default function CreateListing() {
                 disabled={!newRule.trim()}
               >
                 <Text style={styles.addModalButtonText}>Add Rule</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Custom Amenity Modal */}
+      <Modal
+        visible={showCustomAmenitiesModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={closeCustomAmenitiesModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add Amenity</Text>
+            
+            <TextInput
+              style={styles.ruleInput}
+              placeholder="Enter a custom amenity (e.g., Rooftop Access)"
+              placeholderTextColor="#999"
+              value={newCustomAmenity}
+              onChangeText={setNewCustomAmenity}
+            />
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelModalButton]}
+                onPress={closeCustomAmenitiesModal}
+              >
+                <Text style={styles.cancelModalButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.addModalButton]}
+                onPress={() => { addCustomAmenity(); closeCustomAmenitiesModal(); }}
+                disabled={!newCustomAmenity.trim()}
+              >
+                <Text style={styles.addModalButtonText}>Add Amenity</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1057,6 +1208,7 @@ export default function CreateListing() {
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search address or place..."
+                placeholderTextColor="#999"
                 value={mapAddress}
                 onChangeText={setMapAddress}
                 onSubmitEditing={handleAddressSearch}

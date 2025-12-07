@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -33,6 +33,14 @@ import {
   getListingReviews,
 } from '../../lib/supabaseClient';
 
+// Lazy load Calendar to avoid issues on initial render
+let Calendar = null;
+try {
+  Calendar = require('react-native-calendars').Calendar;
+} catch (e) {
+  console.warn('Calendar component not available:', e);
+}
+
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 // AsyncStorage Keys for local messages (temporary local storage until synced with database)
@@ -52,15 +60,57 @@ export default function BoardingHouseDetails() {
   const [inquiryMessage, setInquiryMessage] = useState('');
   const [bookingDate, setBookingDate] = useState('');
   const [bookingGuests, setBookingGuests] = useState('1');
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [userRating, setUserRating] = useState(0);
   const [userReview, setUserReview] = useState('');
+  const [hasUserReviewed, setHasUserReviewed] = useState(false);
   const [house, setHouse] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [tenantProfileId, setTenantProfileId] = useState(null);
   const scrollViewRef = useRef(null);
   const imageScrollViewRef = useRef(null);
+  
+  // Refs for text inputs to prevent keyboard reset
+  const inquiryMessageRef = useRef(inquiryMessage);
+  const userReviewRef = useRef(userReview);
+  const bookingGuestsRef = useRef(bookingGuests);
+  const bookingDateRef = useRef(bookingDate);
+
+  // Sync refs with state when modals open
+  useEffect(() => {
+    if (showInquiryModal) inquiryMessageRef.current = inquiryMessage;
+  }, [showInquiryModal]);
+  
+  useEffect(() => {
+    if (showAddReviewModal) userReviewRef.current = userReview;
+  }, [showAddReviewModal]);
+  
+  useEffect(() => {
+    if (showBookingModal) {
+      bookingGuestsRef.current = bookingGuests;
+      bookingDateRef.current = bookingDate;
+    }
+  }, [showBookingModal]);
+
+  // Handlers that update refs immediately but delay state updates
+  const handleInquiryChange = useCallback((text) => {
+    inquiryMessageRef.current = text;
+  }, []);
+
+  const handleReviewChange = useCallback((text) => {
+    userReviewRef.current = text;
+  }, []);
+
+  const handleGuestsChange = useCallback((text) => {
+    bookingGuestsRef.current = text;
+  }, []);
+
+  const handleBookingDateChange = useCallback((text) => {
+    bookingDateRef.current = text;
+  }, []);
 
   // Safe house data access with fallbacks
   const getHouseImages = () => house?.images || [];
@@ -135,10 +185,15 @@ export default function BoardingHouseDetails() {
   const getHouseReviewsCount = () => house?.total_reviews || 0;
   const getHouseAvailable = () => house?.available !== undefined ? house.available : true;
   const getHouseAvailableFrom = () => house?.available_from || '';
-  const getHouseLocationData = () => ({
-    latitude: house?.latitude,
-    longitude: house?.longitude,
-  });
+  const getHouseLocationData = () => {
+    if (house?.latitude && house?.longitude) {
+      return {
+        latitude: house.latitude,
+        longitude: house.longitude,
+      };
+    }
+    return null;
+  };
 
   // Updated to match Landlord Profile logic exactly
   const getLandlord = () => {
@@ -271,8 +326,15 @@ export default function BoardingHouseDetails() {
           property_size: listing.property_size,
           total_rooms: listing.total_rooms,
           available_rooms: listing.available_rooms,
+          // Timestamp
+          created_at: listing.created_at,
+          createdAt: listing.created_at,
         };
         console.log(`[boarding-house-details] Loaded listing: ${transformedListing.title}, room_type: ${listing.room_type}, property_type: ${listing.property_type}, friendly type: ${getHouseType()}, Images:`, transformedListing.images);
+        console.log(`[boarding-house-details] Listing timestamps:`, {
+          created_at: transformedListing.created_at,
+          createdAt: transformedListing.createdAt,
+        });
         setHouse(transformedListing);
       } else {
         Alert.alert('Error', error || 'Failed to load listing details');
@@ -292,6 +354,14 @@ export default function BoardingHouseDetails() {
       const { success: reviewsSuccess, reviews: reviewsData } = await getListingReviews(house.id);
       if (reviewsSuccess && reviewsData) {
         setReviews(reviewsData);
+        
+        // Check if current user has already reviewed this property
+        if (currentUser) {
+          const userHasReviewed = reviewsData.some(
+            review => review.reviewer_id === currentUser.id
+          );
+          setHasUserReviewed(userHasReviewed);
+        }
       }
     } catch (e) {
       console.error('Failed to load reviews', e);
@@ -338,12 +408,14 @@ export default function BoardingHouseDetails() {
 
   // Function to submit review
   const submitReview = async () => {
+    const reviewText = userReviewRef.current;
+    
     if (userRating === 0) {
       Alert.alert('Rating Required', 'Please select a rating before submitting your review.');
       return;
     }
 
-    if (userReview.trim().length < 10) {
+    if (!reviewText || reviewText.trim().length < 10) {
       Alert.alert('Review Too Short', 'Please write a more detailed review (at least 10 characters).');
       return;
     }
@@ -361,7 +433,7 @@ export default function BoardingHouseDetails() {
         bookingId: null,
         rating: userRating,
         title: `Review of ${getHouseName()}`,
-        reviewText: userReview,
+        reviewText: reviewText,
       };
 
       const { success, error } = await createReview(reviewData);
@@ -369,8 +441,9 @@ export default function BoardingHouseDetails() {
       if (success) {
         // Update local state
         setUserRating(0);
-        setUserReview('');
+        userReviewRef.current = '';
         setShowAddReviewModal(false);
+        setHasUserReviewed(true);
 
         Alert.alert('Review Submitted', 'Thank you for your review!');
         // Reload reviews
@@ -393,8 +466,11 @@ export default function BoardingHouseDetails() {
   // Function to handle image scroll in modal
   const handleModalImageScroll = (event) => {
     const contentOffsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(contentOffsetX / screenWidth);
-    setActiveImageIndex(index);
+    // Use same calculation as main carousel for consistency
+    const index = Math.floor((contentOffsetX + screenWidth / 2) / screenWidth);
+    const maxIndex = getHouseImages().length - 1;
+    const clampedIndex = Math.max(0, Math.min(index, maxIndex));
+    setActiveImageIndex(clampedIndex);
   };
 
   // Function to navigate to specific image in modal
@@ -404,6 +480,13 @@ export default function BoardingHouseDetails() {
       imageScrollViewRef.current.scrollTo({ x: index * screenWidth, animated: true });
     }
   };
+
+  // When modal opens, ensure we scroll to the active image
+  useEffect(() => {
+    if (showImageModal && imageScrollViewRef.current) {
+      imageScrollViewRef.current.scrollTo({ x: activeImageIndex * screenWidth, animated: false });
+    }
+  }, [showImageModal, activeImageIndex]);
 
   // Function to open map modal
   const openMapModal = () => {
@@ -562,24 +645,26 @@ export default function BoardingHouseDetails() {
             style={styles.allReviewsList}
           />
           
-          {/* Add Review Button */}
-          <TouchableOpacity 
-            style={styles.addReviewFloatingButton}
-            onPress={() => {
-              setShowAllReviewsModal(false);
-              setShowAddReviewModal(true);
-            }}
-          >
-            <Ionicons name="pencil" size={20} color="white" />
-            <Text style={styles.addReviewFloatingText}>Write a Review</Text>
-          </TouchableOpacity>
+          {/* Add Review Button - only show if user hasn't reviewed */}
+          {!hasUserReviewed && (
+            <TouchableOpacity 
+              style={styles.addReviewFloatingButton}
+              onPress={() => {
+                setShowAllReviewsModal(false);
+                setShowAddReviewModal(true);
+              }}
+            >
+              <Ionicons name="pencil" size={20} color="white" />
+              <Text style={styles.addReviewFloatingText}>Write a Review</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Modal>
   );
 
-  // Function to render add review modal
-  const renderAddReviewModal = () => (
+  // Memoized add review modal to prevent keyboard reset
+  const renderAddReviewModal = useMemo(() => (
     <Modal
       visible={showAddReviewModal}
       animationType="slide"
@@ -606,8 +691,9 @@ export default function BoardingHouseDetails() {
             multiline
             numberOfLines={6}
             placeholder="Share details of your own experience at this property..."
-            value={userReview}
-            onChangeText={setUserReview}
+            placeholderTextColor="#999"
+            defaultValue=""
+            onChangeText={handleReviewChange}
             textAlignVertical="top"
           />
           
@@ -617,7 +703,7 @@ export default function BoardingHouseDetails() {
               onPress={() => {
                 setShowAddReviewModal(false);
                 setUserRating(0);
-                setUserReview('');
+                userReviewRef.current = '';
               }}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -632,7 +718,183 @@ export default function BoardingHouseDetails() {
         </View>
       </View>
     </Modal>
-  );
+  ), [showAddReviewModal, userRating]);
+
+  // Memoized inquiry modal to prevent keyboard reset
+  const renderInquiryModal = useMemo(() => (
+    <Modal
+      visible={showInquiryModal}
+      animationType="slide"
+      transparent={true}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Express Interest</Text>
+          <Text style={styles.modalSubtitle}>
+            Send a message to {getLandlord().name} about {getHouseName()}
+          </Text>
+          
+          <TextInput
+            style={styles.messageInput}
+            multiline
+            numberOfLines={4}
+            placeholder="Tell the landlord why you're interested... (optional)"
+            placeholderTextColor="#999"
+            defaultValue=""
+            onChangeText={handleInquiryChange}
+          />
+          
+          <View style={styles.modalButtons}>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.cancelButton]}
+              onPress={() => {
+                setShowInquiryModal(false);
+                inquiryMessageRef.current = '';
+              }}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.submitButton]}
+              onPress={submitInquiry}
+            >
+              <Text style={styles.submitButtonText}>Send Interest</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  ), [showInquiryModal]);
+
+  // Memoized booking modal to prevent keyboard reset
+  const renderBookingModal = useMemo(() => (
+    <Modal
+      visible={showBookingModal}
+      animationType="slide"
+      transparent={true}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={[styles.modalContent, showCalendar && styles.modalContentExpanded]}>
+          <Text style={styles.modalTitle}>Ready to Book</Text>
+          <Text style={styles.modalSubtitle}>
+            Send booking request for {getHouseName()}
+          </Text>
+          
+          <View style={styles.priceSection}>
+            <Text style={styles.priceLabel}>Monthly Rate:</Text>
+            <Text style={styles.priceValue}>₱{getHousePrice()}/month</Text>
+          </View>
+          
+          <ScrollView style={styles.bookingFormScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.bookingForm}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Preferred Move-in Date</Text>
+                <TouchableOpacity 
+                  style={styles.datePickerButton}
+                  onPress={() => setShowCalendar(!showCalendar)}
+                >
+                  <Ionicons name="calendar" size={20} color="#667eea" />
+                  <Text style={[styles.datePickerText, !selectedDate && styles.datePickerPlaceholder]}>
+                    {selectedDate ? new Date(selectedDate).toLocaleDateString('en-US', { 
+                      weekday: 'short', 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric' 
+                    }) : 'Select a date'}
+                  </Text>
+                  <Ionicons name={showCalendar ? "chevron-up" : "chevron-down"} size={20} color="#666" />
+                </TouchableOpacity>
+                
+                {showCalendar && (
+                  <View style={styles.calendarContainer}>
+                    {Calendar ? (
+                      <Calendar
+                        key="booking-calendar"
+                        current={selectedDate || new Date().toISOString().split('T')[0]}
+                        minDate={new Date().toISOString().split('T')[0]}
+                        onDayPress={(day) => {
+                          setSelectedDate(day.dateString);
+                          setBookingDate(day.dateString);
+                          bookingDateRef.current = day.dateString;
+                          setShowCalendar(false);
+                        }}
+                        markedDates={selectedDate ? {
+                          [selectedDate]: {
+                            selected: true,
+                            selectedColor: '#667eea',
+                          },
+                        } : {}}
+                        theme={{
+                          backgroundColor: '#ffffff',
+                          calendarBackground: '#ffffff',
+                          textSectionTitleColor: '#666666',
+                          selectedDayBackgroundColor: '#667eea',
+                          selectedDayTextColor: '#ffffff',
+                          todayTextColor: '#667eea',
+                          dayTextColor: '#333333',
+                          textDisabledColor: '#d9e1e8',
+                          dotColor: '#667eea',
+                          selectedDotColor: '#ffffff',
+                          arrowColor: '#667eea',
+                          monthTextColor: '#333333',
+                          indicatorColor: '#667eea',
+                        }}
+                        style={styles.calendar}
+                        hideExtraDays={true}
+                        enableSwipeMonths={true}
+                      />
+                    ) : (
+                      <View style={styles.fallbackDatePicker}>
+                        <TextInput
+                          style={styles.textInput}
+                          placeholder="YYYY-MM-DD"
+                          placeholderTextColor="#999"
+                          defaultValue=""
+                          onChangeText={handleBookingDateChange}
+                        />
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Number of Guests</Text>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="1"
+                  placeholderTextColor="#999"
+                  keyboardType="numeric"
+                  defaultValue="1"
+                  onChangeText={handleGuestsChange}
+                />
+              </View>
+            </View>
+          </ScrollView>
+          
+          <View style={styles.modalButtons}>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.cancelButton]}
+              onPress={() => {
+                setShowBookingModal(false);
+                setShowCalendar(false);
+                bookingGuestsRef.current = '1';
+                bookingDateRef.current = '';
+              }}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.submitButton]}
+              onPress={confirmBooking}
+            >
+              <Text style={styles.submitButtonText}>Request Booking</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  ), [showBookingModal, selectedDate, showCalendar]);
 
   // Existing functions with safe property access
   const handleCallLandlord = () => {
@@ -658,8 +920,13 @@ export default function BoardingHouseDetails() {
 
   const handleImageScroll = (event) => {
     const contentOffsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(contentOffsetX / screenWidth);
-    setActiveImageIndex(index);
+    // Use floor to determine which page we're primarily viewing
+    // Add half screenWidth to round to nearest page
+    const index = Math.floor((contentOffsetX + screenWidth / 2) / screenWidth);
+    const maxIndex = getHouseImages().length - 1;
+    // Clamp to valid range
+    const clampedIndex = Math.max(0, Math.min(index, maxIndex));
+    setActiveImageIndex(clampedIndex);
   };
 
   const handleShare = async () => {
@@ -681,7 +948,7 @@ export default function BoardingHouseDetails() {
 
   const submitInquiry = () => {
     const landlord = getLandlord();
-    const messageText = inquiryMessage || `I'm interested in ${getHouseName()}. Can you provide more details?`;
+    const messageText = inquiryMessageRef.current || `I'm interested in ${getHouseName()}. Can you provide more details?`;
 
     if (!tenantProfileId || !house?.landlord_profile?.id) {
       Alert.alert('Error', 'Unable to send inquiry. Missing profile information.');
@@ -706,7 +973,7 @@ export default function BoardingHouseDetails() {
 
         Alert.alert('Inquiry Sent!', `Your interest in ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
         setShowInquiryModal(false);
-        setInquiryMessage('');
+        inquiryMessageRef.current = '';
 
         router.push({
           pathname: '/(tenant)/chat',
@@ -731,7 +998,9 @@ export default function BoardingHouseDetails() {
 
   const submitBooking = async () => {
     const landlord = getLandlord();
-    const messageText = `I'd like to book ${getHouseName()} on ${bookingDate || 'N/A'} for ${bookingGuests} guest(s). Please confirm availability.`;
+    const dateValue = bookingDateRef.current || selectedDate || 'N/A';
+    const guestsValue = bookingGuestsRef.current || '1';
+    const messageText = `I'd like to book ${getHouseName()} on ${dateValue} for ${guestsValue} guest(s). Please confirm availability.`;
 
     try {
       if (!currentUser) {
@@ -794,6 +1063,19 @@ export default function BoardingHouseDetails() {
     }
   };
 
+  // Show a confirmation dialog before proceeding to submit booking
+  const confirmBooking = () => {
+    Alert.alert(
+      'Confirm Booking',
+      'Are you sure the details are right?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Confirm', onPress: () => submitBooking() },
+      ],
+      { cancelable: true }
+    );
+  };
+
   const handleViewLandlordProfile = () => {
     const landlord = getLandlord();
     const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
@@ -842,6 +1124,7 @@ export default function BoardingHouseDetails() {
 
   return (
     <View style={styles.container}>
+      <WrapPrimitiveChildren>
       
       {/* Header */}
       <View style={styles.header}>
@@ -866,7 +1149,7 @@ export default function BoardingHouseDetails() {
       </View>
 
       {/* Content */}
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} nestedScrollEnabled={true} directionalLockEnabled={true}>
         
         {/* Image Section */}
         <View style={styles.imageSection}>
@@ -877,19 +1160,20 @@ export default function BoardingHouseDetails() {
             showsHorizontalScrollIndicator={false}
             onScroll={handleImageScroll}
             scrollEventThrottle={16}
+            nestedScrollEnabled={true}
+            directionalLockEnabled={true}
           >
             {getHouseImages().map((image, index) => (
-              <TouchableOpacity 
+              <View
                 key={index}
-                activeOpacity={0.9}
-                onPress={() => openImageModal(index)}
+                onTouchEnd={() => openImageModal(index)}
               >
                 <CachedRemoteImage
                   uri={image}
                   style={styles.houseImage}
                   placeholder={null}
                 />
-              </TouchableOpacity>
+              </View>
             ))}
           </ScrollView>
           
@@ -945,6 +1229,19 @@ export default function BoardingHouseDetails() {
             </View>
             <Text style={styles.houseType}>{getHouseType()}</Text>
           </View>
+
+          {(house?.created_at || house?.createdAt) && (
+            <View style={styles.createdAtContainer}>
+              <Ionicons name="calendar-outline" size={16} color="#666" />
+              <Text style={styles.createdAtText}>
+                Listed on {new Date(house.created_at || house.createdAt).toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                })}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Quick Actions */}
@@ -966,11 +1263,17 @@ export default function BoardingHouseDetails() {
           </TouchableOpacity>
           
           <TouchableOpacity 
-            style={styles.quickActionButton}
-            onPress={() => setShowAddReviewModal(true)}
+            style={[styles.quickActionButton, hasUserReviewed && styles.quickActionButtonDisabled]}
+            onPress={() => {
+              if (hasUserReviewed) {
+                Alert.alert('Already Reviewed', 'You have already submitted a review for this property.');
+              } else {
+                setShowAddReviewModal(true);
+              }
+            }}
           >
-            <Ionicons name="star-outline" size={20} color="#667eea" />
-            <Text style={styles.quickActionText}>Rate</Text>
+            <Ionicons name={hasUserReviewed ? "checkmark-circle" : "star-outline"} size={20} color={hasUserReviewed ? "#10b981" : "#667eea"} />
+            <Text style={[styles.quickActionText, hasUserReviewed && styles.quickActionTextDisabled]}>{hasUserReviewed ? "Reviewed" : "Rate"}</Text>
           </TouchableOpacity>
         </View>
 
@@ -1184,13 +1487,15 @@ export default function BoardingHouseDetails() {
             <View style={styles.noReviews}>
               <Ionicons name="star-outline" size={48} color="#ccc" />
               <Text style={styles.noReviewsText}>No reviews yet</Text>
-              <Text style={styles.noReviewsSubtext}>Be the first to review this property</Text>
-              <TouchableOpacity 
-                style={styles.addFirstReviewButton}
-                onPress={() => setShowAddReviewModal(true)}
-              >
-                <Text style={styles.addFirstReviewText}>Write First Review</Text>
-              </TouchableOpacity>
+              <Text style={styles.noReviewsSubtext}>{hasUserReviewed ? 'You have already reviewed this property' : 'Be the first to review this property'}</Text>
+              {!hasUserReviewed && (
+                <TouchableOpacity 
+                  style={styles.addFirstReviewButton}
+                  onPress={() => setShowAddReviewModal(true)}
+                >
+                  <Text style={styles.addFirstReviewText}>Write First Review</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
         </View>
@@ -1219,6 +1524,8 @@ export default function BoardingHouseDetails() {
             onScroll={handleModalImageScroll}
             scrollEventThrottle={16}
             style={styles.imageModalScrollView}
+            nestedScrollEnabled={true}
+            directionalLockEnabled={true}
           >
             {getHouseImages().map((image, index) => (
               <View key={index} style={styles.fullScreenImageContainer}>
@@ -1310,106 +1617,13 @@ export default function BoardingHouseDetails() {
       {renderAllReviewsModal()}
 
       {/* Add Review Modal */}
-      {renderAddReviewModal()}
+      {renderAddReviewModal}
 
       {/* Inquiry Modal */}
-      <Modal
-        visible={showInquiryModal}
-        animationType="slide"
-        transparent={true}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Express Interest</Text>
-            <Text style={styles.modalSubtitle}>
-              Send a message to {getLandlord().name} about {getHouseName()}
-            </Text>
-            
-            <TextInput
-              style={styles.messageInput}
-              multiline
-              numberOfLines={4}
-              placeholder="Tell the landlord why you're interested... (optional)"
-              value={inquiryMessage}
-              onChangeText={setInquiryMessage}
-            />
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]}
-                onPress={() => setShowInquiryModal(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.submitButton]}
-                onPress={submitInquiry}
-              >
-                <Text style={styles.submitButtonText}>Send Interest</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {renderInquiryModal}
 
       {/* Booking Modal */}
-      <Modal
-        visible={showBookingModal}
-        animationType="slide"
-        transparent={true}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Ready to Book</Text>
-            <Text style={styles.modalSubtitle}>
-              Send booking request for {getHouseName()}
-            </Text>
-            
-            <View style={styles.priceSection}>
-              <Text style={styles.priceLabel}>Monthly Rate:</Text>
-              <Text style={styles.priceValue}>₱{getHousePrice()}/month</Text>
-            </View>
-            
-            <View style={styles.bookingForm}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Preferred Move-in Date</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="YYYY-MM-DD"
-                  value={bookingDate}
-                  onChangeText={setBookingDate}
-                />
-              </View>
-              
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Number of Guests</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="1"
-                  keyboardType="numeric"
-                  value={bookingGuests}
-                  onChangeText={setBookingGuests}
-                />
-              </View>
-            </View>
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]}
-                onPress={() => setShowBookingModal(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.submitButton]}
-                onPress={submitBooking}
-              >
-                <Text style={styles.submitButtonText}>Request Booking</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {renderBookingModal}
 
       {/* Bottom Action Bar */}
       <View style={styles.bottomActionBar}>
@@ -1437,7 +1651,8 @@ export default function BoardingHouseDetails() {
           <Text style={styles.bookButtonText}>Book Now</Text>
         </TouchableOpacity>
       </View>
-    </View>
+      </WrapPrimitiveChildren>
+      </View>
   );
 }
 
@@ -1586,6 +1801,24 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 16,
   },
+  createdAtContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#f0f9ff',
+    borderRadius: 8,
+    marginTop: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#667eea',
+  },
+  createdAtText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+    flex: 1,
+  },
   quickActions: {
     flexDirection: 'row',
     padding: 20,
@@ -1600,11 +1833,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e5e5e5',
   },
+  quickActionButtonDisabled: {
+    backgroundColor: '#f0fdf4',
+    borderColor: '#10b981',
+  },
   quickActionText: {
     marginTop: 4,
     fontSize: 12,
     color: '#667eea',
     fontWeight: '500',
+  },
+  quickActionTextDisabled: {
+    color: '#10b981',
   },
   sectionTitle: {
     fontSize: 20,
@@ -2254,6 +2494,9 @@ const styles = StyleSheet.create({
     gap: 16,
     marginBottom: 20,
   },
+  bookingFormScroll: {
+    maxHeight: 400,
+  },
   inputGroup: {
     gap: 8,
   },
@@ -2268,6 +2511,41 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
+  },
+  datePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 12,
+    padding: 16,
+    backgroundColor: '#fff',
+    gap: 10,
+  },
+  datePickerText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#333',
+  },
+  datePickerPlaceholder: {
+    color: '#999',
+  },
+  calendarContainer: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+  },
+  calendar: {
+    borderRadius: 12,
+  },
+  fallbackDatePicker: {
+    padding: 8,
+  },
+  modalContentExpanded: {
+    maxHeight: '85%',
   },
   modalButtons: {
     flexDirection: 'row',

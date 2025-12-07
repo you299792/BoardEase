@@ -969,6 +969,7 @@ export default function FinancialsScreen() {
               <TextInput 
                 style={styles.textInput} 
                 placeholder="Enter landlord's account number" 
+                placeholderTextColor="#999"
                 keyboardType="numeric"
                 value={paymentDetails.landlordNumber || ''}
                 onChangeText={t => setPaymentDetails(p => ({...p, landlordNumber: t}))}
@@ -980,6 +981,7 @@ export default function FinancialsScreen() {
               <TextInput 
                 style={styles.textInput} 
                 placeholder="Enter your account number" 
+                placeholderTextColor="#999"
                 keyboardType="numeric"
                 value={paymentDetails.accountNumber}
                 onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}

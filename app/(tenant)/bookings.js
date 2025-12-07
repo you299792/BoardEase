@@ -330,6 +330,7 @@ export default function Bookings() {
                 multiline
                 numberOfLines={3}
                 placeholder="Please provide a reason..."
+                placeholderTextColor="#999"
                 value={cancelReason}
                 onChangeText={setCancelReason}
               />
