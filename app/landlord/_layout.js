@@ -206,6 +206,7 @@ export default function LandlordLayout() {
         <Tabs.Screen name="AuthContext" options={{ href: null }} />
         <Tabs.Screen name="tenantprofile" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="verify" options={{ href: null, headerShown: false }} />
+        <Tabs.Screen name="premium" options={{ href: null, headerShown: false }} />
       </Tabs>
     </GlobalListingContext.Provider>
   );
