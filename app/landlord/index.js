@@ -26,6 +26,8 @@ import {
   deleteListing as deleteListingFromDB,
   getLandlordReviews,
   supabase,
+  getLandlordSubscription,
+  getListingLimitForPlan,
 } from '../../lib/supabaseClient';
 import ListingStatsModal from '../../components/ListingStatsModal';
 import CachedRemoteImage from '../../components/CachedRemoteImage';
@@ -43,6 +45,7 @@ export default function LandlordPortal() {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [reviews, setReviews] = useState([]);
   const [inquiries, setInquiries] = useState([]);
+  const [totalInquiries, setTotalInquiries] = useState([]);
   const [showAllReviewsModal, setShowAllReviewsModal] = useState(false);
   const [showMapModal, setShowMapModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
@@ -95,7 +98,29 @@ export default function LandlordPortal() {
         const { success, listings: dbListings, error } = await getLandlordListings(user.id);
         
         if (success) {
-          setListings(dbListings || []);
+          // Apply plan-based filtering: mark excess listings as unavailable
+          let allListings = dbListings || [];
+          try {
+            const { success: subSuccess, plan } = await getLandlordSubscription(user.id);
+            if (subSuccess) {
+              const limit = getListingLimitForPlan(plan);
+              
+              if (limit !== Infinity && allListings.length > limit) {
+                // Mark listings beyond the plan limit as unavailable
+                allListings = allListings.map((listing, index) => ({
+                  ...listing,
+                  isUnavailableByPlan: index >= limit,
+                }));
+                
+                console.log(`[Dashboard] Applied ${plan} plan limit of ${limit}. Marked ${allListings.length - limit} listings as unavailable.`);
+              }
+            }
+          } catch (err) {
+            console.warn('[Dashboard] Error applying plan limits:', err);
+            // If plan check fails, show all listings as available
+          }
+          
+          setListings(allListings);
         } else {
           Alert.alert('Error', error || 'Failed to load listings');
           setListings([]);
@@ -107,6 +132,12 @@ export default function LandlordPortal() {
           if (reviewsSuccess) {
             setReviews(dbReviews || []);
           }
+        }
+        
+        // Get all inquiries for the landlord
+        const { success: inquiriesSuccess, inquiries: dbInquiries } = await getLandlordInquiries(user.id);
+        if (inquiriesSuccess) {
+          setTotalInquiries(dbInquiries || []);
         }
       }
     } catch (error) {
@@ -130,7 +161,31 @@ export default function LandlordPortal() {
           onPress: async () => {
             const { success, error } = await deleteListingFromDB(id);
             if (success) {
-              setListings(listings.filter(l => l.id !== id));
+              const filteredListings = listings.filter(l => l.id !== id);
+              
+              // Recalculate isUnavailableByPlan flags after deletion
+              try {
+                const { success: subSuccess, plan } = await getLandlordSubscription(user.id);
+                if (subSuccess) {
+                  const limit = getListingLimitForPlan(plan);
+                  if (limit !== Infinity && filteredListings.length > limit) {
+                    const recalculatedListings = filteredListings.map((listing, index) => ({
+                      ...listing,
+                      isUnavailableByPlan: index >= limit,
+                    }));
+                    setListings(recalculatedListings);
+                  } else {
+                    // All listings are now available
+                    setListings(filteredListings.map(l => ({ ...l, isUnavailableByPlan: false })));
+                  }
+                } else {
+                  setListings(filteredListings);
+                }
+              } catch (err) {
+                console.warn('[Delete] Error recalculating plan limits:', err);
+                setListings(filteredListings);
+              }
+              
               Alert.alert('Success', 'Property deleted successfully');
             } else {
               Alert.alert('Error', error || 'Failed to delete property');
@@ -810,7 +865,7 @@ export default function LandlordPortal() {
                   onPress={() => setShowInquiriesModal(true)}
                 >
                   <Ionicons name="chatbubble-ellipses" size={20} color="#667eea" />
-                  <Text style={styles.quickActionText}>Inquiries ({inquiries.length})</Text>
+                  <Text style={styles.quickActionText}>Inquiries ({totalInquiries.length})</Text>
                 </TouchableOpacity>
                 
                 <TouchableOpacity 
@@ -989,7 +1044,7 @@ export default function LandlordPortal() {
               </View>
               <View style={styles.statCard}>
                 <Feather name="message-square" size={22} color={Colors.primary} />
-                <Text style={styles.statValue}>{inquiries.length}</Text>
+                <Text style={styles.statValue}>{totalInquiries.length}</Text>
                 <Text style={styles.statLabel}>Inquiries</Text>
               </View>
               <View style={styles.statCard}>
@@ -1006,14 +1061,32 @@ export default function LandlordPortal() {
             <View style={styles.listingsRow}>
               {previewListings.map((listing) => {
                 const isAvailable = listing.available !== undefined ? listing.available : (listing.status === 'available');
+                const isUnavailableByPlan = listing.isUnavailableByPlan === true;
 
                 return (
                   <View key={listing.id} style={styles.card}>
                     <TouchableOpacity 
-                      style={styles.cardClickable}
-                      onPress={() => handleShowListingOverlay(listing)}
+                      style={[
+                        styles.cardClickable,
+                        isUnavailableByPlan && styles.cardClickableDisabled,
+                      ]}
+                      onPress={() => {
+                        if (isUnavailableByPlan) {
+                          router.push('/landlord/premium');
+                        } else {
+                          handleShowListingOverlay(listing);
+                        }
+                      }}
                     >
-                      <CachedRemoteImage uri={listing.images?.[0] || PLACEHOLDER_IMAGE} style={styles.cardImage} placeholder={PLACEHOLDER_IMAGE} />
+                      <View style={isUnavailableByPlan && styles.imageOverlay}>
+                        <CachedRemoteImage uri={listing.images?.[0] || PLACEHOLDER_IMAGE} style={styles.cardImage} placeholder={PLACEHOLDER_IMAGE} />
+                        {isUnavailableByPlan && (
+                          <View style={styles.lockedOverlay}>
+                            <Ionicons name="lock-closed" size={40} color="white" />
+                            <Text style={styles.lockedText}>Upgrade Plan</Text>
+                          </View>
+                        )}
+                      </View>
                       <View style={styles.cardBody}>
                         <Text style={styles.cardTitle} numberOfLines={1}>{listing.title}</Text>
                         <Text style={styles.cardSub} numberOfLines={1}>{listing.city}</Text>
@@ -1021,34 +1094,40 @@ export default function LandlordPortal() {
                         <View style={styles.statusContainer}>
                           <View style={[
                             styles.statusBadge,
-                            { backgroundColor: isAvailable ? '#10b98120' : '#ef444420' }
+                            isUnavailableByPlan
+                              ? { backgroundColor: '#f3f4f620' }
+                              : { backgroundColor: isAvailable ? '#10b98120' : '#ef444420' }
                           ]}>
                             <Text style={[
                               styles.statusText,
-                              { color: isAvailable ? '#10b981' : '#ef4444' }
+                              isUnavailableByPlan
+                                ? { color: '#9ca3af' }
+                                : { color: isAvailable ? '#10b981' : '#ef4444' }
                             ]}>
-                              {isAvailable ? 'Available' : 'Occupied'}
+                              {isUnavailableByPlan ? 'Unavailable (Upgrade Plan)' : (isAvailable ? 'Available' : 'Occupied')}
                             </Text>
                           </View>
                         </View>
                       </View>
                     </TouchableOpacity>
-                    <View style={styles.cardActions}>
-                      <TouchableOpacity style={styles.editButton} onPress={() => handleEditListing(listing.id)}>
-                        <Feather name="edit" size={20} color={Colors.primary} />
-                      </TouchableOpacity>
+                    {!isUnavailableByPlan && (
+                      <View style={styles.cardActions}>
+                        <TouchableOpacity style={styles.editButton} onPress={() => handleEditListing(listing.id)}>
+                          <Feather name="edit" size={20} color={Colors.primary} />
+                        </TouchableOpacity>
 
-                      <TouchableOpacity style={[styles.deleteButton, { marginBottom: 8 }]} onPress={() => handleDeleteListing(listing.id)}>
-                        <Feather name="trash-2" size={20} color="#ef4444" />
-                      </TouchableOpacity>
+                        <TouchableOpacity style={[styles.deleteButton, { marginBottom: 8 }]} onPress={() => handleDeleteListing(listing.id)}>
+                          <Feather name="trash-2" size={20} color="#ef4444" />
+                        </TouchableOpacity>
 
-                      <TouchableOpacity
-                        style={styles.toggleButton}
-                        onPress={() => toggleAvailability(listing)}
-                      >
-                        <Ionicons name={isAvailable ? "close-circle" : "checkmark-circle"} size={20} color={isAvailable ? "#ef4444" : "#10b981"} />
-                      </TouchableOpacity>
-                    </View>
+                        <TouchableOpacity
+                          style={styles.toggleButton}
+                          onPress={() => toggleAvailability(listing)}
+                        >
+                          <Ionicons name={isAvailable ? "close-circle" : "checkmark-circle"} size={20} color={isAvailable ? "#ef4444" : "#10b981"} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 );
               })}
@@ -1131,7 +1210,26 @@ const styles = StyleSheet.create({
   listingsRow: {},
   card: { backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden', marginBottom: 16, flexDirection: 'row' },
   cardClickable: { flexDirection: 'row', flex: 1 },
+  cardClickableDisabled: { opacity: 0.6 },
+  imageOverlay: { position: 'relative' },
   cardImage: { width: 100, height: 100, borderRadius: 8, backgroundColor: '#f0f0f0' },
+  lockedOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  lockedText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: '600',
+    marginTop: 4,
+  },
   cardBody: { flex: 1, padding: 12, justifyContent: 'center' },
   cardTitle: { fontSize: 16, fontWeight: 'bold', color: '#1a202c' },
   cardSub: { color: '#777', marginTop: 4, fontSize: 12 },
