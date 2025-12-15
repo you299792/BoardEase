@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { Colors } from '../../constants/Colors';
 import ShareProfileModal from '../../components/ShareProfileModal';
-import { getCurrentUser, signOut, getLandlordProfile } from '../../lib/supabaseClient';
+import { getCurrentUser, signOut, getLandlordProfile, handleInvalidSession } from '../../lib/supabaseClient';
 
 export default function LandlordMenuScreen() {
   const [userData, setUserData] = useState(null);
@@ -90,6 +90,13 @@ export default function LandlordMenuScreen() {
       description: 'Verify your account status',
       screen: 'verify',
     },
+    
+    {
+      icon: 'diamond',
+      title: 'Premium',
+      description: 'Upgrade to unlock more features',
+      screen: 'premium',
+    },
   
     {
       icon: 'people', 
@@ -130,22 +137,41 @@ export default function LandlordMenuScreen() {
   ];
 
   const handleMenuPress = (item) => {
-    if (item.screen === 'profile') {
-      router.push('/landlord/edit-profile');
-    } else if (item.screen === 'verify') {
-      router.push('/landlord/verify'); // Navigates to the new verify.js file
-    } else if (item.screen === 'tenants') {
-      router.push('/landlord/tenants');
-    } else if (item.screen === 'inquiries') {
-      router.push('/landlord/inquiries');
-    } else if (item.screen === 'financials') {
-      router.push('/landlord/financials');
-    } else if (item.screen === 'settings') {
-      router.push('/landlord/settings');
-    } else if (item.screen === 'payment-methods') {
-      router.push('/landlord/payment-method');
-    } else if (item.screen === 'support') {
-      router.push('/landlord/support');
+    try {
+      if (item.screen === 'profile') {
+        router.push('/landlord/edit-profile');
+      } else if (item.screen === 'verify') {
+        router.push('/landlord/verify'); // Navigates to the new verify.js file
+      } else if (item.screen === 'premium') {
+        router.push('/landlord/premium');
+      } else if (item.screen === 'tenants') {
+        router.push('/landlord/tenants');
+      } else if (item.screen === 'inquiries') {
+        router.push('/landlord/inquiries');
+      } else if (item.screen === 'financials') {
+        router.push('/landlord/financials');
+      } else if (item.screen === 'settings') {
+        router.push('/landlord/settings');
+      } else if (item.screen === 'payment-methods') {
+        router.push('/landlord/payment-method');
+      } else if (item.screen === 'support') {
+        router.push('/landlord/support');
+      }
+    } catch (error) {
+      console.error('Navigation error:', error);
+      // Handle refresh token errors
+      if (error.message && (error.message.includes('Refresh Token') || error.message.includes('Invalid'))) {
+        handleInvalidSession().then(() => {
+          Alert.alert('Session Expired', 'Your session has expired. Please log in again.', [
+            {
+              text: 'OK',
+              onPress: () => router.replace('/(auth)'),
+            },
+          ]);
+        });
+      } else {
+        Alert.alert('Error', 'Failed to navigate. Please try again.');
+      }
     }
   };
 
