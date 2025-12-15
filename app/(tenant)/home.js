@@ -15,7 +15,7 @@ import FilterModal from '../../components/FilterModal';
 import { router } from 'expo-router'; 
 import BoardingHouseCard from '../../components/BoardingHouseCard';
 import SearchBar from '../../components/SearchBar';
-import { getListings, toggleFavorite, getCurrentUser, getTenantProfile } from '../../lib/supabaseClient';
+import { getListingsForTenant, toggleFavorite, getCurrentUser, getTenantProfile } from '../../lib/supabaseClient';
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -74,7 +74,7 @@ export default function Home() {
         }
       }
 
-      const { success, listings: data } = await getListings(filters);
+      const { success, listings: data } = await getListingsForTenant(profile?.id, filters);
 
       if (success) {
         // Transform Supabase data to match component expectations
