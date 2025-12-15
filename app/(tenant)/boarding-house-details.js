@@ -558,8 +558,11 @@ export default function BoardingHouseDetails() {
 
   // Function to render individual review
   const renderReview = ({ item }) => {
-    const reviewerName = item.users ? `${item.users.first_name || ''} ${item.users.last_name || ''}`.trim() : 'Anonymous';
-    const reviewerImage = item.users?.profile_image_url || 'https://via.placeholder.com/40?text=User';
+    const reviewer = item.reviewer || item.users || {};
+    const reviewerName = reviewer.first_name || reviewer.last_name 
+      ? `${reviewer.first_name || ''} ${reviewer.last_name || ''}`.trim() 
+      : 'Anonymous';
+    const reviewerImage = reviewer.profile_image_url || 'https://via.placeholder.com/40?text=User';
     const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
     
     return (
@@ -721,7 +724,7 @@ export default function BoardingHouseDetails() {
   ), [showAddReviewModal, userRating]);
 
   // Memoized inquiry modal to prevent keyboard reset
-  const renderInquiryModal = useMemo(() => (
+  const renderInquiryModal = (
     <Modal
       visible={showInquiryModal}
       animationType="slide"
@@ -756,7 +759,10 @@ export default function BoardingHouseDetails() {
             </TouchableOpacity>
             <TouchableOpacity 
               style={[styles.modalButton, styles.submitButton]}
-              onPress={submitInquiry}
+              onPress={() => {
+                console.log('[BUTTON] Send Interest button pressed directly');
+                submitInquiry();
+              }}
             >
               <Text style={styles.submitButtonText}>Send Interest</Text>
             </TouchableOpacity>
@@ -764,10 +770,10 @@ export default function BoardingHouseDetails() {
         </View>
       </View>
     </Modal>
-  ), [showInquiryModal]);
+  );
 
-  // Memoized booking modal to prevent keyboard reset
-  const renderBookingModal = useMemo(() => (
+  // Booking modal
+  const renderBookingModal = (
     <Modal
       visible={showBookingModal}
       animationType="slide"
@@ -886,7 +892,10 @@ export default function BoardingHouseDetails() {
             </TouchableOpacity>
             <TouchableOpacity 
               style={[styles.modalButton, styles.submitButton]}
-              onPress={confirmBooking}
+              onPress={() => {
+                console.log('[BUTTON] Request Booking button pressed directly');
+                confirmBooking();
+              }}
             >
               <Text style={styles.submitButtonText}>Request Booking</Text>
             </TouchableOpacity>
@@ -894,7 +903,7 @@ export default function BoardingHouseDetails() {
         </View>
       </View>
     </Modal>
-  ), [showBookingModal, selectedDate, showCalendar]);
+  );
 
   // Existing functions with safe property access
   const handleCallLandlord = () => {
@@ -938,15 +947,16 @@ export default function BoardingHouseDetails() {
     }
   };
 
-  const handleExpressInterest = () => {
+  const handleExpressInterest = useCallback(() => {
     setShowInquiryModal(true);
-  };
+  }, []);
 
-  const handleReadyToBook = () => {
+  const handleReadyToBook = useCallback(() => {
     setShowBookingModal(true);
-  };
+  }, []);
 
-  const submitInquiry = () => {
+  const submitInquiry = useCallback(async () => {
+    console.log('[submitInquiry] BUTTON PRESSED - Function called!');
     const landlord = getLandlord();
     const messageText = inquiryMessageRef.current || `I'm interested in ${getHouseName()}. Can you provide more details?`;
 
@@ -957,52 +967,59 @@ export default function BoardingHouseDetails() {
 
     setIsLoading(true);
 
-    (async () => {
-      try {
-        // Send interest message which creates conversation and inquiry
-        const { success, conversationId, error } = await sendInterestMessage(
-          tenantProfileId,
-          house.landlord_profile.id,
-          house.id,
-          messageText
-        );
+    try {
+      console.log('[submitInquiry] Starting inquiry submission...');
+      // Send interest message which creates conversation and inquiry
+      const { success, conversationId, error } = await sendInterestMessage(
+        tenantProfileId,
+        house.landlord_profile.id,
+        house.id,
+        messageText
+      );
 
-        if (!success || !conversationId) {
-          throw new Error(error || 'Failed to create conversation');
-        }
-
-        Alert.alert('Inquiry Sent!', `Your interest in ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
-        setShowInquiryModal(false);
-        inquiryMessageRef.current = '';
-
-        router.push({
-          pathname: '/(tenant)/chat',
-          params: {
-            conversationId: conversationId,
-            landlordId: landlord.id,
-            landlordEmail: landlord.email,
-            landlordPhone: landlord.phone,
-            landlordName: `${landlord.first_name || ''} ${landlord.last_name || ''}`.trim(),
-            landlordImage: landlord.profile_image_url,
-            houseName: getHouseName(),
-          }
-        });
-      } catch (e) {
-        console.error('Failed to send inquiry', e);
-        Alert.alert('Error', e.message || 'Failed to send inquiry. Please try again.');
-      } finally {
-        setIsLoading(false);
+      if (!success || !conversationId) {
+        throw new Error(error || 'Failed to create conversation');
       }
-    })();
-  };
 
-  const submitBooking = async () => {
+      console.log('[submitInquiry] Inquiry sent successfully, conversationId:', conversationId);
+      Alert.alert('Inquiry Sent!', `Your interest in ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
+      setShowInquiryModal(false);
+      inquiryMessageRef.current = '';
+
+      // Small delay to ensure modal closes before navigation
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      console.log('[submitInquiry] Navigating to chat with conversationId:', conversationId);
+
+      router.push({
+        pathname: '/(tenant)/chat',
+        params: {
+          conversationId: conversationId,
+          landlordId: landlord.id,
+          landlordEmail: landlord.email,
+          landlordPhone: landlord.phone,
+          landlordName: `${landlord.first_name || ''} ${landlord.last_name || ''}`.trim(),
+          landlordImage: landlord.profile_image_url,
+          houseName: getHouseName(),
+        }
+      });
+    } catch (e) {
+      console.error('[submitInquiry] Error:', e);
+      Alert.alert('Error', e.message || 'Failed to send inquiry. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [tenantProfileId, house, getHouseName, getLandlord, currentUser, router]);
+
+  const submitBooking = useCallback(async () => {
     const landlord = getLandlord();
     const dateValue = bookingDateRef.current || selectedDate || 'N/A';
     const guestsValue = bookingGuestsRef.current || '1';
     const messageText = `I'd like to book ${getHouseName()} on ${dateValue} for ${guestsValue} guest(s). Please confirm availability.`;
 
     try {
+      console.log('[submitBooking] Starting booking submission...');
+      
       if (!currentUser) {
         Alert.alert('Error', 'User not authenticated');
         return;
@@ -1021,11 +1038,13 @@ export default function BoardingHouseDetails() {
       );
 
       if (!convSuccess || !conversation || !conversation.id) {
+        console.error('[submitBooking] Failed to create conversation:', convError);
         Alert.alert('Error', convError || 'Failed to create conversation');
         return;
       }
 
       const conversationId = conversation.id;
+      console.log('[submitBooking] Conversation created:', conversationId);
 
       // Send the booking message
       const { success, error } = await sendMessage(
@@ -1036,15 +1055,21 @@ export default function BoardingHouseDetails() {
       );
 
       if (!success) {
+        console.error('[submitBooking] Failed to send message:', error);
         Alert.alert('Error', error || 'Failed to send booking request');
         return;
       }
 
+      console.log('[submitBooking] Message sent successfully');
       Alert.alert('Booking Request Sent!', `Your booking request for ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
       setShowBookingModal(false);
       setBookingDate('');
       setBookingGuests('1');
 
+      // Small delay to ensure modal closes before navigation
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      console.log('[submitBooking] Navigating to chat...');
       router.push({
         pathname: '/(tenant)/chat',
         params: {
@@ -1058,13 +1083,13 @@ export default function BoardingHouseDetails() {
         }
       });
     } catch (e) {
-      console.error('Failed to send booking request', e);
+      console.error('[submitBooking] Error:', e);
       Alert.alert('Error', 'Failed to send booking request. Please try again.');
     }
-  };
+  }, [tenantProfileId, house, selectedDate, getHouseName, getLandlord, currentUser, router]);
 
   // Show a confirmation dialog before proceeding to submit booking
-  const confirmBooking = () => {
+  const confirmBooking = useCallback(() => {
     Alert.alert(
       'Confirm Booking',
       'Are you sure the details are right?',
@@ -1074,7 +1099,7 @@ export default function BoardingHouseDetails() {
       ],
       { cancelable: true }
     );
-  };
+  }, [submitBooking]);
 
   const handleViewLandlordProfile = () => {
     const landlord = getLandlord();
