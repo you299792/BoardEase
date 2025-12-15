@@ -6,15 +6,18 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "prebuild": "npm install"
     },
     "preview": {
       "android": {
         "buildType": "apk"
-      }
+      },
+      "prebuild": "npm install"
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "prebuild": "npm install"
     }
   },
   "submit": {
