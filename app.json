@@ -43,8 +43,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "900db2ce-8964-4ee2-86eb-10d44123695c"
+        "projectId": "1fa53c25-6aba-4770-8538-deed8256d349"
       }
-    }
+    },
+    "owner": "hakugin"
   }
 }
