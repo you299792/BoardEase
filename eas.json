@@ -6,24 +6,15 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "env": {
-        "EAS_NO_DEV_DEPS": "0"
-      }
+      "distribution": "internal"
     },
     "preview": {
       "android": {
         "buildType": "apk"
-      },
-      "env": {
-        "EAS_NO_DEV_DEPS": "0"
       }
     },
     "production": {
-      "autoIncrement": true,
-      "env": {
-        "EAS_NO_DEV_DEPS": "0"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {
