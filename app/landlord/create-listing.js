@@ -27,6 +27,8 @@ import {
   updateListing as updateListingDB,
   getLandlordListings,
   uploadListingImage,
+  getLandlordSubscription,
+  getListingLimitForPlan,
 } from '../../lib/supabaseClient'; 
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -644,6 +646,36 @@ export default function CreateListing() {
     if (!currentUser) {
       Alert.alert('Error', 'Please log in first');
       return;
+    }
+
+    // Check plan limits for new listings only
+    if (!isEditing) {
+      try {
+        const { success, plan } = await getLandlordSubscription(currentUser.id);
+        const limit = getListingLimitForPlan(plan);
+        
+        if (limit !== Infinity) {
+          // Count existing listings
+          const { success: listingsSuccess, listings: dbListings } = await getLandlordListings(currentUser.id);
+          const currentListingCount = dbListings?.length || 0;
+          
+          if (currentListingCount >= limit) {
+            Alert.alert(
+              'Listing Limit Reached',
+              `Your ${plan.toUpperCase()} plan allows up to ${limit} properties. Upgrade to create more listings.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'View Plans', onPress: () => router.push('/landlord/premium') },
+              ]
+            );
+            setIsSubmitting(false);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Error checking listing limit:', err);
+        // Allow submission if check fails (don't block user)
+      }
     }
 
     setIsSubmitting(true);
