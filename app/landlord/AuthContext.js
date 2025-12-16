@@ -59,7 +59,15 @@ export const AuthProvider = ({ children }) => {
       // Session is valid, load user from storage
       const userJson = await AsyncStorage.getItem('@landlord_user');
       if (userJson) {
-        setUser(JSON.parse(userJson));
+        try {
+          const parsedUser = JSON.parse(userJson);
+          setUser(parsedUser);
+        } catch (parseError) {
+          console.error('[AuthContext] Corrupted user data in storage, clearing:', parseError);
+          // Clear corrupted data
+          await AsyncStorage.removeItem('@landlord_user');
+          setUser(null);
+        }
       }
     } catch (error) {
       console.error('Failed to load user:', error);

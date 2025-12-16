@@ -32,6 +32,9 @@
         "projectId": "1fa53c25-6aba-4770-8538-deed8256d349"
       }
     },
-    "owner": "hakugin"
+    "owner": "hakugin",
+    "android": {
+      "package": "com.hakugin.boardease"
+    }
   }
 }

@@ -32,33 +32,43 @@ export default function Login() {
     setIsLoading(true);
     
     try {
+      console.log('[Login] Starting login with email:', email);
       const result = await signIn(email, password);
+      console.log('[Login] Sign in result:', result);
       
-      if (result.success && result.data) {
-        const user = result.data.user;
+      if (result.success && (result.data?.user || result.user)) {
+        const user = result.data?.user || result.user;
+        console.log('[Login] User object:', user);
         
         // Verify user_type exists before routing
         if (!user || !user.user_type) {
+          console.error('[Login] No user_type in user object');
           Alert.alert('Error', 'User profile is incomplete. Please contact support.');
+          setIsLoading(false);
           return;
         }
+        
+        console.log('[Login] User type confirmed:', user.user_type);
         
         // Route based on user_type from database
         try {
           if (user.user_type === 'tenant') {
-            router.replace('/(tenant)/home');
+            console.log('[Login] Routing to tenant home');
+            await router.replace('/(tenant)/home');
           } else if (user.user_type === 'landlord') {
-            router.replace('/landlord');
+            console.log('[Login] Routing to landlord home');
+            await router.replace('/landlord');
           } else {
             Alert.alert('Error', `Unknown user type: ${user.user_type}`);
           }
         } catch (navigationError) {
-          console.error('Navigation error:', navigationError);
+          console.error('[Login] Navigation error:', navigationError);
           Alert.alert('Error', 'Failed to navigate after login. Please try again.');
         }
       } else {
         // Handle specific errors
         const errorMessage = result.error || 'Invalid email or password';
+        console.error('[Login] Login failed:', errorMessage);
         
         if (errorMessage.includes('Invalid login credentials')) {
           Alert.alert(
@@ -79,8 +89,10 @@ export default function Login() {
         }
       }
     } catch (error) {
-      console.error('Login error:', error);
-      Alert.alert('Error', 'An unexpected error occurred during login. Please try again.');
+      console.error('[Login] Unexpected error:', error);
+      console.error('[Login] Error message:', error?.message);
+      console.error('[Login] Error stack:', error?.stack);
+      Alert.alert('Error', 'An unexpected error occurred during login: ' + (error?.message || 'Unknown error'));
     } finally {
       setIsLoading(false);
     }

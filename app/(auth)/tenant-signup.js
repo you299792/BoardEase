@@ -68,6 +68,7 @@ export default function TenantSignUp() {
     setIsLoading(true);
 
     try {
+      console.log('[TenantSignup] Starting signup with email:', email);
       // Sign up tenant using Supabase
       const result = await tenantSignUp({
         email,
@@ -76,11 +77,15 @@ export default function TenantSignUp() {
         lastName,
         phone,
       });
+      
+      console.log('[TenantSignup] Signup result:', result);
 
       if (result.success && result.user) {
+        console.log('[TenantSignup] User created successfully:', result.user.id);
         // Verify user object before navigation
         if (!result.user.id) {
           Alert.alert('Error', 'Account created but profile incomplete. Please contact support.');
+          setIsLoading(false);
           return;
         }
 
@@ -92,9 +97,10 @@ export default function TenantSignUp() {
               text: 'OK',
               onPress: () => {
                 try {
+                  console.log('[TenantSignup] Routing to tenant home');
                   router.replace('/(tenant)/home');
                 } catch (navError) {
-                  console.error('Navigation error:', navError);
+                  console.error('[TenantSignup] Navigation error:', navError);
                   Alert.alert('Error', 'Failed to load home screen. Please try logging in manually.');
                 }
               }
@@ -103,6 +109,7 @@ export default function TenantSignUp() {
         );
       } else {
         const errorMessage = result.error || 'An error occurred during registration';
+        console.error('[TenantSignup] Signup failed:', errorMessage);
         
         if (errorMessage.includes('already registered')) {
           Alert.alert(
@@ -124,7 +131,9 @@ export default function TenantSignUp() {
         }
       }
     } catch (error) {
-      console.error('Signup error:', error);
+      console.error('[TenantSignup] Unexpected error:', error);
+      console.error('[TenantSignup] Error message:', error?.message);
+      console.error('[TenantSignup] Error stack:', error?.stack);
       let errorMessage = 'An unexpected error occurred. Please try again.';
       
       if (error.message && error.message.includes('Invalid API key')) {
