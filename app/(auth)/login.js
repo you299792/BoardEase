@@ -36,13 +36,25 @@ export default function Login() {
       
       if (result.success && result.data) {
         const user = result.data.user;
+        
+        // Verify user_type exists before routing
+        if (!user || !user.user_type) {
+          Alert.alert('Error', 'User profile is incomplete. Please contact support.');
+          return;
+        }
+        
         // Route based on user_type from database
-        if (user.user_type === 'tenant') {
-          router.replace('/(tenant)/home');
-        } else if (user.user_type === 'landlord') {
-          router.replace('/landlord');
-        } else {
-          Alert.alert('Error', 'Unable to determine user type');
+        try {
+          if (user.user_type === 'tenant') {
+            router.replace('/(tenant)/home');
+          } else if (user.user_type === 'landlord') {
+            router.replace('/landlord');
+          } else {
+            Alert.alert('Error', `Unknown user type: ${user.user_type}`);
+          }
+        } catch (navigationError) {
+          console.error('Navigation error:', navigationError);
+          Alert.alert('Error', 'Failed to navigate after login. Please try again.');
         }
       } else {
         // Handle specific errors

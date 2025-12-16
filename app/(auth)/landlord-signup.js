@@ -147,20 +147,31 @@ const SignUpForm = () => {
       if (signUpResult.success && signUpResult.user) {
         const userId = signUpResult.user.id;
         
+        // Verify user ID before proceeding
+        if (!userId) {
+          Alert.alert('Error', 'Account created but user ID missing. Please contact support.');
+          return;
+        }
+        
         // Upload profile image if available
         if (formData.profileImage) {
-          const uploadResult = await uploadProfileImage(userId, formData.profileImage);
-          if (uploadResult.success) {
-            // Update user's profile_image_url in the database
-            const { error: updateError } = await supabase
-              .from('users')
-              .update({ profile_image_url: uploadResult.publicUrl })
-              .eq('id', userId);
-            if (updateError) {
-              console.warn('Failed to update profile image URL:', updateError);
+          try {
+            const uploadResult = await uploadProfileImage(userId, formData.profileImage);
+            if (uploadResult.success) {
+              // Update user's profile_image_url in the database
+              const { error: updateError } = await supabase
+                .from('users')
+                .update({ profile_image_url: uploadResult.publicUrl })
+                .eq('id', userId);
+              if (updateError) {
+                console.warn('Failed to update profile image URL:', updateError);
+              }
+            } else {
+              console.warn('Profile image upload failed:', uploadResult.error);
             }
-          } else {
-            console.warn('Profile image upload failed:', uploadResult.error);
+          } catch (uploadError) {
+            console.warn('Profile image upload error:', uploadError);
+            // Continue without image - it's not critical
           }
         }
         
@@ -170,7 +181,14 @@ const SignUpForm = () => {
           [
             {
               text: 'OK',
-              onPress: () => router.replace('/landlord')
+              onPress: () => {
+                try {
+                  router.replace('/landlord');
+                } catch (navError) {
+                  console.error('Navigation error:', navError);
+                  Alert.alert('Error', 'Failed to load landlord portal. Please try logging in manually.');
+                }
+              }
             }
           ]
         );

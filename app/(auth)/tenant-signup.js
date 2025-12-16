@@ -78,13 +78,26 @@ export default function TenantSignUp() {
       });
 
       if (result.success && result.user) {
+        // Verify user object before navigation
+        if (!result.user.id) {
+          Alert.alert('Error', 'Account created but profile incomplete. Please contact support.');
+          return;
+        }
+
         Alert.alert(
           'Success',
           'Account created! Welcome to BoardEase.',
           [
             {
               text: 'OK',
-              onPress: () => router.replace('/(tenant)/home')
+              onPress: () => {
+                try {
+                  router.replace('/(tenant)/home');
+                } catch (navError) {
+                  console.error('Navigation error:', navError);
+                  Alert.alert('Error', 'Failed to load home screen. Please try logging in manually.');
+                }
+              }
             }
           ]
         );
