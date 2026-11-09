@@ -41,8 +41,7 @@ BoardEase is a mobile application designed to simplify the process of finding, e
 - bcrypt
 
 ### Database and Cloud Services
-- MySQL – Database management
-- Cloudinary – Image storage
+- Supabase
 
 ## Authentication and Security
 
