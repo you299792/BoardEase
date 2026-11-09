@@ -1,47 +1,120 @@
-import React, { useState, useCallback } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TouchableOpacity, 
-  ScrollView, 
-  Image, 
-  ActivityIndicator 
+import React, { useState, useCallback, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  Image,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
-import { Stack, router, useFocusEffect } from 'expo-router'; 
+import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage'; 
-const INQUIRIES_STORAGE_KEY = '@landlord_inquiries'; 
+import {
+  getCurrentUser,
+  getLandlordInquiries,
+  supabase,
+} from '../../lib/supabaseClient'; 
 export default function InquiriesScreen() {
-  const [messages, setMessages] = useState([]); 
-  const [isLoading, setIsLoading] = useState(true); 
+  const [messages, setMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  
   const loadInquiries = async () => {
     try {
-      const jsonValue = await AsyncStorage.getItem(INQUIRIES_STORAGE_KEY);
-      if (jsonValue !== null) {
-        setMessages(JSON.parse(jsonValue));
-      } else {
-        
-        await AsyncStorage.setItem(INQUIRIES_STORAGE_KEY, JSON.stringify([]));
-        setMessages([]);
+      setIsLoading(true);
+      const user = await getCurrentUser();
+
+      if (user) {
+        const { success, inquiries, error } = await getLandlordInquiries(user.id);
+
+        if (success) {
+          const formattedMessages = inquiries.map(inq => ({
+            id: inq.id,
+            conversationId: inq.conversation_id,
+            tenantId: inq.tenant_id,
+            tenant: {
+              id: inq.tenant?.id,
+              name: `${inq.tenant?.first_name || ''} ${inq.tenant?.last_name || ''}`.trim(),
+              email: inq.tenant?.email,
+              phone: inq.tenant?.phone,
+              image: inq.tenant?.profile_image_url,
+            },
+            houseName: inq.listing?.title || 'Property',
+            property: inq.listing?.title || 'Property', // duplicate for compatibility
+            listing_id: inq.listing_id,
+            type: inq.subject || 'inquiry',
+            status: inq.subject || 'inquiry',
+            lastMessage: inq.message,
+            time: inq.created_at ? new Date(inq.created_at).toLocaleDateString() : 'N/A',
+            unread: inq.unread_count > 0,
+            unreadCount: inq.unread_count || 0,
+          }));
+          setMessages(formattedMessages);
+        } else {
+          Alert.alert('Error', error || 'Failed to load inquiries');
+          setMessages([]);
+        }
       }
     } catch (e) {
-      console.error("Failed to load inquiries", e);
+      console.error('Failed to load inquiries', e);
       setMessages([]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  
   useFocusEffect(
     useCallback(() => {
-      setIsLoading(true);
       loadInquiries();
     }, [])
   );
+
+  // Real-time subscription to conversations for unread updates
+  useEffect(() => {
+    let subscription;
+
+    const setupSubscription = async () => {
+      const user = await getCurrentUser();
+      if (!user) return;
+
+      // Get landlord profile to listen to conversations
+      const { data: landlordProfile } = await supabase
+        .from('landlord_profile')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!landlordProfile) return;
+
+      // Subscribe to conversations table for unread count changes
+      subscription = supabase
+        .channel(`conversations:${landlordProfile.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'conversations',
+            filter: `landlord_id=eq.${landlordProfile.id}`,
+          },
+          (payload) => {
+            console.log('[Inquiries] Conversation update:', payload);
+            // Reload inquiries when any conversation changes
+            loadInquiries();
+          }
+        )
+        .subscribe();
+    };
+
+    setupSubscription();
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
+  }, []);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -78,36 +151,26 @@ export default function InquiriesScreen() {
   };
 
   const handleMessagePress = (message) => {
-    
-    (async () => {
-      try {
-        const updated = messages.map(m => m.id === message.id ? { ...m, unread: false } : m);
-        await AsyncStorage.setItem(INQUIRIES_STORAGE_KEY, JSON.stringify(updated));
-        setMessages(updated);
-      } catch (e) {
-        console.error('Failed to mark read', e);
+    // Simply navigate to chat - no need to mark as read in AsyncStorage
+    // The database already tracks read status
+    router.push({
+      pathname: '/landlord/chat',
+      params: {
+        conversationId: message.conversationId,
+        tenantId: message.tenantId,
+        tenantName: message.tenant.name,
+        tenantImage: message.tenant.image,
+        property: message.houseName,
       }
-      router.push({
-        pathname: '/landlord/chat',
-        params: {
-          tenantId: message.tenant.id,
-          tenantName: message.tenant.name,
-          tenantImage: message.tenant.image,
-          property: message.property,
-        }
-      });
-    })();
+    });
   };
 
   
   const markAllAsRead = async () => {
+    // Mark all as read in UI
     const readMessages = messages.map(msg => ({ ...msg, unread: false }));
-    try {
-      await AsyncStorage.setItem(INQUIRIES_STORAGE_KEY, JSON.stringify(readMessages));
-      setMessages(readMessages);
-    } catch (e) {
-      console.error("Failed to mark all as read", e);
-    }
+    setMessages(readMessages);
+    // Database already tracks read status through the inquiries table
   };
 
   const unreadCount = messages.filter(msg => msg.unread).length;

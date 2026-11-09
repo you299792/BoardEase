@@ -1,5 +1,4 @@
-// app/landlord/menu.js
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,33 +7,69 @@ import {
   TouchableOpacity,
   Image,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Colors } from '../../constants/Colors';
-import { useAuth } from './AuthContext'; // Make sure this import is correct
 import ShareProfileModal from '../../components/ShareProfileModal';
+import { getCurrentUser, signOut, getLandlordProfile, handleInvalidSession } from '../../lib/supabaseClient';
 
 export default function LandlordMenuScreen() {
-  const { user, logout } = useAuth();
+  const [userData, setUserData] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [isShareModalVisible, setShareModalVisible] = useState(false);
 
-  // ADD THE MISSING handleLogout FUNCTION
+  useFocusEffect(
+    useCallback(() => {
+      loadUserData();
+    }, [])
+  );
+
+  const loadUserData = async () => {
+    try {
+      setLoading(true);
+      const currentUser = await getCurrentUser();
+      
+      if (currentUser) {
+        const { success, profile } = await getLandlordProfile(currentUser.id);
+        if (success && profile) {
+          setUserData(profile.users);
+        } else {
+          setUserData(currentUser);
+        }
+      } else {
+        router.replace('/(auth)');
+      }
+    } catch (error) {
+      console.error('Error loading user data:', error);
+      Alert.alert('Error', 'Failed to load user profile');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLogout = () => {
     Alert.alert(
       "Log Out",
       "Are you sure you want to log out?",
       [
-        {
-          text: "Cancel",
-          style: "cancel"
-        },
+        { text: "Cancel", style: "cancel" },
         {
           text: "Log Out",
           style: "destructive",
-          onPress: () => {
-            logout();
-            router.replace('/');
+          onPress: async () => {
+            try {
+              const result = await signOut();
+              if (result.success) {
+                router.replace('/');
+              } else {
+                Alert.alert('Error', 'Failed to log out');
+              }
+            } catch (error) {
+              console.error('Logout error:', error);
+              Alert.alert('Error', 'An error occurred during logout');
+            }
           }
         }
       ]
@@ -47,6 +82,27 @@ export default function LandlordMenuScreen() {
       title: 'Profile',
       description: 'Manage your account information',
       screen: 'profile',
+    },
+    
+    {
+      icon: 'shield-checkmark',
+      title: 'Verification',
+      description: 'Verify your account status',
+      screen: 'verify',
+    },
+    
+    {
+      icon: 'diamond',
+      title: 'Premium',
+      description: 'Upgrade to unlock more features',
+      screen: 'premium',
+    },
+  
+    {
+      icon: 'people', 
+      title: 'My Tenants',
+      description: 'View currently occupied properties',
+      screen: 'tenants',
     },
     {
       icon: 'chatbubbles',
@@ -81,18 +137,41 @@ export default function LandlordMenuScreen() {
   ];
 
   const handleMenuPress = (item) => {
-    if (item.screen === 'profile') {
-      router.push('/landlord/edit-profile');
-    } else if (item.screen === 'inquiries') {
-      router.push('/landlord/inquiries');
-    } else if (item.screen === 'financials') {
-      router.push('/landlord/financials');
-    } else if (item.screen === 'settings') {
-      router.push('/landlord/settings');
-    } else if (item.screen === 'payment-methods') {
-      router.push('/landlord/payment-method');
-    } else if (item.screen === 'support') {
-      router.push('/landlord/support');
+    try {
+      if (item.screen === 'profile') {
+        router.push('/landlord/edit-profile');
+      } else if (item.screen === 'verify') {
+        router.push('/landlord/verify'); // Navigates to the new verify.js file
+      } else if (item.screen === 'premium') {
+        router.push('/landlord/premium');
+      } else if (item.screen === 'tenants') {
+        router.push('/landlord/tenants');
+      } else if (item.screen === 'inquiries') {
+        router.push('/landlord/inquiries');
+      } else if (item.screen === 'financials') {
+        router.push('/landlord/financials');
+      } else if (item.screen === 'settings') {
+        router.push('/landlord/settings');
+      } else if (item.screen === 'payment-methods') {
+        router.push('/landlord/payment-method');
+      } else if (item.screen === 'support') {
+        router.push('/landlord/support');
+      }
+    } catch (error) {
+      console.error('Navigation error:', error);
+      // Handle refresh token errors
+      if (error.message && (error.message.includes('Refresh Token') || error.message.includes('Invalid'))) {
+        handleInvalidSession().then(() => {
+          Alert.alert('Session Expired', 'Your session has expired. Please log in again.', [
+            {
+              text: 'OK',
+              onPress: () => router.replace('/(auth)'),
+            },
+          ]);
+        });
+      } else {
+        Alert.alert('Error', 'Failed to navigate. Please try again.');
+      }
     }
   };
 
@@ -103,64 +182,76 @@ export default function LandlordMenuScreen() {
           <Text style={styles.title}>Account Menu</Text>
         </View>
 
-        <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-          
-          <View style={styles.profileSection}>
-            <Image
-              source={{ 
-                uri: user?.photoURL || 'https://via.placeholder.com/150/667eea/FFFFFF?text=User' 
-              }}
-              style={styles.profileImage}
-            />
-            <View style={styles.profileInfo}>
-              <Text style={styles.profileName}>{user?.name || 'Landlord'}</Text>
-              <Text style={styles.profileEmail}>{user?.email || 'No email'}</Text>
-              <Text style={styles.profileType}>Landlord</Text>
-            </View>
-            <TouchableOpacity 
-              style={styles.shareProfileButton}
-              onPress={() => setShareModalVisible(true)}
-            >
-              <Ionicons name="qr-code" size={24} color={Colors.primary || '#667eea'} />
-            </TouchableOpacity>
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={Colors.primary || '#667eea'} />
           </View>
-
-          
-          <View style={styles.menuSection}>
-            {menuItems.map((item, index) => (
-              <TouchableOpacity
-                key={index}
-                style={[
-                  styles.menuItem,
-                  index === menuItems.length - 1 && { borderBottomWidth: 0 }
-                ]}
-                onPress={() => handleMenuPress(item)}
-              >
-                <View style={styles.menuItemLeft}>
-                  <View style={styles.menuIconContainer}>
-                    <Ionicons name={item.icon} size={20} color={Colors.primary || '#667eea'} />
-                  </View>
-                  <View style={styles.menuTextContainer}>
-                    <Text style={styles.menuItemTitle}>{item.title}</Text>
-                    <Text style={styles.menuItemDescription}>{item.description}</Text>
-                  </View>
+        ) : (
+          <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+            
+            <View style={styles.profileSection}>
+              {userData?.profile_image_url ? (
+                <Image
+                  source={{ uri: userData.profile_image_url }}
+                  style={styles.profileImage}
+                />
+              ) : (
+                <View style={[styles.profileImage, styles.placeholderImage]}>
+                  <Ionicons name="person-circle" size={50} color="#667eea" />
                 </View>
-                <Ionicons name="chevron-forward" size={20} color="#ccc" />
+              )}
+              <View style={styles.profileInfo}>
+                <Text style={styles.profileName}>
+                  {userData?.first_name && userData?.last_name
+                    ? `${userData.first_name} ${userData.last_name}`
+                    : 'Landlord'}
+                </Text>
+                <Text style={styles.profileEmail}>{userData?.email || 'No email'}</Text>
+                <Text style={styles.profileType}>Landlord</Text>
+              </View>
+              <TouchableOpacity 
+                style={styles.shareProfileButton}
+                onPress={() => setShareModalVisible(true)}
+              >
+                <Ionicons name="qr-code" size={24} color={Colors.primary || '#667eea'} />
               </TouchableOpacity>
-            ))}
-          </View>
+            </View>
 
-          
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Ionicons name="log-out" size={20} color="#dc2626" />
-            <Text style={styles.logoutText}>Log Out</Text>
-          </TouchableOpacity>
-        </ScrollView>
+            <View style={styles.menuSection}>
+              {menuItems.map((item, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={[
+                    styles.menuItem,
+                    index === menuItems.length - 1 && { borderBottomWidth: 0 }
+                  ]}
+                  onPress={() => handleMenuPress(item)}
+                >
+                  <View style={styles.menuItemLeft}>
+                    <View style={styles.menuIconContainer}>
+                      <Ionicons name={item.icon} size={20} color={Colors.primary || '#667eea'} />
+                    </View>
+                    <View style={styles.menuTextContainer}>
+                      <Text style={styles.menuItemTitle}>{item.title}</Text>
+                      <Text style={styles.menuItemDescription}>{item.description}</Text>
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#ccc" />
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+              <Ionicons name="log-out" size={20} color="#dc2626" />
+              <Text style={styles.logoutText}>Log Out</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        )}
       </View>
       <ShareProfileModal
         visible={isShareModalVisible}
         onClose={() => setShareModalVisible(false)}
-        user={user}
+        user={userData}
       />
     </>
   );
@@ -181,6 +272,11 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: '#333',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   content: {
     flex: 1,
@@ -204,6 +300,11 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 30,
     marginRight: 16,
+  },
+  placeholderImage: {
+    backgroundColor: '#f0f4ff',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileInfo: {
     flex: 1,

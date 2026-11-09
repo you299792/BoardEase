@@ -151,6 +151,7 @@ const FilterModal = ({ visible, onClose, onApply, currentFilters }) => {
                   <TextInput
                     style={styles.textInput}
                     placeholder="Min (e.g., 1000)"
+                    placeholderTextColor="#999"
                     keyboardType="numeric"
                     value={minPrice}
                     onChangeText={setMinPrice}
@@ -166,6 +167,7 @@ const FilterModal = ({ visible, onClose, onApply, currentFilters }) => {
                     style={styles.textInput}
                     // Custom placeholder and linked to the new string state
                     placeholder="Max (e.g., 5000)" 
+                    placeholderTextColor="#999"
                     keyboardType="numeric"
                     value={maxPrice}
                     onChangeText={setMaxPrice}

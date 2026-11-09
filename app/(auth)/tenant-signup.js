@@ -15,9 +15,11 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { tenantSignUp } from '../../lib/supabaseClient';
 
 export default function TenantSignUp() {
-  const [fullName, setFullName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
@@ -26,16 +28,38 @@ export default function TenantSignUp() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
+  const validateEmail = (email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
+  const validatePhoneNumber = (phone) => {
+    const phoneRegex = /^\+?[\d\s-]{10,}$/;
+    return phoneRegex.test(phone);
+  };
+
   const handleSignUp = async () => {
-    
-    if (!fullName || !email || !phone || !password || !confirmPassword) {
+    // Validation
+    if (!firstName || !lastName || !email || !phone || !password || !confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields.');
       return;
     }
+
+    if (!validateEmail(email)) {
+      Alert.alert('Error', 'Please enter a valid email address.');
+      return;
+    }
+
+    if (!validatePhoneNumber(phone)) {
+      Alert.alert('Error', 'Please enter a valid phone number.');
+      return;
+    }
+
     if (password !== confirmPassword) {
       Alert.alert('Error', 'Passwords do not match.');
       return;
     }
+
     if (password.length < 6) {
       Alert.alert('Error', 'Password must be at least 6 characters long.');
       return;
@@ -44,15 +68,79 @@ export default function TenantSignUp() {
     setIsLoading(true);
 
     try {
+      console.log('[TenantSignup] Starting signup with email:', email);
+      // Sign up tenant using Supabase
+      const result = await tenantSignUp({
+        email,
+        password,
+        firstName,
+        lastName,
+        phone,
+      });
       
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      console.log('Signing up tenant with:', { fullName, email, phone });
-      
-      
-      router.replace('/(tenant)/home');
+      console.log('[TenantSignup] Signup result:', result);
+
+      if (result.success && result.user) {
+        console.log('[TenantSignup] User created successfully:', result.user.id);
+        // Verify user object before navigation
+        if (!result.user.id) {
+          Alert.alert('Error', 'Account created but profile incomplete. Please contact support.');
+          setIsLoading(false);
+          return;
+        }
+
+        Alert.alert(
+          'Success',
+          'Account created! Welcome to BoardEase.',
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                try {
+                  console.log('[TenantSignup] Routing to tenant home');
+                  router.replace('/(tenant)/home');
+                } catch (navError) {
+                  console.error('[TenantSignup] Navigation error:', navError);
+                  Alert.alert('Error', 'Failed to load home screen. Please try logging in manually.');
+                }
+              }
+            }
+          ]
+        );
+      } else {
+        const errorMessage = result.error || 'An error occurred during registration';
+        console.error('[TenantSignup] Signup failed:', errorMessage);
+        
+        if (errorMessage.includes('already registered')) {
+          Alert.alert(
+            'Email Already Registered',
+            'This email is already registered. Please sign in or use a different email.'
+          );
+        } else if (errorMessage.includes('Invalid password')) {
+          Alert.alert(
+            'Weak Password',
+            'Password must be at least 6 characters long.'
+          );
+        } else if (errorMessage.includes('only request this after')) {
+          Alert.alert(
+            'Too Many Attempts',
+            'For security purposes, please wait a minute before trying again with the same email.'
+          );
+        } else {
+          Alert.alert('Signup Failed', errorMessage);
+        }
+      }
     } catch (error) {
-      Alert.alert('Error', 'Signup failed. Please try again.');
+      console.error('[TenantSignup] Unexpected error:', error);
+      console.error('[TenantSignup] Error message:', error?.message);
+      console.error('[TenantSignup] Error stack:', error?.stack);
+      let errorMessage = 'An unexpected error occurred. Please try again.';
+      
+      if (error.message && error.message.includes('Invalid API key')) {
+        errorMessage = 'Connection error. Please check your internet connection.';
+      }
+      
+      Alert.alert('Error', errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -96,10 +184,23 @@ export default function TenantSignUp() {
                 <Feather name="user" size={20} color="#999" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Full Name"
+                  placeholder="First Name"
                   placeholderTextColor="#999"
-                  value={fullName}
-                  onChangeText={setFullName}
+                  value={firstName}
+                  onChangeText={setFirstName}
+                  autoCapitalize="words"
+                  editable={!isLoading}
+                />
+              </View>
+
+              <View style={styles.inputContainer}>
+                <Feather name="user" size={20} color="#999" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Last Name"
+                  placeholderTextColor="#999"
+                  value={lastName}
+                  onChangeText={setLastName}
                   autoCapitalize="words"
                   editable={!isLoading}
                 />
@@ -197,11 +298,11 @@ export default function TenantSignUp() {
               <TouchableOpacity 
                 style={[
                   styles.signupButton,
-                  (!fullName || !email || !phone || !password || !confirmPassword) && styles.signupButtonDisabled,
+                  (!firstName || !lastName || !email || !phone || !password || !confirmPassword) && styles.signupButtonDisabled,
                   isLoading && styles.signupButtonLoading
                 ]}
                 onPress={handleSignUp}
-                disabled={!fullName || !email || !phone || !password || !confirmPassword || isLoading}
+                disabled={!firstName || !lastName || !email || !phone || !password || !confirmPassword || isLoading}
               >
                 {isLoading ? (
                   <ActivityIndicator color="#fff" size="small" />
@@ -221,10 +322,10 @@ export default function TenantSignUp() {
               <View style={styles.signinContainer}>
                 <Text style={styles.signinText}>Already have an account? </Text>
                 <TouchableOpacity 
-                  onPress={() => router.replace('/index')}
+                  onPress={() => router.back()}
                   disabled={isLoading}
                 >
-                  <Text style={styles.signinLink}>Sign In</Text>
+                   <Text style={styles.signinLink}>Sign In</Text>
                 </TouchableOpacity>
               </View>
             </View>

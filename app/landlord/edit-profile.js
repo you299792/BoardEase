@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,51 +12,94 @@ import {
   Alert,
   Switch,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors } from '../../constants/Colors';
-import { useAuth } from './AuthContext';
+import {
+  getCurrentUser,
+  getLandlordProfile,
+  updateLandlordProfile,
+  getLandlordListings,
+  uploadProfileImage,
+} from '../../lib/supabaseClient';
+import { saveLandlordProfile } from '../../lib/profileCache';
 
 export default function LandlordProfile() {
-  const { user, login } = useAuth();
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [isUsingCachedData, setIsUsingCachedData] = useState(false);
   
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [bio, setBio] = useState('');
+  const [company, setCompany] = useState('');
+  const [yearsExperience, setYearsExperience] = useState('');
+  const [photoURL, setPhotoURL] = useState('');
+  const [propertyCount, setPropertyCount] = useState(0);
+  const [createdAt, setCreatedAt] = useState(null);
   
-  const [name, setName] = useState(user?.name || 'Walter White');
-  const [email, setEmail] = useState(user?.email || 'wwhite@los-pollos.com');
-  const [phone, setPhone] = useState(user?.phone || '+63 912 345 6789');
-  const [bio, setBio] = useState(user?.bio || 'Professional landlord with 5+ years of experience providing quality student accommodations in CDO. All properties are well-maintained and located near universities.');
-  const [company, setCompany] = useState(user?.company || 'Los Pollos Hermanos Properties');
-  const [yearsExperience, setYearsExperience] = useState(user?.yearsExperience || '5');
-  const [photoURL, setPhotoURL] = useState(user?.photoURL || 'https://i.insider.com/5d9f454ee94e865e924818da?width=700');
-  
- 
-  const [emailNotifications, setEmailNotifications] = useState(user?.settings?.emailNotifications ?? true);
-  const [smsNotifications, setSmsNotifications] = useState(user?.settings?.smsNotifications ?? true);
-  const [showContactInfo, setShowContactInfo] = useState(user?.settings?.showContactInfo ?? true);
+  const [emailNotifications, setEmailNotifications] = useState(true);
+  const [smsNotifications, setSmsNotifications] = useState(true);
+  const [showContactInfo, setShowContactInfo] = useState(true);
 
-  const landlordData = {
-    name,
-    email,
-    phone,
-    bio,
-    company,
-    yearsExperience,
-    photoURL,
-    joinDate: '2022-03-15',
-    verified: true,
-    totalProperties: 5,
-    responseRate: '95%',
-    responseTime: 'within 2 hours',
+  useEffect(() => {
+    loadProfileData();
+  }, []);
+
+  const loadProfileData = async () => {
+    try {
+      setIsLoading(true);
+      const user = await getCurrentUser();
+      setCurrentUser(user);
+
+      if (user) {
+        // Load complete landlord profile from database
+        const { success, profile, fromCache } = await getLandlordProfile(user.id);
+        if (success && profile) {
+          setIsUsingCachedData(fromCache || false);
+          
+          // Get user data from nested users object
+          const userData = profile.users;
+          if (userData) {
+            setName(`${userData.first_name || ''} ${userData.last_name || ''}`.trim() || userData.email);
+            setEmail(userData.email || '');
+            setPhone(userData.phone || '');
+            setCreatedAt(userData.created_at || null);
+            // Set photoURL to null unless one exists
+            setPhotoURL(userData.profile_image_url || null);
+          }
+          // Load landlord-specific data (bio is on the nested users object)
+          setBio((userData && userData.bio) || '');
+          setCompany(profile.company_name || '');
+          setYearsExperience(String(profile.years_experience || 0));
+        }
+        
+        // Fetch the number of listings this landlord has posted (skip if using cached data)
+        if (!fromCache) {
+          const { success: listingsSuccess, listings } = await getLandlordListings(user.id);
+          if (listingsSuccess && listings) {
+            setPropertyCount(listings.length);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load profile:', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const stats = [
-    { label: 'Properties', value: landlordData.totalProperties, icon: 'business' },
-    { label: 'Years Experience', value: landlordData.yearsExperience, icon: 'trophy' },
-    { label: 'Response Rate', value: landlordData.responseRate, icon: 'speedometer' },
+    { label: 'Properties', value: String(propertyCount), icon: 'business' },
+    { label: 'Years Experience', value: yearsExperience, icon: 'trophy' },
+    { label: 'Response Rate', value: '95%', icon: 'speedometer' },
   ];
 
   const pickImage = async () => {
@@ -105,50 +148,112 @@ export default function LandlordProfile() {
   }, []) 
 );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name.trim() || !email.trim()) {
       Alert.alert('Validation', 'Name and Email are required.');
       return;
     }
 
-    
-    const updatedUser = {
-      ...user,
-      name: name.trim(),
-      email: email.trim(),
-      phone: phone.trim(),
-      bio: bio.trim(),
-      company: company.trim(),
-      yearsExperience: yearsExperience,
-      photoURL: photoURL,
-      settings: {
-        emailNotifications,
-        smsNotifications,
-        showContactInfo,
-      },
-    };
+    if (!currentUser) {
+      Alert.alert('Error', 'Not logged in');
+      return;
+    }
 
-    login(updatedUser);
-    setIsEditing(false);
-    Alert.alert('Success', 'Profile updated successfully!');
+    setIsSaving(true);
+    try {
+      const [firstName, lastName] = name.trim().split(' ');
+      
+      // 📸 UPLOAD PROFILE IMAGE if it's a local file (not already a URL)
+      let finalPhotoURL = photoURL;
+      if (photoURL && (photoURL.startsWith('file://') || photoURL.startsWith('content://'))) {
+        console.log('[Profile] Uploading new profile image...');
+        const uploadResult = await uploadProfileImage(currentUser.id, photoURL, 'profile.jpg');
+        if (uploadResult.success && uploadResult.publicUrl) {
+          finalPhotoURL = uploadResult.publicUrl;
+          console.log('[Profile] Image uploaded successfully:', finalPhotoURL);
+        } else {
+          console.warn('[Profile] Image upload failed:', uploadResult.error);
+          Alert.alert('Warning', 'Failed to upload profile image, but will save other changes.');
+        }
+      }
+      
+      const { success, error } = await updateLandlordProfile(currentUser.id, {
+        first_name: firstName || '',
+        last_name: lastName || '',
+        email: email.trim(),
+        phone: phone.trim(),
+        profile_image_url: finalPhotoURL,
+        bio: bio.trim(),
+        company_name: company.trim(),
+        years_experience: parseInt(yearsExperience) || 0,
+      });
+
+      if (success) {
+        // 💾 SAVE LANDLORD PROFILE PERMANENTLY to AsyncStorage
+        const userData = {
+          id: currentUser.id,
+          first_name: firstName || '',
+          last_name: lastName || '',
+          email: email.trim(),
+          phone: phone.trim(),
+          profile_image_url: finalPhotoURL,
+          bio: bio.trim(),
+        };
+        const profileData = {
+          company_name: company.trim(),
+          years_experience: parseInt(yearsExperience) || 0,
+        };
+        await saveLandlordProfile(currentUser.id, userData, profileData);
+        
+        // Update local state with the uploaded URL
+        setPhotoURL(finalPhotoURL);
+        
+        setIsEditing(false);
+        Alert.alert('Success', 'Profile updated successfully!');
+      } else {
+        Alert.alert('Error', error || 'Failed to update profile');
+      }
+    } catch (err) {
+      console.error('Save error:', err);
+      Alert.alert('Error', err.message || 'Failed to save profile');
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  const confirmSave = () => {
+    Alert.alert(
+      'Confirm Save',
+      'Save changes to your profile?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: () => { handleSave(); } },
+      ],
+      { cancelable: true }
+    );
+  }
 
   const handleCancel = () => {
-    
-    setName(user?.name || 'Walter White');
-    setEmail(user?.email || 'wwhite@los-pollos.com');
-    setPhone(user?.phone || '+63 912 345 6789');
-    setBio(user?.bio || 'Professional landlord with 5+ years of experience providing quality student accommodations in CDO. All properties are well-maintained and located near universities.');
-    setCompany(user?.company || 'Los Pollos Hermanos Properties');
-    setYearsExperience(user?.yearsExperience || '5');
-    setPhotoURL(user?.photoURL || 'https://i.insider.com/5d9f454ee94e865e924818da?width=700');
+    loadProfileData();
     setIsEditing(false);
   };
 
+  const confirmCancel = () => {
+    Alert.alert(
+      'Discard changes?',
+      'Are you sure you want to discard your changes? All unsaved changes will be lost.',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { handleCancel(); } },
+      ],
+      { cancelable: true }
+    );
+  }
+
   const contactInfo = [
-    { label: 'Email', value: landlordData.email, icon: 'mail' },
-    { label: 'Phone', value: landlordData.phone, icon: 'call' },
-    { label: 'Response Time', value: landlordData.responseTime, icon: 'time' },
+    { label: 'Email', value: email, icon: 'mail' },
+    { label: 'Phone', value: phone, icon: 'call' },
+    { label: 'Years Experience', value: yearsExperience, icon: 'briefcase' },
   ];
 
   return (
@@ -164,9 +269,14 @@ export default function LandlordProfile() {
           headerTitleStyle: {
             fontWeight: 'bold',
           },
+          headerLeft: () => (
+            <TouchableOpacity onPress={() => router.replace('/landlord/menu')} style={{ paddingLeft: 12 }}>
+              <Ionicons name="arrow-back" size={24} color="#fff" />
+            </TouchableOpacity>
+          ),
           headerRight: () => (
             <TouchableOpacity 
-              onPress={() => setIsEditing(!isEditing)} 
+              onPress={() => { if (isEditing) { handleCancel(); } else { setIsEditing(true); } }} 
               style={{ paddingRight: 16 }}
             >
               <Ionicons 
@@ -184,24 +294,35 @@ export default function LandlordProfile() {
       >
         <ScrollView style={styles.page} contentContainerStyle={styles.container}>
           
+          {/* Offline/Cached Data Banner */}
+          {isUsingCachedData && (
+            <View style={styles.cachedDataBanner}>
+              <Ionicons name="cloud-offline" size={18} color="#ff9800" />
+              <Text style={styles.cachedDataText}>
+                Viewing offline profile data
+              </Text>
+            </View>
+          )}
+          
           <View style={styles.profileHeader}>
             <TouchableOpacity 
               style={styles.photoContainer} 
               onPress={isEditing ? pickImage : null}
               disabled={!isEditing}
             >
-              <Image
-                source={{ uri: landlordData.photoURL }}
-                style={styles.profileImage}
-              />
+              {photoURL ? (
+                <Image
+                  source={{ uri: photoURL }}
+                  style={styles.profileImage}
+                />
+              ) : (
+                <View style={[styles.profileImage, styles.placeholderImage]}>
+                  <Ionicons name="person-circle" size={93} color="#667eea" />
+                </View>
+              )}
               {isEditing && (
                 <View style={styles.editPhotoOverlay}>
                   <Ionicons name="camera" size={24} color="white" />
-                </View>
-              )}
-              {landlordData.verified && (
-                <View style={styles.verifiedBadge}>
-                  <Ionicons name="checkmark-circle" size={20} color="#10b981" />
                 </View>
               )}
             </TouchableOpacity>
@@ -213,36 +334,48 @@ export default function LandlordProfile() {
                   value={name}
                   onChangeText={setName}
                   placeholder="Your name"
+                  placeholderTextColor="#999"
                 />
                 <TextInput
                   style={styles.editCompanyInput}
                   value={company}
                   onChangeText={setCompany}
                   placeholder="Company name"
+                  placeholderTextColor="#999"
+                />
+                <TextInput
+                  style={styles.editCompanyInput}
+                  value={yearsExperience}
+                  onChangeText={setYearsExperience}
+                  placeholder="Years of experience"
+                  placeholderTextColor="#999"
+                  keyboardType="numeric"
                 />
               </>
             ) : (
               <>
-                <Text style={styles.name}>{landlordData.name}</Text>
-                <Text style={styles.company}>{landlordData.company}</Text>
+                <Text style={styles.name}>{name}</Text>
+                <Text style={styles.company}>{company}</Text>
               </>
             )}
             
             <View style={styles.verificationSection}>
               <View style={styles.verificationBadge}>
                 <Ionicons 
-                  name={landlordData.verified ? "shield-checkmark" : "time"} 
+                  name="shield-checkmark" 
                   size={16} 
-                  color={landlordData.verified ? "#10b981" : "#666"} 
+                  color="#10b981"
                 />
                 <Text style={[
                   styles.verificationText,
-                  { color: landlordData.verified ? "#10b981" : "#666" }
+                  { color: "#10b981" }
                 ]}>
-                  {landlordData.verified ? 'Verified Landlord' : 'Pending Verification'}
+                  Verified Landlord
                 </Text>
               </View>
-              <Text style={styles.joinDate}>Member since {landlordData.joinDate}</Text>
+              <Text style={styles.joinDate}>
+                Member since {createdAt ? new Date(createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+              </Text>
             </View>
           </View>
 
@@ -268,17 +401,18 @@ export default function LandlordProfile() {
                 value={bio}
                 onChangeText={setBio}
                 placeholder="Tell tenants about yourself and your experience..."
+                placeholderTextColor="#999"
                 multiline
                 numberOfLines={4}
                 textAlignVertical="top"
               />
             ) : (
-              <Text style={styles.bioText}>{landlordData.bio}</Text>
+              <Text style={styles.bioText}>{bio}</Text>
             )}
             <View style={styles.experienceBadge}>
               <Ionicons name="trophy" size={16} color="#f59e0b" />
               <Text style={styles.experienceText}>
-                {landlordData.yearsExperience}+ years experience
+                {yearsExperience}+ years experience
               </Text>
             </View>
           </View>
@@ -300,6 +434,7 @@ export default function LandlordProfile() {
                         value={email}
                         onChangeText={setEmail}
                         placeholder="Email address"
+                        placeholderTextColor="#999"
                         keyboardType="email-address"
                       />
                     ) : isEditing && contact.label === 'Phone' ? (
@@ -308,6 +443,7 @@ export default function LandlordProfile() {
                         value={phone}
                         onChangeText={setPhone}
                         placeholder="Phone number"
+                        placeholderTextColor="#999"
                         keyboardType="phone-pad"
                       />
                     ) : (
@@ -369,7 +505,7 @@ export default function LandlordProfile() {
             <View style={styles.editActions}>
               <TouchableOpacity 
                 style={styles.saveButton}
-                onPress={handleSave}
+                onPress={confirmSave}
               >
                 <Ionicons name="checkmark" size={20} color="white" />
                 <Text style={styles.saveButtonText}>Save Changes</Text>
@@ -377,7 +513,7 @@ export default function LandlordProfile() {
               
               <TouchableOpacity 
                 style={styles.cancelButton}
-                onPress={handleCancel}
+                onPress={confirmCancel}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
@@ -427,6 +563,11 @@ const styles = StyleSheet.create({
     borderRadius: 50,
     borderWidth: 3,
     borderColor: Colors.primary,
+  },
+  placeholderImage: {
+    backgroundColor: '#e0e0e0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   editPhotoOverlay: {
     position: 'absolute',
@@ -701,6 +842,23 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 3,
     marginBottom: 40,
+  },
+  cachedDataBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff3cd',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#ff9800',
+  },
+  cachedDataText: {
+    fontSize: 14,
+    color: '#856404',
+    fontWeight: '500',
   },
   editButtonText: {
     color: Colors.primary,

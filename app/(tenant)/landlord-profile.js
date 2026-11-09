@@ -8,14 +8,15 @@ import {
   Image,
   ActivityIndicator,
   Linking,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { boardingHouses as mockData } from '../../data/mockData'; 
 import BoardingHouseCard from '../../components/BoardingHouseCard';
-
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
+import {
+  getListings,
+  getLandlordProfile as fetchLandlordProfile,
+} from '../../lib/supabaseClient';
 
 export default function LandlordProfile() {
   const { landlordId } = useLocalSearchParams();
@@ -43,36 +44,76 @@ export default function LandlordProfile() {
 
   useEffect(() => {
     const fetchLandlordData = async () => {
-      if (!landlordId) {
-        setIsLoading(false);
-        return;
-      }
-      
       try {
-        const jsonValue = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-        const allListings = jsonValue != null ? JSON.parse(jsonValue) : mockData;
+        setIsLoading(true);
+        if (!landlordId) {
+          throw new Error("Landlord ID is missing.");
+        }
 
-        // Match landlord by email, id, phone, or name
-        const listing = allListings.find(h => 
-          h.landlord?.email === landlordId ||
-          h.landlord?.id === landlordId ||
-          h.landlord?.phone === landlordId ||
-          h.landlord?.name === landlordId
-        );
+        // Directly fetch the landlord's profile and their listings
+        const { success, profile, error } = await fetchLandlordProfile(landlordId);
 
-        if (listing && listing.landlord) {
-          setLandlord(listing.landlord);
-          // Filter all listings by the matched landlord
-          const landlordListings = allListings.filter(h => 
-            h.landlord?.email === listing.landlord.email ||
-            h.landlord?.id === listing.landlord.id ||
-            h.landlord?.phone === listing.landlord.phone ||
-            h.landlord?.name === listing.landlord.name
-          );
-          setOtherListings(landlordListings);
+        if (success && profile) {
+          // Calculate combined rating from all listings
+          const listings = profile.listings || [];
+          let combinedRating = 0;
+          let totalReviews = 0;
+          
+          if (listings.length > 0) {
+            const ratingsData = listings.filter(l => l.rating && l.rating > 0);
+            if (ratingsData.length > 0) {
+              const totalRating = ratingsData.reduce((sum, listing) => sum + (listing.rating || 0), 0);
+              combinedRating = parseFloat((totalRating / ratingsData.length).toFixed(1));
+            }
+            totalReviews = listings.reduce((sum, listing) => sum + (listing.total_reviews || 0), 0);
+          }
+
+          const landlordData = {
+            id: profile.user_id,
+            name: `${profile.users?.first_name || ''} ${profile.users?.last_name || ''}`.trim(),
+            email: profile.users?.email,
+            phone: profile.users?.phone,
+            image: profile.users?.profile_image_url,
+            rating: combinedRating,
+            totalReviews: totalReviews,
+            verified: profile.bank_account_verified,
+            joinDate: profile.users?.created_at || null,
+            bio: profile.users?.bio,
+          };
+          setLandlord(landlordData);
+
+          // The listings are now directly available on the profile object
+          const transformedListings = (profile.listings || []).map(listing => ({
+            ...listing,
+            id: listing.id,
+            name: listing.title,
+            location: listing.city,
+            price: listing.price_per_month,
+            type: (function(enumVal) {
+              const labels = {
+                single_room: 'Single Room',
+                shared_room: 'Shared Room',
+                studio: 'Studio Unit',
+                suite: 'Suite',
+                bed_space: 'Bed Space',
+              };
+              return labels[enumVal] || (enumVal || 'Boarding House');
+            })(listing.room_type),
+            amenities: listing.amenities || [],
+            available: listing.available !== undefined ? listing.available : true,
+            landlord: {
+              name: landlordData.name || 'Unknown',
+              verified: landlordData.verified || false,
+            },
+          }));
+          setOtherListings(transformedListings);
+        } else {
+          throw new Error(error || 'Failed to load landlord data');
         }
       } catch (e) {
-        console.error("Failed to load landlord data", e);
+        console.error('Failed to load landlord data', e);
+        Alert.alert('Error', e.message || 'An unexpected error occurred.');
+        setLandlord(null); // Ensure no stale data is shown
       } finally {
         setIsLoading(false);
       }
@@ -81,11 +122,11 @@ export default function LandlordProfile() {
     fetchLandlordData();
   }, [landlordId]);
 
-  
   if (isLoading) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color="#667eea" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Loading landlord profile...</Text>
       </View>
     );
   }
@@ -98,8 +139,9 @@ export default function LandlordProfile() {
             <Ionicons name="arrow-back" size={24} color="#333" />
           </TouchableOpacity>
           <Text style={styles.title}>Landlord Profile</Text>
+          <View style={{ width: 40 }} />
         </View>
-        <Text style={{fontSize: 18, color: '#666'}}>Landlord not found</Text>
+        <Text style={{ marginTop: 20, fontSize: 16, color: '#666' }}>Could not find landlord profile.</Text>
       </View>
     );
   }
@@ -123,7 +165,7 @@ export default function LandlordProfile() {
         <View style={styles.profileHeader}>
           <View style={styles.avatarContainer}>
             <Image
-              source={{ uri: landlord.photoURL || landlord.image || 'https://via.placeholder.com/150' }}
+              source={{ uri: landlord.image || 'https://via.placeholder.com/150' }}
               style={styles.avatar}
             />
           </View>
@@ -136,12 +178,12 @@ export default function LandlordProfile() {
 
           <View style={styles.userTypeContainer}>
             <Ionicons 
-              name={landlord.verified ? "shield-checkmark" : "shield-outline"} 
+              name="checkmark-circle" 
               size={16} 
-              color={landlord.verified ? "#10b981" : "#666"} 
+              color="#10b981" 
             />
-            <Text style={[styles.userType, {color: landlord.verified ? "#10b981" : "#666"}]}> 
-              {landlord.verified ? 'Verified Landlord' : 'Not Verified'}
+            <Text style={[styles.userType, {color: "#10b981"}]}> 
+              Verified Landlord
             </Text>
 
             {landlord.yearsExperience ? (
@@ -166,24 +208,14 @@ export default function LandlordProfile() {
         
         <View style={styles.statsRow}>
           <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.totalProperties ?? otherListings.length}</Text>
+            <Text style={styles.statValue}>{otherListings.length}</Text>
             <Text style={styles.statLabel}>Properties</Text>
-          </View>
-
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.responseRate || '—'}</Text>
-            <Text style={styles.statLabel}>Response Rate</Text>
-          </View>
-
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{landlord.responseTime || '—'}</Text>
-            <Text style={styles.statLabel}>Response Time</Text>
           </View>
         </View>
 
         {landlord.joinDate ? (
           <View style={styles.joinDateRow}>
-            <Text style={styles.joinDateText}>Member since {landlord.joinDate}</Text>
+            <Text style={styles.joinDateText}>Member since {new Date(landlord.joinDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</Text>
           </View>
         ) : null}
 

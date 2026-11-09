@@ -6,35 +6,78 @@ import {
   TouchableOpacity,
   Image,
   FlatList,
-  ActivityIndicator, 
-  Alert, 
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { messages as mockMessages } from '../../data/mockData'; 
-import { router, useFocusEffect } from 'expo-router'; 
+import { router, useFocusEffect } from 'expo-router';
 import SearchBar from '../../components/SearchBar';
-import AsyncStorage from '@react-native-async-storage/async-storage'; 
-
-const MESSAGES_STORAGE_KEY = '@tenant_messages'; 
+import {
+  getCurrentUser,
+  getTenantProfile,
+  getConversations,
+  deleteConversation,
+} from '../../lib/supabaseClient'; 
 
 export default function Messages() {
   const [searchQuery, setSearchQuery] = useState('');
   const [allMessages, setAllMessages] = useState([]); 
-  const [isLoading, setIsLoading] = useState(true); 
+  const [isLoading, setIsLoading] = useState(true);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
 
-  
   const loadMessages = async () => {
     try {
-      const jsonValue = await AsyncStorage.getItem(MESSAGES_STORAGE_KEY);
-      if (jsonValue !== null) {
-        setAllMessages(JSON.parse(jsonValue));
+      setIsLoading(true);
+
+      // Get current user from auth
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      // Get tenant profile to get the tenant_profile.id
+      const { success: profileSuccess, profile, error: profileError } = await getTenantProfile(user.id);
+      if (!profileSuccess || !profile) {
+        Alert.alert('Error', profileError || 'Could not load tenant profile');
+        setIsLoading(false);
+        return;
+      }
+
+      setTenantProfileId(profile.id);
+
+      // Fetch conversations using tenant_profile.id
+      const { success, conversations, error } = await getConversations(profile.id);
+
+      if (success && conversations) {
+        // Transform conversations to message format
+        // Each conversation is a separate chat with a landlord
+        const messages = conversations.map(conv => ({
+          id: conv.id,
+          conversationId: conv.id,  // CRITICAL: Each conversation has unique ID
+          landlord: {
+            id: conv.landlord_profile?.id,
+            name: `${conv.landlord_profile?.users?.first_name || 'Unknown'} ${conv.landlord_profile?.users?.last_name || 'Landlord'}`,
+            email: conv.landlord_profile?.users?.email,
+            phone: conv.landlord_profile?.users?.phone,
+            image: conv.landlord_profile?.users?.profile_image_url,
+          },
+          houseName: conv.listing?.title || 'General Inquiry',
+          houseId: conv.listing_id,
+          lastMessage: conv.last_message,
+          time: conv.last_message_time,
+        }));
+
+        console.log(`[Messages] Loaded ${messages.length} conversations`);
+        setAllMessages(messages);
       } else {
-        await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify([]));
+        console.log('[Messages] No conversations found or error:', error);
         setAllMessages([]);
       }
     } catch (e) {
-      console.error("Failed to load messages", e);
-      setAllMessages([]); 
+      console.error('Failed to load messages', e);
+      setAllMessages([]);
     } finally {
       setIsLoading(false);
     }
@@ -43,7 +86,6 @@ export default function Messages() {
   
   useFocusEffect(
     useCallback(() => {
-      setIsLoading(true);
       loadMessages();
     }, [])
   );
@@ -53,15 +95,10 @@ export default function Messages() {
   );
 
   const handlePressMessage = (item) => {
-    const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
     router.push({
       pathname: '/(tenant)/chat',
       params: {
-        landlordId: contactKey(item.landlord),
-        landlordName: item.landlord.name,
-        landlordImage: item.landlord.image,
-        houseName: item.houseName,
-        houseId: item.houseId,
+        conversationId: item.conversationId,
       },
     });
   };
@@ -81,20 +118,24 @@ export default function Messages() {
           style: "destructive",
           onPress: async () => {
             try {
-             
+              // Attempt server-side deletion of conversation and messages
+              const user = await getCurrentUser();
+              if (user && user.id) {
+                const res = await deleteConversation(itemToDelete.conversationId, user.id, true);
+                if (!res.success) {
+                  throw new Error(res.error || 'Failed to delete conversation on server');
+                }
+              }
+
+              // Remove from local state
               const newMessagesList = allMessages.filter(
                 (item) => item.id !== itemToDelete.id
               );
-              
-              
               setAllMessages(newMessagesList);
-              
-              
-              await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(newMessagesList));
+              Alert.alert('Deleted', 'Conversation has been removed.');
             } catch (e) {
               console.error("Failed to delete message", e);
               Alert.alert("Error", "Could not delete conversation.");
-              
               loadMessages();
             }
           }

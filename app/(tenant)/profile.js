@@ -1,5 +1,13 @@
 // app/(tenant)/profile.js
-import React, { useCallback } from 'react';
+/**
+ * Tenant Profile Screen
+ * Database Tables Used:
+ * - users: Store user info (first_name, last_name, email, phone, bio, profile_image_url)
+ * - tenant_profile: Store tenant details (occupation, budget_min, budget_max, preferences, emergency_contact_*)
+ * - storage/profile-images: Upload profile pictures
+ */
+
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   KeyboardAvoidingView,
@@ -12,40 +20,201 @@ import {
   TextInput,
   Alert,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
+import {
+  getCurrentUser,
+  getTenantProfile,
+  updateTenantProfile,
+  uploadProfileImage,
+  handleError,
+  getFavorites,
+  getTenantBookings,
+} from '../../lib/supabaseClient';
+import { getCachedImage } from '../../lib/imageCache';
 
 export default function Profile() {
-  const [userData, setUserData] = React.useState({
-    name: 'Jesse Pinkman',
-    email: 'jessepinkmanyo@gmail.com',
-    phone: '+1 234 567 8900',
-    bio: 'Looking for a cozy boarding house near Xavier University. Prefer quiet neighborhoods with good internet connection.',
-    type: 'Tenant',
-    photoURL: 'https://i.insider.com/5d9f454ee94e865e924818da?width=700'
-  });
+  const [userData, setUserData] = useState(null);
+  const [tenantData, setTenantData] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [profileImageUri, setProfileImageUri] = useState(null);
+  const [isUsingCachedData, setIsUsingCachedData] = useState(false);
+  const [savedCount, setSavedCount] = useState(0);
+  const [appliedCount, setAppliedCount] = useState(0);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
 
-  const [isEditing, setIsEditing] = React.useState(false);
+  // Load profile on mount
+  useEffect(() => {
+    loadProfile();
+  }, []);
 
-  const handleSaveProfile = () => {
-    setIsEditing(false);
-    Alert.alert('Success', 'Profile updated successfully!');
+  // Reload stats when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      if (tenantProfileId) {
+        loadStats(tenantProfileId);
+      }
+    }, [tenantProfileId])
+  );
+
+  const loadStats = async (tenantId) => {
+    try {
+      // Fetch favorites count
+      const { success: favSuccess, favorites } = await getFavorites(tenantId);
+      if (favSuccess && favorites) {
+        setSavedCount(favorites.length);
+      }
+
+      // Fetch bookings count
+      const { success: bookSuccess, bookings } = await getTenantBookings(tenantId);
+      if (bookSuccess && bookings) {
+        setAppliedCount(bookings.length);
+      }
+    } catch (error) {
+      console.error('Load stats error:', error);
+    }
+  };
+
+  const loadProfile = async () => {
+    try {
+      setLoading(true);
+      const user = await getCurrentUser();
+
+      if (!user) {
+        // User not logged in, redirect to login
+        router.replace('/(auth)/index');
+        return;
+      }
+
+      const { success, user: userData, profile: profileData, fromCache } = await getTenantProfile(user.id);
+
+      if (success) {
+        setUserData(userData);
+        setTenantData(profileData);
+        setIsUsingCachedData(fromCache || false);
+        setTenantProfileId(profileData?.id);
+        
+        // Load stats
+        if (profileData?.id) {
+          loadStats(profileData.id);
+        }
+        
+        // Attempt to cache profile image for offline usage
+        try {
+          const imgUrl = userData?.profile_image_url || userData?.profile_image || null;
+          if (imgUrl) {
+            getCachedImage(imgUrl).then((local) => {
+              if (local) setProfileImageUri(local);
+            }).catch(() => {});
+          }
+        } catch (err) {
+          // ignore cache errors
+        }
+      } else {
+        Alert.alert('Error', 'Failed to load profile');
+      }
+    } catch (error) {
+      console.error('Load profile error:', error);
+      Alert.alert('Error', 'Failed to load profile');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCancelEdit = () => {
     setIsEditing(false);
-    // Reset any changes here if needed
+    loadProfile(); // Reload to discard changes
   };
+
+  const confirmCancelEdit = () => {
+    Alert.alert(
+      'Confirm Cancel',
+      'Discard changes? All unsaved changes will be lost.',
+      [
+        { text: 'Continue Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { handleCancelEdit(); } },
+      ],
+      { cancelable: true }
+    );
+  }
+
+  const handleSaveProfile = async () => {
+    try {
+      setLoading(true);
+      const user = await getCurrentUser();
+
+      if (!user) {
+        Alert.alert('Error', 'User not authenticated');
+        return;
+      }
+
+      // Prepare updates with proper structure
+      const userUpdates = {
+        first_name: userData?.first_name,
+        last_name: userData?.last_name,
+        email: userData?.email,
+        phone: userData?.phone,
+        bio: userData?.bio,
+        profile_image_url: userData?.profile_image_url,
+      };
+
+      const profileUpdates = {
+        occupation: tenantData?.occupation,
+        budget_min: tenantData?.budget_min,
+        budget_max: tenantData?.budget_max,
+        preferences: tenantData?.preferences,
+        emergency_contact_name: tenantData?.emergency_contact_name,
+        emergency_contact_phone: tenantData?.emergency_contact_phone,
+      };
+
+      // Update profile in database
+      const { success: userSuccess, error: userError } = await updateTenantProfile(
+        user.id,
+        { userUpdates, profileUpdates }
+      );
+
+      if (userSuccess) {
+        Alert.alert('Success', 'Profile saved successfully');
+        setIsEditing(false);
+        loadProfile(); // Reload to confirm changes
+      } else {
+        Alert.alert('Error', userError || 'Failed to save profile');
+      }
+    } catch (error) {
+      console.error('Save profile error:', error);
+      Alert.alert('Error', 'Failed to save profile');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmSaveProfile = () => {
+    Alert.alert(
+      'Confirm Save',
+      'Save changes to your profile?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: () => { handleSaveProfile(); } },
+      ],
+      { cancelable: true }
+    );
+  }
 
   const pickImage = async () => {
     try {
+      setUploading(true);
+      const user = await getCurrentUser();
+
       // Request permissions
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission required', 'Sorry, we need camera roll permissions to change your profile photo.');
+        Alert.alert('Permission required', 'We need camera roll permissions to change your profile photo.');
         return;
       }
 
@@ -58,11 +227,32 @@ export default function Profile() {
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
-        setUserData({...userData, photoURL: result.assets[0].uri});
+        // Upload to Supabase Storage
+        const { success, publicUrl, error } = await uploadProfileImage(
+          user.id,
+          result.assets[0].uri,
+          'profile'
+        );
+
+        if (success) {
+          setUserData({ ...userData, profile_image_url: publicUrl });
+          // Cache the newly uploaded image
+          try {
+            const local = await getCachedImage(publicUrl);
+            if (local) setProfileImageUri(local);
+          } catch (err) {
+            // ignore
+          }
+          Alert.alert('Success', 'Profile image uploaded');
+        } else {
+          Alert.alert('Error', error || 'Failed to upload image');
+        }
       }
     } catch (err) {
       console.warn('Image pick error', err);
-      Alert.alert('Error', 'Failed to pick image. Please try again.');
+      Alert.alert('Error', 'Failed to pick image');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -93,13 +283,15 @@ export default function Profile() {
       };
     }, []) 
   );
-  
   const takePhoto = async () => {
     try {
+      setUploading(true);
+      const user = await getCurrentUser();
+
       // Request camera permissions
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission required', 'Sorry, we need camera permissions to take a photo.');
+        Alert.alert('Permission required', 'We need camera permissions to take a photo.');
         return;
       }
 
@@ -111,11 +303,32 @@ export default function Profile() {
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
-        setUserData({...userData, photoURL: result.assets[0].uri});
+        // Upload to Supabase Storage
+        const { success, publicUrl, error } = await uploadProfileImage(
+          user.id,
+          result.assets[0].uri,
+          'profile'
+        );
+
+        if (success) {
+          setUserData({ ...userData, profile_image_url: publicUrl });
+          // Cache the newly uploaded photo
+          try {
+            const local = await getCachedImage(publicUrl);
+            if (local) setProfileImageUri(local);
+          } catch (err) {
+            // ignore
+          }
+          Alert.alert('Success', 'Photo uploaded');
+        } else {
+          Alert.alert('Error', error || 'Failed to upload photo');
+        }
       }
     } catch (err) {
       console.warn('Camera error', err);
-      Alert.alert('Error', 'Failed to take photo. Please try again.');
+      Alert.alert('Error', 'Failed to take photo');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -141,16 +354,32 @@ export default function Profile() {
   };
 
   const stats = [
-    { label: 'Saved', value: '12', icon: 'heart' },
-    { label: 'Viewed', value: '24', icon: 'eye' },
-    { label: 'Applied', value: '5', icon: 'document-text' },
+    { label: 'Saved', value: savedCount.toString(), icon: 'heart' },
+    { label: 'Applied', value: appliedCount.toString(), icon: 'document-text' },
   ];
 
   const contactInfo = [
-    { label: 'Email', value: userData.email, icon: 'mail' },
-    { label: 'Phone', value: userData.phone, icon: 'call' },
+    { label: 'Email', value: userData?.email || '', icon: 'mail' },
+    { label: 'Phone', value: userData?.phone || '', icon: 'call' },
     { label: 'Status', value: 'Active', icon: 'checkmark-circle' },
   ];
+
+  if (loading) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#667eea" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Loading profile...</Text>
+      </View>
+    );
+  }
+
+  if (!userData) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Text style={{ color: '#666' }}>No profile data found</Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView style={styles.container} 
@@ -179,6 +408,16 @@ export default function Profile() {
       </View>
 
       <ScrollView style={styles.page} contentContainerStyle={styles.scrollContent}>
+        {/* Offline/Cached Data Banner */}
+        {isUsingCachedData && (
+          <View style={styles.cachedDataBanner}>
+            <Ionicons name="cloud-offline" size={18} color="#ff9800" />
+            <Text style={styles.cachedDataText}>
+              Viewing offline profile data
+            </Text>
+          </View>
+        )}
+        
         {/* Profile Header */}
         <View style={styles.profileHeader}>
           <TouchableOpacity 
@@ -187,7 +426,7 @@ export default function Profile() {
             disabled={!isEditing}
           >
             <Image
-              source={{ uri: userData.photoURL }}
+              source={{ uri: profileImageUri || userData?.profile_image_url || userData?.profile_image || 'https://via.placeholder.com/150' }}
               style={styles.profileImage}
             />
             {isEditing && (
@@ -201,20 +440,30 @@ export default function Profile() {
             <>
               <TextInput
                 style={styles.editNameInput}
-                value={userData.name}
-                onChangeText={(text) => setUserData({...userData, name: text})}
-                placeholder="Your name"
+                value={userData?.first_name || ''}
+                onChangeText={(text) => setUserData({...userData, first_name: text})}
+                placeholder="First name"
+                placeholderTextColor="#999"
+              />
+              <TextInput
+                style={styles.editNameInput}
+                value={userData?.last_name || ''}
+                onChangeText={(text) => setUserData({...userData, last_name: text})}
+                placeholder="Last name"
+                placeholderTextColor="#999"
               />
             </>
           ) : (
             <>
-              <Text style={styles.name}>{userData.name}</Text>
-              <Text style={styles.userType}>{userData.type}</Text>
+              <Text style={styles.name}>{userData?.first_name} {userData?.last_name}</Text>
+              <Text style={styles.userType}>Tenant</Text>
             </>
           )}
           
           <View style={styles.verificationSection}>
-            <Text style={styles.joinDate}>Member since 2023</Text>
+            <Text style={styles.joinDate}>
+              Member since {userData?.created_at ? new Date(userData.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+            </Text>
           </View>
         </View>
 
@@ -237,15 +486,64 @@ export default function Profile() {
           {isEditing ? (
             <TextInput
               style={styles.editBioInput}
-              value={userData.bio}
+              value={userData?.bio || ''}
               onChangeText={(text) => setUserData({...userData, bio: text})}
               placeholder="Tell us about yourself and what you're looking for..."
+              placeholderTextColor="#999"
               multiline
               numberOfLines={4}
               textAlignVertical="top"
             />
           ) : (
-            <Text style={styles.bioText}>{userData.bio}</Text>
+            <Text style={styles.bioText}>{userData?.bio || 'No bio added'}</Text>
+          )}
+        </View>
+
+        {/* Preferences Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Budget & Preferences</Text>
+          {isEditing ? (
+            <>
+              <TextInput
+                style={styles.input}
+                placeholder="Occupation"
+                placeholderTextColor="#999"
+                value={tenantData?.occupation || ''}
+                onChangeText={(text) => setTenantData({...tenantData, occupation: text})}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Min Budget"
+                placeholderTextColor="#999"
+                value={String(tenantData?.budget_min || '')}
+                keyboardType="decimal-pad"
+                onChangeText={(text) => setTenantData({...tenantData, budget_min: parseFloat(text) || 0})}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Max Budget"
+                placeholderTextColor="#999"
+                value={String(tenantData?.budget_max || '')}
+                keyboardType="decimal-pad"
+                onChangeText={(text) => setTenantData({...tenantData, budget_max: parseFloat(text) || 0})}
+              />
+              <TextInput
+                style={[styles.input, { height: 80 }]}
+                placeholder="Preferences"
+                placeholderTextColor="#999"
+                value={tenantData?.preferences || ''}
+                multiline
+                numberOfLines={4}
+                onChangeText={(text) => setTenantData({...tenantData, preferences: text})}
+                textAlignVertical="top"
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.bioText}><Text style={{fontWeight: '600'}}>Occupation:</Text> {tenantData?.occupation || 'Not specified'}</Text>
+              <Text style={styles.bioText}><Text style={{fontWeight: '600'}}>Budget:</Text> ₱{tenantData?.budget_min?.toLocaleString() || '0'} - ₱{tenantData?.budget_max?.toLocaleString() || '0'}</Text>
+              <Text style={styles.bioText}><Text style={{fontWeight: '600'}}>Preferences:</Text> {tenantData?.preferences || 'Not specified'}</Text>
+            </>
           )}
         </View>
 
@@ -253,37 +551,87 @@ export default function Profile() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Contact Information</Text>
           <View style={styles.contactList}>
-            {contactInfo.map((contact, index) => (
-              <View key={index} style={styles.contactItem}>
-                <View style={styles.contactIcon}>
-                  <Ionicons name={contact.icon} size={18} color="#667eea" />
-                </View>
-                <View style={styles.contactDetails}>
-                  <Text style={styles.contactLabel}>{contact.label}</Text>
-                  {isEditing && contact.label === 'Email' ? (
-                    <TextInput
-                      style={styles.editContactInput}
-                      value={userData.email}
-                      onChangeText={(text) => setUserData({...userData, email: text})}
-                      placeholder="Email address"
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                    />
-                  ) : isEditing && contact.label === 'Phone' ? (
-                    <TextInput
-                      style={styles.editContactInput}
-                      value={userData.phone}
-                      onChangeText={(text) => setUserData({...userData, phone: text})}
-                      placeholder="Phone number"
-                      keyboardType="phone-pad"
-                    />
-                  ) : (
-                    <Text style={styles.contactValue}>{contact.value}</Text>
-                  )}
-                </View>
+            <View style={styles.contactItem}>
+              <View style={styles.contactIcon}>
+                <Ionicons name="mail" size={18} color="#667eea" />
               </View>
-            ))}
+              <View style={styles.contactDetails}>
+                <Text style={styles.contactLabel}>Email</Text>
+                {isEditing ? (
+                  <TextInput
+                    style={styles.editContactInput}
+                    value={userData?.email || ''}
+                    editable={false}
+                    placeholder="Email address"
+                    placeholderTextColor="#999"
+                    keyboardType="email-address"
+                  />
+                ) : (
+                  <Text style={styles.contactValue}>{userData?.email}</Text>
+                )}
+              </View>
+            </View>
+
+            <View style={styles.contactItem}>
+              <View style={styles.contactIcon}>
+                <Ionicons name="call" size={18} color="#667eea" />
+              </View>
+              <View style={styles.contactDetails}>
+                <Text style={styles.contactLabel}>Phone</Text>
+                {isEditing ? (
+                  <TextInput
+                    style={styles.editContactInput}
+                    value={userData?.phone || ''}
+                    onChangeText={(text) => setUserData({...userData, phone: text})}
+                    placeholder="Phone number"
+                    placeholderTextColor="#999"
+                    keyboardType="phone-pad"
+                  />
+                ) : (
+                  <Text style={styles.contactValue}>{userData?.phone}</Text>
+                )}
+              </View>
+            </View>
+
+            <View style={styles.contactItem}>
+              <View style={styles.contactIcon}>
+                <Ionicons name="checkmark-circle" size={18} color="#667eea" />
+              </View>
+              <View style={styles.contactDetails}>
+                <Text style={styles.contactLabel}>Status</Text>
+                <Text style={styles.contactValue}>Active</Text>
+              </View>
+            </View>
           </View>
+        </View>
+
+        {/* Emergency Contact */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Emergency Contact</Text>
+          {isEditing ? (
+            <>
+              <TextInput
+                style={styles.input}
+                placeholder="Contact Name"
+                placeholderTextColor="#999"
+                value={tenantData?.emergency_contact_name || ''}
+                onChangeText={(text) => setTenantData({...tenantData, emergency_contact_name: text})}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Contact Phone"
+                placeholderTextColor="#999"
+                value={tenantData?.emergency_contact_phone || ''}
+                keyboardType="phone-pad"
+                onChangeText={(text) => setTenantData({...tenantData, emergency_contact_phone: text})}
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.bioText}><Text style={{fontWeight: '600'}}>Name:</Text> {tenantData?.emergency_contact_name || 'Not specified'}</Text>
+              <Text style={styles.bioText}><Text style={{fontWeight: '600'}}>Phone:</Text> {tenantData?.emergency_contact_phone || 'Not specified'}</Text>
+            </>
+          )}
         </View>
 
         {/* Action Buttons */}
@@ -291,15 +639,17 @@ export default function Profile() {
           <View style={styles.editActions}>
             <TouchableOpacity 
               style={styles.saveButton}
-              onPress={handleSaveProfile}
+              onPress={confirmSaveProfile}
+              disabled={loading}
             >
               <Ionicons name="checkmark" size={20} color="white" />
-              <Text style={styles.saveButtonText}>Save Changes</Text>
+              <Text style={styles.saveButtonText}>{loading ? 'Saving...' : 'Save Changes'}</Text>
             </TouchableOpacity>
             
             <TouchableOpacity 
               style={styles.cancelButton}
-              onPress={handleCancelEdit}
+              onPress={confirmCancelEdit}
+              disabled={loading}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
@@ -308,6 +658,7 @@ export default function Profile() {
           <TouchableOpacity 
             style={styles.editButtonBottom}
             onPress={() => setIsEditing(true)}
+            disabled={loading}
           >
             <Ionicons name="create" size={20} color="#667eea" />
             <Text style={styles.editButtonText}>Edit Profile</Text>
@@ -316,7 +667,7 @@ export default function Profile() {
       </ScrollView>
     </KeyboardAvoidingView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
@@ -427,6 +778,23 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 3,
     marginBottom: 16,
+  },
+  cachedDataBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff3cd',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#ff9800',
+  },
+  cachedDataText: {
+    fontSize: 14,
+    color: '#856404',
+    fontWeight: '500',
   },
   statItem: {
     flex: 1,

@@ -12,16 +12,18 @@ import {
 } from 'react-native';
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import BoardingHouseCard from '../../components/BoardingHouseCard';
-
-const FAVORITES_STORAGE_KEY = '@tenant_favorites';
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
-const boardingHouses = require('../../data/mockData').boardingHouses;
+import {
+  getCurrentUser,
+  getTenantProfile,
+  getFavorites,
+  toggleFavorite,
+} from '../../lib/supabaseClient';
 
 export default function Favorites() {
   const [favorites, setFavorites] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
 
   useEffect(() => {
     loadFavorites();
@@ -63,39 +65,82 @@ export default function Favorites() {
 
   const loadFavorites = async () => {
     try {
-      const favoritesJson = await AsyncStorage.getItem(FAVORITES_STORAGE_KEY);
-      const savedFavorites = favoritesJson ? JSON.parse(favoritesJson) : [];
-      
-      // Get all listings to match with favorites
-      const listingsJson = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-      const allListings = listingsJson ? JSON.parse(listingsJson) : boardingHouses;
-      
-      // Match favorite IDs with actual house data and deduplicate
-      const favoriteHousesMap = new Map();
-      savedFavorites.forEach(favId => {
-        const house = allListings.find(house => String(house.id) === String(favId));
-        if (house && house.id) {
-          favoriteHousesMap.set(String(house.id), house);
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      // Get tenant profile
+      const { profile } = await getTenantProfile(user.id);
+      if (profile?.id) {
+        setTenantProfileId(profile.id);
+
+        // Fetch favorites with listings data
+        const { success, favorites: favoritesList, error } = await getFavorites(profile.id);
+
+        if (success) {
+          // Transform Supabase data to match component expectations
+          const transformedFavorites = favoritesList.map(favorite => ({
+            id: favorite.listings?.id,
+            name: favorite.listings?.title,
+            description: favorite.listings?.description,
+            location: favorite.listings?.city,
+            address: favorite.listings?.address,
+            price: favorite.listings?.price_per_month,
+            type: (function(enumVal) {
+              const labels = {
+                single_room: 'Single Room',
+                shared_room: 'Shared Room',
+                studio: 'Studio Unit',
+                suite: 'Suite',
+                bed_space: 'Bed Space',
+              };
+              return labels[enumVal] || (enumVal || 'Boarding House');
+            })(favorite.listings?.room_type),
+            rating: favorite.listings?.rating,
+            totalReviews: favorite.listings?.total_reviews,
+            images: favorite.listings?.images || [],
+            amenities: favorite.listings?.amenities || [],
+            landlord: {
+              id: favorite.listings?.landlord_profile?.user_id,
+              name: `${favorite.listings?.landlord_profile?.users?.first_name} ${favorite.listings?.landlord_profile?.users?.last_name}`,
+              image: favorite.listings?.landlord_profile?.users?.profile_image_url,
+              rating: favorite.listings?.landlord_profile?.rating,
+              verified: favorite.listings?.landlord_profile?.bank_account_verified,
+            },
+            latitude: favorite.listings?.latitude,
+            longitude: favorite.listings?.longitude,
+          }));
+
+          setFavorites(transformedFavorites);
+        } else {
+          Alert.alert('Error', error || 'Failed to load favorites');
         }
-      });
-      
-      const favoriteHouses = Array.from(favoriteHousesMap.values());
-      setFavorites(favoriteHouses);
+      }
     } catch (error) {
       console.error('Failed to load favorites', error);
-      setFavorites([]);
+      Alert.alert('Error', 'Failed to load favorites');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const removeFromFavorites = async (houseId) => {
+  const removeFromFavorites = async (listingId) => {
     try {
-      const updatedFavorites = favorites.filter(house => house.id !== houseId);
-      const favoriteIds = updatedFavorites.map(house => house.id);
-      
-      await AsyncStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favoriteIds));
-      setFavorites(updatedFavorites);
+      if (!tenantProfileId) return;
+
+      const result = await toggleFavorite(tenantProfileId, listingId, true);
+
+      if (result.success) {
+        setFavorites(favorites.filter(house => house.id !== listingId));
+      } else {
+        Alert.alert('Error', result.error || 'Failed to remove from favorites');
+      }
     } catch (error) {
       console.error('Failed to remove favorite', error);
       Alert.alert('Error', 'Failed to remove from favorites');
@@ -129,6 +174,13 @@ export default function Favorites() {
       <BoardingHouseCard 
         house={item} 
         onPress={() => handleHousePress(item)}
+        isFavoriteProp={true}
+        onFavoriteChange={(listingId, newFavoriteStatus) => {
+          if (!newFavoriteStatus) {
+            // If unfavorited, remove from list
+            removeFromFavorites(listingId);
+          }
+        }}
       />
       <TouchableOpacity 
         style={styles.removeButton}

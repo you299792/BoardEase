@@ -1,5 +1,4 @@
-
-import React, { useContext, useState, useEffect } from 'react';
+ import React, { useContext, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,11 +9,17 @@ import {
   Alert,
   Dimensions,
   FlatList,
+  ActivityIndicator,
 } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import { GlobalListingContext } from './_layout';
+import {
+  getCurrentUser,
+  deleteListing as deleteListingFromDB,
+  getListing,
+} from '../../lib/supabaseClient';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -23,22 +28,46 @@ export default function ListingDetails() {
   const { listings, deleteListing, updateListing } = useContext(GlobalListingContext);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [listing, setListing] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
-  
   useEffect(() => {
-    const foundListing = listings.find(l => l.id === id);
-    if (foundListing) {
-      setListing(foundListing);
-      
-      
-      const updatedListing = {
-        ...foundListing,
-        views: (foundListing.views || 0) + 1,
-        lastViewed: new Date().toISOString(),
-      };
-      updateListing(id, updatedListing);
+    const fetchListing = async () => {
+      try {
+        setIsLoading(true);
+        const { success, listing: dbListing, error } = await getListing(id);
+        
+        if (success && dbListing) {
+          console.log('[ListingDetails] Fetched listing from DB:', {
+            id: dbListing.id,
+            created_at: dbListing.created_at,
+            title: dbListing.title,
+          });
+          setListing(dbListing);
+        } else {
+          console.error('[ListingDetails] Failed to fetch listing:', error);
+          Alert.alert('Error', 'Failed to load listing details');
+        }
+      } catch (err) {
+        console.error('[ListingDetails] Error fetching listing:', err);
+        Alert.alert('Error', 'Failed to load listing details');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (id) {
+      fetchListing();
     }
-  }, [id, listings]);
+  }, [id]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </View>
+    );
+  }
 
   if (!listing) {
     return (
@@ -57,21 +86,56 @@ export default function ListingDetails() {
           text: "Cancel",
           style: "cancel"
         },
-        { 
-          text: "Delete", 
-          onPress: () => {
-            deleteListing(id);
-            router.back();
+        {
+          text: "Delete",
+          onPress: async () => {
+            setIsDeleting(true);
+            try {
+              const { success, error } = await deleteListingFromDB(id);
+              if (success) {
+                deleteListing(id);
+                router.back();
+              } else {
+                Alert.alert('Error', error || 'Failed to delete property');
+              }
+            } catch (err) {
+              Alert.alert('Error', err.message || 'Failed to delete property');
+            } finally {
+              setIsDeleting(false);
+            }
           },
-          style: "destructive" 
+          style: "destructive"
         }
       ]
     );
   };
 
-  const handleEditListing = () => {
-    router.push(`/landlord/create-listing?id=${id}`);
-  };
+ const handleEditListing = (id) => {
+  if (!id) {
+    console.warn('handleEditListing called without id');
+    return;
+  }
+
+  // Optionally find the listing object if you want to prefill the editor via context/state
+  const listing = listings.find((l) => l.id === id);
+  if (!listing) {
+    console.warn('Listing not found for edit:', id);
+  }
+
+  // Close overlay if open
+  if (showListingOverlay) {
+    setShowListingOverlay(false);
+  }
+
+  // Navigate to your edit screen.
+  // Use the same route pattern you use elsewhere — listing-details uses:
+  // router.push(`/landlord/create-listing?id=${id}`)
+  // so we'll reuse that to open the editor with the id query param:
+  router.push(`/landlord/create-listing?id=${id}`);
+
+  // If you prefer a dedicated edit route, change the push target accordingly:
+  // router.push(`/landlord/edit-listing/${id}`);
+};
 
   const handleToggleStatus = () => {
     const newStatus = listing.status === 'available' ? 'occupied' : 'available';
@@ -158,10 +222,11 @@ export default function ListingDetails() {
             scrollEventThrottle={16}
           >
             {listing.images.map((image, index) => (
-              <Image
+              <CachedRemoteImage
                 key={index}
-                source={{ uri: image }}
+                uri={image}
                 style={styles.listingImage}
+                placeholder={null}
               />
             ))}
           </ScrollView>
@@ -201,15 +266,7 @@ export default function ListingDetails() {
             <Ionicons name="location-outline" size={16} color="#666" />
             <Text style={styles.listingLocation}>{listing.location}</Text>
           </View>
-
-          <View style={styles.ratingRow}>
-            <View style={styles.ratingContainer}>
-              <Ionicons name="star" size={18} color="#FFD700" />
-              <Text style={styles.ratingText}>{listing.rating || 'New'}</Text>
-              <Text style={styles.reviewsText}>({listing.reviews || 0} reviews)</Text>
-            </View>
-            <Text style={styles.listingType}>{listing.type || 'Boarding House'}</Text>
-          </View>
+          <Text style={styles.listingType}>{listing.type || 'Boarding House'}</Text>
         </View>
 
         
@@ -256,6 +313,19 @@ export default function ListingDetails() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Property Details</Text>
           <Text style={styles.description}>{listing.description || 'No description provided.'}</Text>
+          
+          {(listing.created_at || listing.createdAt) && (
+            <View style={styles.createdAtContainer}>
+              <Ionicons name="calendar-outline" size={16} color="#666" />
+              <Text style={styles.createdAtText}>
+                Listed on {new Date(listing.created_at || listing.createdAt).toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                })}
+              </Text>
+            </View>
+          )}
           
           <View style={styles.detailsGrid}>
             <View style={styles.detailItem}>
@@ -598,6 +668,24 @@ const styles = StyleSheet.create({
   activityText: {
     fontSize: 14,
     color: '#666',
+  },
+  createdAtContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#f0f9ff',
+    borderRadius: 8,
+    marginBottom: 16,
+    borderLeftWidth: 3,
+    borderLeftColor: '#667eea',
+  },
+  createdAtText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+    flex: 1,
   },
   dangerZone: {
     borderWidth: 1,

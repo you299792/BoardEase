@@ -7,7 +7,6 @@ import { boardingHouses } from '../../data/mockData';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { InquiriesTabIcon, LandlordNotificationsTabIcon } from '../../components/TabBarBadge'; 
 
-
 const LISTINGS_STORAGE_KEY = '@landlord_listings';
 
 export const GlobalListingContext = React.createContext({
@@ -22,16 +21,19 @@ export default function LandlordLayout() {
   const [listingsData, setListingsData] = useState([]);
   const [isLoading, setIsLoading] = useState(true); 
 
-
   useEffect(() => {
     const loadListingsFromStorage = async () => {
       try {
         const jsonValue = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
         if (jsonValue !== null) {
-          
-          setListingsData(JSON.parse(jsonValue));
+          const parsed = JSON.parse(jsonValue);
+          console.log('[GlobalListingContext] Loaded listings from AsyncStorage:', {
+            count: parsed.length,
+            firstListingTimestamp: parsed[0] ? { created_at: parsed[0].created_at, createdAt: parsed[0].createdAt } : null,
+          });
+          setListingsData(parsed);
         } else {
-          
+          console.log('[GlobalListingContext] No listings in AsyncStorage');
           setListingsData([]); 
         }
       } catch (e) {
@@ -45,13 +47,15 @@ export default function LandlordLayout() {
     loadListingsFromStorage();
   }, []); 
 
- 
   useEffect(() => {
-    
     if (!isLoading) {
       const saveListingsToStorage = async () => {
         try {
           const jsonValue = JSON.stringify(listingsData);
+          console.log('[GlobalListingContext] Saving listings to AsyncStorage:', {
+            count: listingsData.length,
+            firstListingTimestamp: listingsData[0] ? { created_at: listingsData[0].created_at, createdAt: listingsData[0].createdAt } : null,
+          });
           await AsyncStorage.setItem(LISTINGS_STORAGE_KEY, jsonValue);
         } catch (e) {
           console.error("Failed to save listings", e);
@@ -61,8 +65,6 @@ export default function LandlordLayout() {
     }
   }, [listingsData, isLoading]); 
 
-
- 
   const updateListing = useCallback((id, updatedPayload) => {
     setListingsData(prevListings => {
       const index = prevListings.findIndex(l => String(l.id) === String(id));
@@ -76,19 +78,31 @@ export default function LandlordLayout() {
     });
   }, []);
 
- 
+  const addListing = useCallback((listing) => {
+    console.log('[GlobalListingContext] Adding listing to context:', {
+      id: listing?.id,
+      created_at: listing?.created_at,
+      createdAt: listing?.createdAt,
+      title: listing?.title,
+    });
+    setListingsData(prevListings => {
+      const newListings = [...prevListings, listing];
+      console.log('[GlobalListingContext] New listings count:', newListings.length);
+      return newListings;
+    });
+  }, []);
+
   const deleteListing = useCallback((id) => {
     setListingsData(prevListings => prevListings.filter(l => String(l.id) !== String(id)));
   }, []);
 
-
   const contextValue = {
     listings: listingsData,
     updateListing: updateListing,
+    addListing: addListing,
     deleteListing: deleteListing,
   };
 
- 
   if (isLoading) {
     return (
       <ActivityIndicator size="large" color={primaryColor} style={{ flex: 1 }} />
@@ -99,7 +113,6 @@ export default function LandlordLayout() {
     <GlobalListingContext.Provider value={contextValue}>
       <Tabs
         screenOptions={{
-          
           tabBarStyle: {
             backgroundColor: 'white',
             borderTopColor: '#e5e5e5',
@@ -119,7 +132,7 @@ export default function LandlordLayout() {
           },
         }}
       >
-        
+        {/* --- VISIBLE TABS --- */}
         <Tabs.Screen
           name="index" 
           options={{
@@ -174,18 +187,26 @@ export default function LandlordLayout() {
             ),
           }}
         />
+
+        {/* --- HIDDEN SCREENS (href: null) --- */}
+        {/* These screens are reachable via navigation but don't show in the tab bar */}
+        
+        <Tabs.Screen name="tenants" options={{ href: null }} /> {/* <--- Added Tenants here */}
         <Tabs.Screen name="edit-profile" options={{ href: null }} />
         <Tabs.Screen name="settings" options={{ href: null }} />
         <Tabs.Screen name="support" options={{ href: null }} />
         <Tabs.Screen name="privacy-security" options={{ href: null }} />
         <Tabs.Screen name="financials" options={{ href: null }} />
         <Tabs.Screen name="listing-details" options={{ href: null }} />
-        // In _layout.js, add payment-methods to hidden screens
         <Tabs.Screen name="payment-method" options={{ href: null }} />
         <Tabs.Screen name="add-payment-form" options={{ href: null }} />
         <Tabs.Screen name="chat" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="privacy" options={{ href: null }} />
-        <Tabs.Screen name="terms" options={{ href: null }} />
+        <Tabs.Screen name="terms" options={{ href: null, headerShown: false }} />
+        <Tabs.Screen name="AuthContext" options={{ href: null }} />
+        <Tabs.Screen name="tenantprofile" options={{ href: null, headerShown: false }} />
+        <Tabs.Screen name="verify" options={{ href: null, headerShown: false }} />
+        <Tabs.Screen name="premium" options={{ href: null, headerShown: false }} />
       </Tabs>
     </GlobalListingContext.Provider>
   );

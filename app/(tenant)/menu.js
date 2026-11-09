@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,11 +9,38 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import TermsAndPrivacyScreen from '../../components/TermsAndPrivacy';
+import { getCurrentUser, getTenantProfile, signOut } from '../../lib/supabaseClient';
 
 export default function Menu() {
   const [showTerms, setShowTerms] = useState(false);
+  const [userData, setUserData] = useState(null);
+
+  // Reload user data when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      loadUserData();
+    }, [])
+  );
+
+  const loadUserData = async () => {
+    try {
+      const user = await getCurrentUser();
+      if (user) {
+        // Fetch complete profile data from database
+        const { success, user: profileUser } = await getTenantProfile(user.id);
+        if (success && profileUser) {
+          setUserData(profileUser);
+        } else {
+          // Fallback to auth user if profile fetch fails
+          setUserData(user);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load user data', error);
+    }
+  };
 
   const menuItems = [
     {
@@ -22,6 +49,14 @@ export default function Menu() {
       description: 'Manage your account information',
       screen: 'profile',
     },
+    // --- ENTRY POINT FOR RENTED PROPERTIES ---
+    {
+      icon: 'home',
+      title: 'Rented Properties',
+      description: 'View properties you are currently renting',
+      screen: 'rented', 
+    },
+    // -----------------------------------------
     {
       icon: 'heart',
       title: 'Favorites',
@@ -72,8 +107,8 @@ export default function Menu() {
         {
           text: "Log Out",
           style: "destructive",
-          onPress: () => {
-            console.log('User logged out');
+          onPress: async () => {
+            await signOut();
             router.replace('/');
           }
         }
@@ -85,6 +120,7 @@ export default function Menu() {
     if (item.action === 'showTerms') {
       setShowTerms(true);
     } else if (item.screen) {
+      // This will navigate to /(tenant)/rented when that item is clicked
       router.push(`/(tenant)/${item.screen}`);
     }
   };
@@ -99,16 +135,24 @@ export default function Menu() {
         <Text style={styles.title}>Menu</Text>
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* User Profile Section */}
         <View style={styles.profileSection}>
-          <Image
-            source={{ uri: 'https://i.insider.com/5d9f454ee94e865e924818da?width=700' }}
-            style={styles.profileImage}
-          />
+          {userData?.profile_image_url ? (
+            <Image
+              source={{ uri: userData.profile_image_url }}
+              style={styles.profileImage}
+            />
+          ) : (
+            <View style={[styles.profileImage, styles.placeholderImage]}>
+              <Ionicons name="person-circle" size={60} color="#667eea" />
+            </View>
+          )}
           <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>Jesse Pinkman</Text>
-            <Text style={styles.profileEmail}>jessepinkmanyo@gmail.com</Text>
+            <Text style={styles.profileName}>
+              {userData?.first_name ? `${userData.first_name} ${userData.last_name}` : 'Tenant'}
+            </Text>
+            <Text style={styles.profileEmail}>{userData?.email}</Text>
             <Text style={styles.profileType}>Tenant</Text>
           </View>
           <TouchableOpacity 
@@ -124,7 +168,10 @@ export default function Menu() {
           {menuItems.map((item, index) => (
             <TouchableOpacity
               key={index}
-              style={styles.menuItem}
+              style={[
+                styles.menuItem,
+                index === menuItems.length - 1 && { borderBottomWidth: 0 }
+              ]}
               onPress={() => handleMenuPress(item)}
             >
               <View style={styles.menuItemLeft}>
@@ -189,6 +236,11 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 30,
     marginRight: 16,
+  },
+  placeholderImage: {
+    backgroundColor: '#f0f4ff',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileInfo: {
     flex: 1,

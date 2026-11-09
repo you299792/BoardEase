@@ -11,26 +11,34 @@ import {
   Modal,
   Dimensions,
   ActivityIndicator,
-  Linking, // ADD THIS IMPORT
+  Linking,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
+import * as ImagePicker from 'expo-image-picker'; 
 import * as Location from 'expo-location';
-import MapView, { Marker } from 'react-native-maps';
-import { router, useLocalSearchParams, useNavigation } from 'expo-router'; 
+import OpenStreetMap from '../../components/OpenStreetMap';
+import { router, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import { Colors } from '../../constants/Colors';
 import PropertyImageGrid from '../../components/PropertyImageGrid';
-import { boardingHouses } from '../../data/mockData';
 import { GlobalListingContext } from './_layout';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from './AuthContext'; 
+import {
+  getCurrentUser,
+  createListing as createListingDB,
+  updateListing as updateListingDB,
+  getLandlordListings,
+  uploadListingImage,
+  getLandlordSubscription,
+  getListingLimitForPlan,
+} from '../../lib/supabaseClient'; 
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 export default function CreateListing() {
-  const params = useLocalSearchParams(); 
+  const params = useLocalSearchParams();
   const navigation = useNavigation();
-  const { listings, updateListing } = useContext(GlobalListingContext); 
-  const { user } = useAuth(); 
+  const { listings, updateListing, addListing } = useContext(GlobalListingContext);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [isEditing, setIsEditing] = useState(false);
   
@@ -40,13 +48,20 @@ export default function CreateListing() {
   const [address, setAddress] = useState('');
   const [rent, setRent] = useState('');
   const [description, setDescription] = useState('');
-  const [virtualTour, setVirtualTour] = useState('');
   const [houseType, setHouseType] = useState('Single Room');
   const [distance, setDistance] = useState('');
   const [rules, setRules] = useState([]);
   const [newRule, setNewRule] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [available, setAvailable] = useState(true);
+  const [maxGuests, setMaxGuests] = useState('');
+  const [totalRooms, setTotalRooms] = useState('');
+  const [availableRooms, setAvailableRooms] = useState('');
+  const [postalCode, setPostalCode] = useState('');
+  const [bedrooms, setBedrooms] = useState('');
+  const [bathrooms, setBathrooms] = useState('');
+  const [size, setSize] = useState(''); // For Sq. Ft.
+  const [minStay, setMinStay] = useState(''); // For Min Stay in days
   const [availableFrom, setAvailableFrom] = useState('');
   const [amenities, setAmenities] = useState({
     wifi: false,
@@ -61,7 +76,9 @@ export default function CreateListing() {
     petsAllowed: false,
   });
   const [photos, setPhotos] = useState([]);
-  const [floorPlans, setFloorPlans] = useState([]);
+  const [customAmenities, setCustomAmenities] = useState([]);
+  const [newCustomAmenity, setNewCustomAmenity] = useState('');
+  const [showCustomAmenitiesModal, setShowCustomAmenitiesModal] = useState(false);
   
   // Real Google Maps Location State
   const [showMapModal, setShowMapModal] = useState(false);
@@ -76,7 +93,6 @@ export default function CreateListing() {
   const [isLoadingLocation, setIsLoadingLocation] = useState(false);
   const [mapType, setMapType] = useState('standard');
 
-  
   const houseTypes = [
     'Single Room',
     'Shared Room',
@@ -86,18 +102,59 @@ export default function CreateListing() {
     'Boarding House'
   ];
 
-  
+  const ROOM_ENUM_MAP = {
+    'Single Room': 'single_room',
+    'Shared Room': 'shared_room',
+    'Studio Unit': 'studio',
+    'Suite': 'suite',
+    'Bed Space': 'bed_space',
+  };
+
+  const PROPERTY_ENUM_MAP = {
+    'Boarding House': 'boarding_house',
+    'Apartment': 'apartment',
+    'Room': 'room',
+    'Dormitory': 'dormitory',
+  };
+
+  const enumToRoomLabel = (enumVal) => {
+    const labels = {
+      single_room: 'Single Room',
+      shared_room: 'Shared Room',
+      studio: 'Studio Unit',
+      suite: 'Suite',
+      bed_space: 'Bed Space',
+    };
+    return (enumVal && labels[enumVal]) ? labels[enumVal] : 'Single Room';
+  };
+
+  const labelToRoomEnum = (label) => {
+    return ROOM_ENUM_MAP[label] || 'single_room';
+  };
+
+  const labelToPropertyEnum = (label) => {
+    return PROPERTY_ENUM_MAP[label] || 'boarding_house';
+  };
+
   const resetForm = () => {
-    console.log('Resetting form...');
+    console.log('Resetting form to Create Mode...');
     setTitle('');
     setAddress('');
     setRent('');
     setDescription('');
-    setVirtualTour('');
     setHouseType('Single Room');
     setDistance('');
     setRules([]);
+    setNewRule('');
     setAvailable(true);
+    setMaxGuests('');
+    setTotalRooms('');
+    setAvailableRooms('');
+    setPostalCode('');
+    setBedrooms('');
+    setBathrooms('');
+    setSize('');
+    setMinStay('');
     setAvailableFrom('');
     setAmenities({
       wifi: false,
@@ -112,101 +169,199 @@ export default function CreateListing() {
       petsAllowed: false,
     });
     setPhotos([]);
-    setFloorPlans([]);
+    setCustomAmenities([]);
+    
     setIsEditing(false);
     setHeading('Create Property Listing');
     setSubmitText('Create Listing');
-    // Reset location
+    
     setSelectedLocation(null);
     setMapAddress('');
-    
-    
-    router.setParams({});
   };
-  
-  
-  useEffect(() => {
-    console.log('Params changed:', params.id);
-    
-    if (params.id && params.id !== 'undefined') {
-      const listingId = params.id;
-      const existingListing = listings.find(b => String(b.id) === listingId); 
 
-      if (existingListing) {
-        console.log('Loading editing data for:', existingListing.name);
-        setTitle(existingListing.name);
-        setAddress(existingListing.location);
-        setRent(String(existingListing.price)); 
-        setDescription(existingListing.description || existingListing.details || '');
-        setHouseType(existingListing.type || 'Single Room');
-        setDistance(existingListing.distance || '');
-        setRules(existingListing.rules || []);
-        setAvailable(existingListing.available !== false);
-        setAvailableFrom(existingListing.availableFrom || '');
+  useEffect(() => {
+    initializeUser();
+  }, []);
+
+  const initializeUser = async () => {
+    try {
+      const user = await getCurrentUser();
+      setCurrentUser(user);
+    } catch (error) {
+      console.error('Failed to load user:', error);
+    }
+  };
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const loadListingForEdit = async () => {
+        const listingId = params?.id;
         
-        // Load location data if exists
-        if (existingListing.locationData) {
-          setSelectedLocation(existingListing.locationData);
-          setMapAddress(existingListing.locationData.address || existingListing.location);
-          setCurrentRegion({
-            latitude: existingListing.locationData.latitude,
-            longitude: existingListing.locationData.longitude,
-            latitudeDelta: 0.01,
-            longitudeDelta: 0.01,
-          });
+        // Strict check for ID
+        if (!listingId || listingId === 'undefined' || listingId === 'null') {
+          resetForm();
+          return;
         }
-        
-        
-        const amenitiesObj = {
-          wifi: false,
-          airConditioning: false,
-          parking: false,
-          kitchen: false,
-          laundry: false,
-          security: false,
-          furnished: false,
-          waterIncluded: false,
-          electricityIncluded: false,
-          petsAllowed: false,
-        };
-        
-        if (existingListing.amenities && Array.isArray(existingListing.amenities)) {
-          existingListing.amenities.forEach(amenity => {
-            const key = amenity.toLowerCase().replace(/\s+/g, '');
-            if (amenitiesObj.hasOwnProperty(key)) {
-              amenitiesObj[key] = true;
-            }
-          });
-        }
-        
-        setAmenities(amenitiesObj);
-        setPhotos(existingListing.images || []);
-        
+
+        console.log('Edit ID detected:', listingId);
         setIsEditing(true);
         setHeading('Edit Property Listing');
         setSubmitText('Update Listing');
-      }
-    } else {
-     
-      console.log('No ID param, resetting form');
-      resetForm();
-    }
-  }, [params.id, listings]);
- 
-  
-  useEffect(() => {
-    
-    if (!params.id) {
-      resetForm();
-    }
-  }, []);
+        
+        // 1. Try to find listing in context first
+        let existingListing = listings?.find(b => String(b.id) === String(listingId));
+
+        // 2. IMPORTANT: Check if the context listing is "incomplete" (missing price). 
+        // Sometimes list views don't return the price field. If so, force a DB fetch.
+        const hasPriceData = existingListing && (
+            existingListing.price !== undefined || 
+            existingListing.rent !== undefined || 
+            existingListing.monthly_rent !== undefined
+        );
+
+        // If not found in context OR context data is incomplete, fetch from DB
+        if ((!existingListing || !hasPriceData) && currentUser) {
+          console.log('Listing not found in context or missing price data. Fetching from DB...');
+          try {
+            const { success, listings: dbListings, error } = await getLandlordListings(currentUser.id);
+            if (success && Array.isArray(dbListings)) {
+              const foundInDb = dbListings.find(b => String(b.id) === String(listingId));
+              if (foundInDb) {
+                existingListing = foundInDb;
+              }
+            } else {
+              console.warn('Could not load landlord listings for edit:', error);
+            }
+          } catch (err) {
+            console.warn('Error fetching landlord listings for edit:', err);
+          }
+        }
+
+        if (existingListing) {
+          console.log('Loading editing data for ID:', existingListing.id);
+          
+          setTitle(existingListing.name ?? existingListing.title ?? '');
+          setAddress(existingListing.location ?? existingListing.address ?? '');
+          
+          // --- FIX: ROBUST PRICE LOADING ---
+          // Check all possible field names for price
+          const priceValue = existingListing.price ?? 
+                             existingListing.rent ?? 
+                             existingListing.monthly_rent ?? 
+                             existingListing.amount ?? 
+                             existingListing.cost;
+
+          // Convert to string safely, handling 0 correctly
+          if (priceValue !== null && priceValue !== undefined) {
+             setRent(String(priceValue));
+          } else {
+             console.warn('Price field is missing in listing object:', Object.keys(existingListing));
+             setRent(''); // Default to empty if genuinely missing
+          }
+
+          setDescription(existingListing.description ?? existingListing.details ?? '');
+          // Map DB enums to friendly labels if necessary
+          const existingRoomLabel = existingListing.room_type ? enumToRoomLabel(existingListing.room_type) : (existingListing.type || existingListing.houseType);
+          setHouseType(existingRoomLabel ?? 'Single Room');
+          setDistance(existingListing.distance ?? '');
+          setRules(existingListing.rules ?? []);
+          setMaxGuests(String(existingListing.max_guests || existingListing.maxOccupants || ''));
+          setTotalRooms(String(existingListing.total_rooms || ''));
+          setAvailableRooms(String(existingListing.available_rooms || ''));
+          setPostalCode(existingListing.postal_code || '');
+          setBedrooms(String(existingListing.bedrooms || ''));
+          setBathrooms(String(existingListing.bathrooms || ''));
+          setSize(String(existingListing.size || existingListing.area || ''));
+          setMinStay(String(existingListing.min_stay || ''));
+          setAvailable(existingListing.available !== false);
+          setAvailableFrom(existingListing.availableFrom ?? '');
+          
+          // Load location data if exists
+          if (existingListing.locationData) {
+            setSelectedLocation(existingListing.locationData);
+            setMapAddress(existingListing.locationData.address || existingListing.location || existingListing.address || '');
+            setCurrentRegion({
+              latitude: existingListing.locationData.latitude,
+              longitude: existingListing.locationData.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            });
+          } else if (existingListing.latitude && existingListing.longitude) {
+            setSelectedLocation({
+              latitude: existingListing.latitude,
+              longitude: existingListing.longitude,
+              address: existingListing.location || existingListing.address || '',
+            });
+            setMapAddress(existingListing.location || existingListing.address || '');
+            setCurrentRegion({
+              latitude: existingListing.latitude,
+              longitude: existingListing.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            });
+          }
+          
+          // Amenities mapping
+          const amenitiesObj = {
+            wifi: false,
+            airConditioning: false,
+            parking: false,
+            kitchen: false,
+            laundry: false,
+            security: false,
+            furnished: false,
+            waterIncluded: false,
+            electricityIncluded: false,
+            petsAllowed: false,
+          };
+          const customArr = [];
+          if (existingListing.amenities && Array.isArray(existingListing.amenities)) {
+            // Map readable amenity labels to internal amenity keys
+            const labelToKeyMap = {
+              wifi: 'wifi',
+              airconditioning: 'airConditioning',
+              parking: 'parking',
+              kitchen: 'kitchen',
+              laundry: 'laundry',
+              security: 'security',
+              furnished: 'furnished',
+              waterincluded: 'waterIncluded',
+              electricityincluded: 'electricityIncluded',
+              petsallowed: 'petsAllowed',
+            };
+
+            existingListing.amenities.forEach(amenity => {
+              const sanitized = amenity.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const mappedKey = labelToKeyMap[sanitized];
+              if (mappedKey && amenitiesObj.hasOwnProperty(mappedKey)) {
+                amenitiesObj[mappedKey] = true;
+              } else {
+                // This is a custom amenity; keep original capitalization
+                if (!customArr.includes(amenity)) customArr.push(amenity);
+              }
+            });
+          }
+          setAmenities(amenitiesObj);
+          setCustomAmenities(customArr);
+
+          setPhotos(existingListing.images || existingListing.photos || []);
+
+        } else {
+          // Revert if listing not found
+          console.warn('Listing to edit not found in context or DB. Reverting to Create mode.');
+          resetForm();
+        }
+      };
+
+      loadListingForEdit();
+    }, [params?.id, listings, currentUser])
+  );
 
   // Request location permission and get current location
   const getCurrentLocation = async () => {
     try {
       setIsLoadingLocation(true);
       
-      // Request location permission
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission Denied', 'Location permission is required to use this feature.');
@@ -214,14 +369,12 @@ export default function CreateListing() {
         return;
       }
 
-      // Get current location
       let location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
 
       const { latitude, longitude } = location.coords;
       
-      // Update map region to current location
       setCurrentRegion({
         latitude,
         longitude,
@@ -229,7 +382,6 @@ export default function CreateListing() {
         longitudeDelta: 0.01,
       });
 
-      // Reverse geocode to get address
       const [addressResult] = await Location.reverseGeocodeAsync({
         latitude,
         longitude,
@@ -256,10 +408,10 @@ export default function CreateListing() {
   };
 
   // Geocode address to coordinates
-  const geocodeAddress = async (address) => {
+  const geocodeAddress = async (addressStr) => {
     try {
       setIsLoadingLocation(true);
-      const results = await Location.geocodeAsync(address);
+      const results = await Location.geocodeAsync(addressStr);
       
       if (results.length > 0) {
         const { latitude, longitude } = results[0];
@@ -283,7 +435,6 @@ export default function CreateListing() {
     }
   };
 
-  
   const pickImage = async (setter, multiple = false) => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -293,14 +444,39 @@ export default function CreateListing() {
       });
       if (!result.canceled) {
         const uri = result.assets[0].uri;
-        setter((prev) => [...prev, uri]);
+        console.log(`[pickImage] Selected image URI: ${uri}`);
+        
+        // Show loading indicator
+        Alert.alert('Uploading', 'Please wait while we upload your image...');
+        
+        // Upload to Supabase
+        if (!currentUser?.id) {
+          Alert.alert('Error', 'User not authenticated');
+          return;
+        }
+        
+        const { success, publicUrl, error } = await uploadListingImage(uri, currentUser.id);
+        
+        if (success && publicUrl) {
+          console.log(`[pickImage] Upload result: { success: true, publicUrl: "${publicUrl}" }`);
+          console.log(`[pickImage] Adding public URL to state: ${publicUrl}`);
+          setter((prev) => {
+            const updated = [...prev, publicUrl];
+            console.log(`[pickImage] Updated photos state:`, updated);
+            return updated;
+          });
+          Alert.alert('Success', 'Image uploaded successfully');
+        } else {
+          console.error(`[pickImage] Upload failed: ${error}`);
+          Alert.alert('Error', error || 'Failed to upload image');
+        }
       }
     } catch (err) {
       console.warn('Image pick error', err);
+      Alert.alert('Error', 'Failed to pick image');
     }
   };
 
-  
   const removeAt = (arrSetter) => (index) => {
     arrSetter((prev) => prev.filter((_, i) => i !== index));
   };
@@ -329,11 +505,22 @@ export default function CreateListing() {
     setNewRule('');
   };
 
+  // Custom amenities management
+  const openCustomAmenitiesModal = () => { setShowCustomAmenitiesModal(true); };
+  const closeCustomAmenitiesModal = () => { setShowCustomAmenitiesModal(false); setNewCustomAmenity(''); };
+  const addCustomAmenity = () => {
+    const clean = newCustomAmenity.trim();
+    if (!clean) return;
+    setCustomAmenities(prev => prev.includes(clean) ? prev : [...prev, clean]);
+    setNewCustomAmenity('');
+    setShowCustomAmenitiesModal(false);
+  };
+  const removeCustomAmenity = (index) => setCustomAmenities(prev => prev.filter((_, i) => i !== index));
+
   // Real Google Maps Location Functions
   const openMapModal = async () => {
     setShowMapModal(true);
     
-    // If we have existing location data, center map on it
     if (selectedLocation) {
       setCurrentRegion({
         latitude: selectedLocation.latitude,
@@ -343,11 +530,9 @@ export default function CreateListing() {
       });
       setMapAddress(selectedLocation.address);
     } else if (address) {
-      // Try to geocode the existing address
       setMapAddress(address);
       await geocodeAddress(address);
     } else {
-      // Get current location if no existing data
       await getCurrentLocation();
     }
   };
@@ -356,12 +541,10 @@ export default function CreateListing() {
     setShowMapModal(false);
   };
 
-  // Handle map region change
   const handleRegionChange = (region) => {
     setCurrentRegion(region);
   };
 
-  // Handle map press to set marker
   const handleMapPress = (event) => {
     const { coordinate } = event.nativeEvent;
     setSelectedLocation({
@@ -370,7 +553,6 @@ export default function CreateListing() {
     });
   };
 
-  // Handle address search
   const handleAddressSearch = async () => {
     if (mapAddress.trim()) {
       const coordinates = await geocodeAddress(mapAddress.trim());
@@ -383,10 +565,8 @@ export default function CreateListing() {
     }
   };
 
-  // Use current location
   const handleUseCurrentLocation = async () => {
     await getCurrentLocation();
-    // Set marker at current location
     setSelectedLocation({
       latitude: currentRegion.latitude,
       longitude: currentRegion.longitude,
@@ -396,7 +576,7 @@ export default function CreateListing() {
 
   const handleMapLocationSelect = () => {
     if (selectedLocation) {
-      setAddress(selectedLocation.address); // Also update the main address field
+      setAddress(selectedLocation.address); 
       Alert.alert('Location Saved', 'Property location has been set successfully!');
       closeMapModal();
     } else {
@@ -410,7 +590,6 @@ export default function CreateListing() {
     Alert.alert('Location Cleared', 'Property location has been removed.');
   };
 
-  // Function to open Google Maps with the selected location
   const openInGoogleMaps = () => {
     if (selectedLocation) {
       const { latitude, longitude } = selectedLocation;
@@ -421,7 +600,6 @@ export default function CreateListing() {
     }
   };
 
-  // Toggle map type
   const toggleMapType = () => {
     setMapType(mapType === 'standard' ? 'satellite' : 'standard');
   };
@@ -440,94 +618,216 @@ export default function CreateListing() {
       petsAllowed: 'Pets Allowed',
     };
 
-    return Object.entries(amenities)
+    const base = Object.entries(amenities)
       .filter(([key, value]) => value)
       .map(([key]) => amenitiesMap[key] || key);
+    const customs = Array.isArray(customAmenities) ? customAmenities.filter(Boolean) : [];
+    return base.concat(customs);
   };
 
-  const validateAndSubmit = () => {
-    
+  const handleRentChange = (text) => {
+    let sanitized = text.replace(/[^0-9.]/g, '');
+    const parts = sanitized.split('.');
+    if (parts.length > 2) {
+      sanitized = parts[0] + '.' + parts.slice(1).join('');
+    }
+    setRent(sanitized);
+  };
+
+  const validateAndSubmit = async () => {
     if (!title.trim()) return Alert.alert('Validation', 'Title is required');
     if (!address.trim()) return Alert.alert('Validation', 'Address is required');
-    if (!rent.trim() || isNaN(Number(rent))) return Alert.alert('Validation', 'Rent must be a number');
+    
+    const parsedPrice = parseFloat(rent);
+    if (rent === '' || Number.isNaN(parsedPrice)) return Alert.alert('Validation', 'Monthly Rent must be a number');
+    
     if (!description.trim()) return Alert.alert('Validation', 'Description is required');
 
-    const amenitiesArray = getAmenitiesArray();
+    if (!currentUser) {
+      Alert.alert('Error', 'Please log in first');
+      return;
+    }
 
-    const payload = {
-      
-      images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
-      description: description,
-      location: address,
-      price: Number(rent),
-      name: title,
-      type: houseType,
-      distance: distance,
-      amenities: amenitiesArray,
-      rules: rules,
-      available: available,
-      availableFrom: availableFrom,
-      virtualTour,
-      floorPlans,
-      rating: isEditing ? undefined : 4.5, 
-      reviews: isEditing ? undefined : 0, 
-      // Include location data
-      locationData: selectedLocation,
-
-      
-      landlord: {
-        id: user?.email, 
-        name: user?.name || 'Landlord',
-        phone: user?.phone || 'Not Provided',
-        verified: user?.verified || true, 
-        email: user?.email || 'Not Provided',
-        image: user?.photoURL 
+    // Check plan limits for new listings only
+    if (!isEditing) {
+      try {
+        const { success, plan } = await getLandlordSubscription(currentUser.id);
+        const limit = getListingLimitForPlan(plan);
+        
+        if (limit !== Infinity) {
+          // Count existing listings
+          const { success: listingsSuccess, listings: dbListings } = await getLandlordListings(currentUser.id);
+          const currentListingCount = dbListings?.length || 0;
+          
+          if (currentListingCount >= limit) {
+            Alert.alert(
+              'Listing Limit Reached',
+              `Your ${plan.toUpperCase()} plan allows up to ${limit} properties. Upgrade to create more listings.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'View Plans', onPress: () => router.push('/landlord/premium') },
+              ]
+            );
+            setIsSubmitting(false);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Error checking listing limit:', err);
+        // Allow submission if check fails (don't block user)
       }
-     
-    };
-    
+    }
 
-    if (isEditing && params.id) {
-      updateListing(params.id, payload);
-      console.log(`Updating listing ${params.id}`);
+    setIsSubmitting(true);
 
-      Alert.alert('Success', 'Listing updated successfully!', [
-        { 
-          text: 'OK', 
-          onPress: () => {
-            resetForm();
-            router.replace('/landlord');
+    try {
+      const amenitiesArray = getAmenitiesArray();
+
+      const listingData = {
+        title,
+        description,
+        address,
+        city: address.split(',').pop()?.trim() || address,
+        price: parsedPrice,
+        houseType,
+        roomType: labelToRoomEnum(houseType),
+        propertyType: labelToPropertyEnum(houseType),
+        distance: distance?.trim() || null,
+        availableFrom,
+        amenities: amenitiesArray,
+        maxGuests: parseInt(maxGuests) || 1,
+        totalRooms: parseInt(totalRooms) || null,
+        availableRooms: parseInt(availableRooms) || null,
+        postalCode: postalCode.trim() || null,
+        bedrooms: parseInt(bedrooms) || null,
+        bathrooms: parseInt(bathrooms) || null,
+        size: parseInt(size) || null,
+        minStay: parseInt(minStay) || null,
+        rules,
+        images: photos.length > 0 ? photos : ['https://via.placeholder.com/150/0000FF/808080?text=New+Listing'],
+        latitude: selectedLocation?.latitude || 0,
+        longitude: selectedLocation?.longitude || 0,
+        // Include timestamp for listings that don't have created_at from DB
+        createdAt: new Date().toISOString(),
+      };
+
+      console.log(`[validateAndSubmit] Photos array:`, photos);
+      console.log(`[validateAndSubmit] Listing data images:`, listingData.images);
+      console.log(`[validateAndSubmit] roomType: ${listingData.roomType}, propertyType: ${listingData.propertyType}`);
+
+      let result;
+      if ((isEditing || params?.id) && params?.id) {
+        result = await updateListingDB(params.id, listingData);
+          if (result.success) {
+          try {
+            // Preserve the returned listing with all DB fields including created_at
+            const updatedRecord = result.listing ? {
+              ...result.listing,  // Get all fields from DB response including created_at
+              ...listingData,     // Overlay local data
+            } : { ...listingData, id: params.id };
+            if (typeof updateListing === 'function') updateListing(params.id, updatedRecord);
+          } catch (err) {
+            console.warn('Error updating context after update:', err);
           }
-        },
-      ]);
-    } else {
-      updateListing(null, payload);
-      console.log('Listing created');
 
-      Alert.alert('Success', 'Listing created successfully!', [
-        { 
-          text: 'OK', 
-          onPress: () => {
-            resetForm();
-            router.replace('/landlord');
+            Alert.alert('Success', 'Listing updated successfully!', [
+            {
+              text: 'OK',
+              onPress: () => {
+                resetForm();
+                // Redirect to blank Create Listing view (clear edit params)
+                router.replace('/landlord/create-listing');
+              },
+            },
+          ]);
+        } else {
+          Alert.alert('Error', result.error || 'Failed to update listing');
+        }
+      } else {
+        result = await createListingDB(listingData, currentUser.id);
+        if (result.success) {
+          try {
+            // Preserve the returned listing with all DB fields including created_at
+            // Prioritize DB-returned created_at over local createdAt
+            // Use the DB response directly - it has all fields including created_at
+            const listingToAdd = result.listing || { ...listingData, createdAt: new Date().toISOString() };
+            // Ensure createdAt field exists as fallback
+            if (!listingToAdd.createdAt && listingToAdd.created_at) {
+              listingToAdd.createdAt = listingToAdd.created_at;
+            }
+            console.log('[CreateListing] Listing to add to context:', {
+              id: listingToAdd.id,
+              created_at: listingToAdd.created_at,
+              createdAt: listingToAdd.createdAt,
+              title: listingToAdd.title,
+            });
+            if (typeof addListing === 'function') addListing(listingToAdd);
+          } catch (err) {
+            console.warn('Error adding created listing to context:', err);
           }
-        },
-      ]);
+
+          Alert.alert('Success', 'Listing created successfully!', [
+            {
+              text: 'OK',
+              onPress: () => {
+                resetForm();
+                // After creation also reset to a blank Create Listing.
+                router.replace('/landlord/create-listing');
+              },
+            },
+          ]);
+        } else {
+          Alert.alert('Error', result.error || 'Failed to create listing');
+        }
+      }
+    } catch (error) {
+      console.error('Submit error:', error);
+      Alert.alert('Error', error.message || 'Failed to save listing');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
+  // Confirm the listing details before submission
+  const confirmAndSubmitListing = () => {
+    const action = isEditing ? 'update this listing' : 'create this listing';
+    Alert.alert(
+      isEditing ? 'Confirm Update' : 'Confirm Create',
+      isEditing ? 'Are you sure you want to save the changes to this listing?' : 'Are you sure the details are correct? Proceed to create the listing?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Confirm', onPress: () => validateAndSubmit() },
+      ],
+      { cancelable: true }
+    );
+  };
+
   const handleCancel = () => {
-    resetForm();
-    // Check if we can go back in the navigation stack
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      // If not, replace the current screen with the landlord dashboard
+    try {
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/landlord');
+      }
+    } catch (e) {
       router.replace('/landlord');
     }
   };
 
-  
+  // Confirm before cancelling (discarding) the form
+  const confirmCancel = () => {
+    const message = isEditing ? 'Discard changes? All unsaved changes will be lost.' : 'Cancel creating listing? Your current inputs will not be saved.';
+    Alert.alert(
+      'Confirm Cancel',
+      message,
+      [
+        { text: 'Continue Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { resetForm(); /* clear params by going to a blank create view */ router.replace('/landlord/create-listing'); } },
+      ],
+      { cancelable: true }
+    );
+  };
+
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.container}>
       <View style={styles.card}>
@@ -540,9 +840,8 @@ export default function CreateListing() {
         )}
 
         <Text style={styles.label}>Title</Text>
-        <TextInput style={styles.input} placeholder="e.g., Cozy 2BR near downtown" value={title} onChangeText={setTitle} />
+        <TextInput style={styles.input} placeholder="e.g., Cozy 2BR near downtown" placeholderTextColor="#999" value={title} onChangeText={setTitle} />
 
-        {/* Location Section with Real Map Integration */}
         <View style={styles.locationSection}>
           <View style={styles.locationHeader}>
             <Text style={styles.label}>Property Location</Text>
@@ -555,6 +854,7 @@ export default function CreateListing() {
           <TextInput 
             style={styles.input} 
             placeholder="Full address" 
+            placeholderTextColor="#999"
             value={address} 
             onChangeText={setAddress} 
           />
@@ -595,13 +895,85 @@ export default function CreateListing() {
         <View style={styles.rowInputs}>
           <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={styles.label}>Monthly Rent (PHP)</Text>
-            <TextInput style={styles.input} placeholder="0" keyboardType="numeric" value={rent} onChangeText={setRent} />
+            <TextInput
+              style={styles.input}
+              placeholder="0"
+              placeholderTextColor="#999"
+              keyboardType="numeric"
+              value={rent}
+              onChangeText={handleRentChange}
+            />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.label}>Distance</Text>
-            <TextInput style={styles.input} placeholder="e.g., 1.2 km from XU" value={distance} onChangeText={setDistance} />
+            <TextInput style={styles.input} placeholder="e.g., 1.2 km from XU" placeholderTextColor="#999" value={distance} onChangeText={setDistance} />
           </View>
         </View>
+
+        <View style={styles.rowInputs}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={styles.label}>Total Rooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 10"
+              placeholderTextColor="#999"
+              keyboardType="number-pad"
+              value={totalRooms}
+              onChangeText={setTotalRooms}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Available Rooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 2"
+              placeholderTextColor="#999"
+              keyboardType="number-pad"
+              value={availableRooms}
+              onChangeText={setAvailableRooms}
+            />
+          </View>
+        </View>
+
+        <Text style={styles.label}>Max Guests per Room</Text>
+        <TextInput style={styles.input} placeholder="e.g., 2" placeholderTextColor="#999" keyboardType="number-pad" value={maxGuests} onChangeText={setMaxGuests} />
+
+        <View style={styles.rowInputs}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={styles.label}>Bedrooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 3"
+              placeholderTextColor="#999"
+              keyboardType="number-pad"
+              value={bedrooms}
+              onChangeText={setBedrooms}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Bathrooms</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 2"
+              placeholderTextColor="#999"
+              keyboardType="number-pad"
+              value={bathrooms}
+              onChangeText={setBathrooms}
+            />
+          </View>
+        </View>
+
+        <View style={styles.rowInputs}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={styles.label}>Size (Sq. Ft.)</Text>
+            <TextInput style={styles.input} placeholder="e.g., 500" placeholderTextColor="#999" keyboardType="number-pad" value={size} onChangeText={setSize} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Min. Stay (Days)</Text>
+            <TextInput style={styles.input} placeholder="e.g., 30" placeholderTextColor="#999" keyboardType="number-pad" value={minStay} onChangeText={setMinStay} />
+          </View>
+        </View>
+
 
         <Text style={styles.label}>House Type</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.typeScroll}>
@@ -630,15 +1002,12 @@ export default function CreateListing() {
         <TextInput
           style={[styles.input, { height: 120 }]}
           placeholder="Describe the property, layout, nearby points of interest..."
+          placeholderTextColor="#999"
           value={description}
           onChangeText={setDescription}
           multiline
         />
 
-        <Text style={styles.label}>Virtual Tour Link (optional)</Text>
-        <TextInput style={styles.input} placeholder="https://" value={virtualTour} onChangeText={setVirtualTour} autoCapitalize="none" />
-
-       
         <Text style={styles.section}>Availability</Text>
         <View style={styles.availabilityContainer}>
           <View style={styles.availabilityRow}>
@@ -651,6 +1020,7 @@ export default function CreateListing() {
               <TextInput
                 style={styles.input}
                 placeholder="e.g., Immediately, March 2024"
+                placeholderTextColor="#999"
                 value={availableFrom}
                 onChangeText={setAvailableFrom}
               />
@@ -658,7 +1028,13 @@ export default function CreateListing() {
           )}
         </View>
 
-        <Text style={styles.section}>Amenities</Text>
+        <View style={styles.rulesHeader}>
+          <Text style={styles.section}>Amenities</Text>
+          <TouchableOpacity style={styles.addRuleButton} onPress={openCustomAmenitiesModal}>
+            <Ionicons name="add-circle" size={20} color="#667eea" />
+            <Text style={styles.addRuleText}>Add Amenity</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.amenitiesBox}>
           <View style={styles.amenitiesRow}>
             <Text style={styles.amenityText}>Wi-Fi</Text>
@@ -702,7 +1078,20 @@ export default function CreateListing() {
           </View>
         </View>
 
-        
+        {customAmenities.length > 0 && (
+          <View style={styles.rulesList}>
+            {customAmenities.map((amenity, index) => (
+              <View key={index} style={styles.ruleItem}>
+                <Ionicons name="information-circle" size={16} color="#667eea" />
+                <Text style={styles.ruleText}>{amenity}</Text>
+                <TouchableOpacity onPress={() => removeCustomAmenity(index)} style={styles.removeRuleButton}>
+                  <Ionicons name="close-circle" size={16} color="#ef4444" />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+
         <View style={styles.rulesSection}>
           <View style={styles.rulesHeader}>
             <Text style={styles.section}>House Rules</Text>
@@ -736,25 +1125,21 @@ export default function CreateListing() {
           onRemove={removeAt(setPhotos)}
         />
 
-        <Text style={[styles.label, { marginTop: 12 }]}>Floor Plans (images)</Text>
-        <PropertyImageGrid
-          images={floorPlans}
-          onAdd={() => pickImage(setFloorPlans)}
-          onRemove={removeAt(setFloorPlans)}
-        />
-
-        <TouchableOpacity style={styles.submitBtn} onPress={validateAndSubmit}>
-          <Text style={styles.submitText}>{submitText}</Text>
+        <TouchableOpacity style={styles.submitBtn} onPress={confirmAndSubmitListing} disabled={isSubmitting}>
+          {isSubmitting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.submitText}>{submitText}</Text>
+          )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel}>
+        <TouchableOpacity style={styles.cancelBtn} onPress={confirmCancel}>
           <Text style={styles.cancelText}>
             {isEditing ? 'Cancel Edit' : 'Cancel'}
           </Text>
         </TouchableOpacity>
       </View>
 
-      
       <Modal
         visible={showRulesModal}
         animationType="slide"
@@ -768,6 +1153,7 @@ export default function CreateListing() {
             <TextInput
               style={styles.ruleInput}
               placeholder="Enter a house rule (e.g., No smoking inside rooms)"
+              placeholderTextColor="#999"
               value={newRule}
               onChangeText={setNewRule}
               multiline
@@ -782,7 +1168,7 @@ export default function CreateListing() {
               </TouchableOpacity>
               <TouchableOpacity 
                 style={[styles.modalButton, styles.addModalButton]}
-                onPress={addRule}
+                onPress={() => { addRule(); closeRulesModal(); }}
                 disabled={!newRule.trim()}
               >
                 <Text style={styles.addModalButtonText}>Add Rule</Text>
@@ -792,7 +1178,44 @@ export default function CreateListing() {
         </View>
       </Modal>
 
-      {/* Real Interactive Google Maps Modal */}
+      {/* Custom Amenity Modal */}
+      <Modal
+        visible={showCustomAmenitiesModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={closeCustomAmenitiesModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add Amenity</Text>
+            
+            <TextInput
+              style={styles.ruleInput}
+              placeholder="Enter a custom amenity (e.g., Rooftop Access)"
+              placeholderTextColor="#999"
+              value={newCustomAmenity}
+              onChangeText={setNewCustomAmenity}
+            />
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelModalButton]}
+                onPress={closeCustomAmenitiesModal}
+              >
+                <Text style={styles.cancelModalButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.addModalButton]}
+                onPress={() => { addCustomAmenity(); closeCustomAmenitiesModal(); }}
+                disabled={!newCustomAmenity.trim()}
+              >
+                <Text style={styles.addModalButtonText}>Add Amenity</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal
         visible={showMapModal}
         animationType="slide"
@@ -813,11 +1236,11 @@ export default function CreateListing() {
               Tap on the map to set your property location or search for an address
             </Text>
 
-            {/* Address Search Bar */}
             <View style={styles.searchContainer}>
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search address or place..."
+                placeholderTextColor="#999"
                 value={mapAddress}
                 onChangeText={setMapAddress}
                 onSubmitEditing={handleAddressSearch}
@@ -827,7 +1250,6 @@ export default function CreateListing() {
               </TouchableOpacity>
             </View>
 
-            {/* Real Interactive Map */}
             <View style={styles.mapContainer}>
               {isLoadingLocation ? (
                 <View style={styles.mapLoading}>
@@ -835,30 +1257,22 @@ export default function CreateListing() {
                   <Text style={styles.mapLoadingText}>Loading map...</Text>
                 </View>
               ) : (
-                <MapView
+                <OpenStreetMap
+                  latitude={currentRegion.latitude}
+                  longitude={currentRegion.longitude}
+                  zoom={14}
                   style={styles.map}
-                  region={currentRegion}
-                  onRegionChangeComplete={handleRegionChange}
-                  onPress={handleMapPress}
-                  mapType={mapType}
-                  showsUserLocation={true}
-                  showsMyLocationButton={false}
-                  showsCompass={true}
-                  showsScale={true}
-                >
-                  {selectedLocation && (
-                    <Marker
-                      coordinate={selectedLocation}
-                      title="Property Location"
-                      description={selectedLocation.address}
-                      pinColor="#667eea"
-                    />
-                  )}
-                </MapView>
+                  onLocationSelect={({ latitude, longitude }) => {
+                    setSelectedLocation({
+                      latitude,
+                      longitude,
+                      address: mapAddress || 'Selected Location',
+                    });
+                  }}
+                />
               )}
             </View>
 
-            {/* Map Controls */}
             <View style={styles.mapControls}>
               <TouchableOpacity style={styles.mapControlButton} onPress={handleUseCurrentLocation}>
                 <Ionicons name="locate" size={20} color="#667eea" />
@@ -873,7 +1287,6 @@ export default function CreateListing() {
               </TouchableOpacity>
             </View>
 
-            {/* Selected Location Info */}
             {selectedLocation && (
               <View style={styles.selectedLocationInfo}>
                 <Ionicons name="checkmark-circle" size={20} color="#10b981" />
@@ -935,7 +1348,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     paddingTop : 20,
     color: Colors.primary,
-
   },
   editIndicator: {
     backgroundColor: '#fef3c7',
@@ -963,7 +1375,6 @@ const styles = StyleSheet.create({
     padding: 12,
     backgroundColor: '#fbfcfe',
   },
-  // Location Section Styles
   locationSection: {
     marginBottom: 8,
   },
@@ -1177,7 +1588,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 16,
   },
-  // Modal Styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -1192,7 +1602,6 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 400,
   },
-  // Real Map Modal Styles
   mapModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.9)',
@@ -1204,12 +1613,13 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     overflow: 'hidden',
+    paddingBottom: 20,
   },
   mapModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 20,
+    padding: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#e5e5e5',
   },
@@ -1222,16 +1632,16 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   mapModalSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#666',
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 16,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 12,
   },
   searchContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    marginBottom: 12,
     gap: 8,
   },
   searchInput: {
@@ -1250,11 +1660,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   mapContainer: {
-    height: 300,
-    marginHorizontal: 20,
+    flex: 1,
+    minHeight: 400,
+    marginHorizontal: 16,
     borderRadius: 12,
     overflow: 'hidden',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   map: {
     width: '100%',
@@ -1273,14 +1684,15 @@ const styles = StyleSheet.create({
   mapControls: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    marginBottom: 12,
   },
   mapControlButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    padding: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     backgroundColor: '#f8f9fa',
     borderRadius: 10,
     borderWidth: 1,
@@ -1289,25 +1701,25 @@ const styles = StyleSheet.create({
   mapControlText: {
     color: '#667eea',
     fontWeight: '600',
-    fontSize: 14,
+    fontSize: 13,
   },
   selectedLocationInfo: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f0fdf4',
-    padding: 16,
-    marginHorizontal: 20,
+    padding: 12,
+    marginHorizontal: 16,
     borderRadius: 10,
     borderLeftWidth: 4,
     borderLeftColor: '#10b981',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   selectedLocationText: {
     flex: 1,
     marginLeft: 12,
   },
   selectedLocationTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#065f46',
     marginBottom: 2,
@@ -1319,7 +1731,7 @@ const styles = StyleSheet.create({
   mapModalButtons: {
     flexDirection: 'row',
     gap: 12,
-    padding: 20,
+    paddingHorizontal: 16,
     paddingTop: 0,
   },
   ruleInput: {

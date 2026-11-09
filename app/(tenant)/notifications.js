@@ -7,379 +7,197 @@ import {
   FlatList,
   Alert,
   RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const NOTIFICATIONS_STORAGE_KEY = '@tenant_notifications';
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
-const BOOKINGS_STORAGE_KEY = '@bookings_data';
-const PAYMENTS_STORAGE_KEY = '@payments_data';
-const TENANT_MESSAGES_KEY = '@tenant_messages';
-
-const currentUser = {
-  id: 'tenant_jesse_pinkman_01',
-  name: 'Jesse Pinkman',
-};
+import {
+  getCurrentUser,
+  getNotifications,
+  markNotificationAsRead,
+  subscribeToNotifications,
+  supabase,
+} from '../../lib/supabaseClient';
 
 export default function Notifications() {
   const [notificationList, setNotificationList] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
 
-  // Load notifications and check for updates
+  // Load notifications and set up real-time subscription
   useEffect(() => {
     loadNotifications();
-    checkForNewNotifications();
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       loadNotifications();
-      checkForNewNotifications();
     }, [])
   );
 
   const loadNotifications = async () => {
     try {
-      const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-      if (notificationsJson) {
-        const notifications = JSON.parse(notificationsJson);
-        // Sort by timestamp (newest first)
-        const sorted = notifications.sort((a, b) => 
-          new Date(b.timestamp) - new Date(a.timestamp)
-        );
-        setNotificationList(sorted);
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(user);
+
+      // Fetch notifications from Supabase
+      const { success, notifications, error } = await getNotifications(user.id);
+
+      if (success) {
+        // Transform Supabase data to match component expectations
+        const transformedNotifications = notifications.map(notif => ({
+          id: notif.id,
+          type: notif.notification_type,
+          title: notif.title,
+          message: notif.message,
+          timestamp: notif.created_at,
+          read: notif.is_read,
+          listingId: notif.listing_id,
+          bookingId: notif.booking_id,
+          paymentId: notif.payment_id,
+          actionType: notif.action_type,
+          actionData: notif.action_data,
+        })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        setNotificationList(transformedNotifications);
+
+        // Subscribe to real-time notifications
+        if (user.id) {
+          const subscription = subscribeToNotifications(user.id, (newNotif) => {
+            setNotificationList(prev => [newNotif, ...prev]);
+          });
+
+          return () => {
+            if (subscription) subscription.unsubscribe();
+          };
+        }
       } else {
-        setNotificationList([]);
+        Alert.alert('Error', error || 'Failed to load notifications');
       }
     } catch (error) {
       console.error('Failed to load notifications', error);
-      setNotificationList([]);
+      Alert.alert('Error', 'Failed to load notifications');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const checkForNewNotifications = async () => {
-    try {
-      // Check for new listings
-      await checkNewListings();
-      
-      // Check for booking updates
-      await checkBookingUpdates();
-      
-      // Check for payment updates
-      await checkPaymentUpdates();
-      
-      // Check for new messages
-      await checkNewMessages();
-      
-    } catch (error) {
-      console.error('Error checking notifications:', error);
-    }
-  };
-
-  const checkNewListings = async () => {
-    try {
-      const listingsJson = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-      const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-      
-      if (!listingsJson) return;
-      
-      const listings = JSON.parse(listingsJson);
-      const existingNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
-      
-      // Get listings created in the last 24 hours
-      const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
-      
-      listings.forEach(listing => {
-        const listingDate = listing.createdAt ? new Date(listing.createdAt).getTime() : Date.now();
-        
-        // Check if this is a new listing and we haven't notified about it yet
-        const alreadyNotified = existingNotifications.some(
-          notif => notif.type === 'new_listing' && notif.listingId === listing.id
-        );
-        
-        if (listingDate > oneDayAgo && !alreadyNotified) {
-          const notification = {
-            id: `new_listing_${listing.id}_${Date.now()}`,
-            type: 'new_listing',
-            title: 'New Property Available! 🏠',
-            message: `${listing.name} is now available for ₱${listing.price.toLocaleString()}/month in ${listing.location}`,
-            timestamp: new Date().toISOString(),
-            read: false,
-            listingId: listing.id,
-            actionType: 'view_listing',
-            actionData: { listingId: listing.id }
-          };
-          
-          existingNotifications.unshift(notification);
-        }
-      });
-      
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(existingNotifications));
-    } catch (error) {
-      console.error('Error checking new listings:', error);
-    }
-  };
-
-  const checkBookingUpdates = async () => {
-    try {
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-      
-      if (!bookingsJson) return;
-      
-      const bookings = JSON.parse(bookingsJson);
-      const existingNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
-      
-      // Filter bookings for current user
-      const userBookings = bookings.filter(b => b.tenantId === currentUser.id);
-      
-      userBookings.forEach(booking => {
-        // Check for booking approval
-        if (booking.status === 'approved') {
-          const alreadyNotified = existingNotifications.some(
-            notif => notif.type === 'booking_approved' && notif.bookingId === booking.id
-          );
-          
-          if (!alreadyNotified) {
-            const notification = {
-              id: `booking_approved_${booking.id}_${Date.now()}`,
-              type: 'booking_approved',
-              title: '✅ Booking Approved!',
-              message: `Great news! Your booking for ${booking.property} has been approved by the landlord.`,
-              timestamp: new Date().toISOString(),
-              read: false,
-              bookingId: booking.id,
-              actionType: 'view_booking',
-              actionData: { bookingId: booking.id }
-            };
-            
-            existingNotifications.unshift(notification);
-          }
-        }
-        
-        // Check for booking cancellation
-        if (booking.status === 'cancelled' && booking.cancelledBy === 'landlord') {
-          const alreadyNotified = existingNotifications.some(
-            notif => notif.type === 'booking_cancelled' && notif.bookingId === booking.id
-          );
-          
-          if (!alreadyNotified) {
-            const notification = {
-              id: `booking_cancelled_${booking.id}_${Date.now()}`,
-              type: 'booking_cancelled',
-              title: '❌ Booking Cancelled',
-              message: `Your booking for ${booking.property} has been cancelled by the landlord. ${booking.cancelReason || ''}`,
-              timestamp: new Date().toISOString(),
-              read: false,
-              bookingId: booking.id,
-              actionType: 'view_booking',
-              actionData: { bookingId: booking.id }
-            };
-            
-            existingNotifications.unshift(notification);
-          }
-        }
-      });
-      
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(existingNotifications));
-    } catch (error) {
-      console.error('Error checking booking updates:', error);
-    }
-  };
-
-  const checkPaymentUpdates = async () => {
-    try {
-      const paymentsJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-      const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-      
-      if (!paymentsJson) return;
-      
-      const payments = JSON.parse(paymentsJson);
-      const existingNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
-      
-      // Filter payments for current user
-      const userPayments = payments.filter(p => p.tenantId === currentUser.id);
-      
-      userPayments.forEach(payment => {
-        // Check for payment confirmation
-        if (payment.status === 'completed') {
-          const alreadyNotified = existingNotifications.some(
-            notif => notif.type === 'payment_confirmed' && notif.paymentId === payment.id
-          );
-          
-          if (!alreadyNotified) {
-            const notification = {
-              id: `payment_confirmed_${payment.id}_${Date.now()}`,
-              type: 'payment_confirmed',
-              title: '💳 Payment Confirmed',
-              message: `Your payment of ₱${payment.amount.toLocaleString()} for ${payment.property} has been confirmed.`,
-              timestamp: new Date().toISOString(),
-              read: false,
-              paymentId: payment.id,
-              actionType: 'view_payment',
-              actionData: { paymentId: payment.id }
-            };
-            
-            existingNotifications.unshift(notification);
-          }
-        }
-        
-        // Check for payment due reminders
-        if (payment.status === 'pending' && payment.dueDate) {
-          const dueDate = new Date(payment.dueDate);
-          const today = new Date();
-          const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
-          
-          // Notify 3 days before due
-          if (daysUntilDue === 3) {
-            const alreadyNotified = existingNotifications.some(
-              notif => notif.type === 'payment_reminder' && notif.paymentId === payment.id
-            );
-            
-            if (!alreadyNotified) {
-              const notification = {
-                id: `payment_reminder_${payment.id}_${Date.now()}`,
-                type: 'payment_reminder',
-                title: '⏰ Payment Reminder',
-                message: `Your rent payment of ₱${payment.amount.toLocaleString()} for ${payment.property} is due in 3 days.`,
-                timestamp: new Date().toISOString(),
-                read: false,
-                paymentId: payment.id,
-                actionType: 'view_payment',
-                actionData: { paymentId: payment.id }
-              };
-              
-              existingNotifications.unshift(notification);
-            }
-          }
-        }
-      });
-      
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(existingNotifications));
-    } catch (error) {
-      console.error('Error checking payment updates:', error);
-    }
-  };
-
-  const checkNewMessages = async () => {
-    try {
-      const messagesJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-      const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-      
-      if (!messagesJson) return;
-      
-      const conversations = JSON.parse(messagesJson);
-      const existingNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
-      
-      // Check for unread messages
-      conversations.forEach(conversation => {
-        if (conversation.unread) {
-          const alreadyNotified = existingNotifications.some(
-            notif => notif.type === 'new_message' && 
-            notif.conversationId === conversation.id &&
-            notif.messageText === conversation.lastMessage
-          );
-          
-          if (!alreadyNotified) {
-            const notification = {
-              id: `new_message_${conversation.id}_${Date.now()}`,
-              type: 'new_message',
-              title: '💬 New Message',
-              message: `${conversation.landlord.name}: ${conversation.lastMessage}`,
-              timestamp: new Date().toISOString(),
-              read: false,
-              conversationId: conversation.id,
-              messageText: conversation.lastMessage,
-              actionType: 'view_message',
-              actionData: { 
-                landlordId: conversation.landlord.id,
-                landlordName: conversation.landlord.name,
-                landlordImage: conversation.landlord.image,
-                houseName: conversation.houseName
-              }
-            };
-            
-            existingNotifications.unshift(notification);
-          }
-        }
-      });
-      
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(existingNotifications));
-    } catch (error) {
-      console.error('Error checking new messages:', error);
-    }
-  };
-
   const onRefresh = async () => {
     setRefreshing(true);
-    await checkForNewNotifications();
     await loadNotifications();
     setRefreshing(false);
   };
 
   const handleNotificationPress = async (notification) => {
-    // Mark as read
-    const updatedNotifications = notificationList.map(notif =>
-      notif.id === notification.id ? { ...notif, read: true } : notif
-    );
-    setNotificationList(updatedNotifications);
-    
     try {
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(updatedNotifications));
+      // Mark as read in Supabase
+      if (!notification.read) {
+        await markNotificationAsRead(notification.id);
+
+        // Update local state
+        const updatedNotifications = notificationList.map(notif =>
+          notif.id === notification.id ? { ...notif, read: true } : notif
+        );
+        setNotificationList(updatedNotifications);
+      }
     } catch (error) {
-      console.error('Failed to update notification', error);
+      console.error('Failed to mark notification as read', error);
     }
 
-    // Handle action based on type
-    switch (notification.actionType) {
-      case 'view_listing':
-        router.push({
-          pathname: '/(tenant)/boarding-house-details',
-          params: { id: notification.actionData.listingId }
-        });
-        break;
-      
-      case 'view_booking':
-        router.push('/(tenant)/bookings');
-        break;
-      
-      case 'view_payment':
-        router.push('/(tenant)/payments');
-        break;
-      
-      case 'view_message':
-        router.push({
-          pathname: '/(tenant)/chat',
-          params: notification.actionData
-        });
-        break;
-      
-      default:
-        break;
+    // Handle message notifications - fetch conversation and navigate to chat
+    if (notification.type === 'message') {
+      try {
+        let conversationId = null;
+        
+        // Try to parse conversation ID from actionData first
+        if (notification.actionData && notification.actionData.conversationId) {
+          conversationId = notification.actionData.conversationId;
+        }
+        
+        // If no conversation ID, query the messages table to find the conversation
+        if (!conversationId && currentUser?.id) {
+          // Find the most recent conversation involving this tenant
+          const { data: messages, error: msgError } = await supabase
+            .from('messages')
+            .select('conversation_id')
+            .eq('receiver_id', currentUser.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (!msgError && messages && messages.length > 0) {
+            conversationId = messages[0].conversation_id;
+          }
+
+          // If still no conversation, try querying conversations directly
+          if (!conversationId) {
+            const { data: conversations, error: convError } = await supabase
+              .from('conversations')
+              .select('id')
+              .eq('tenant_id', currentUser.id)
+              .order('updated_at', { ascending: false })
+              .limit(1);
+
+            if (!convError && conversations && conversations.length > 0) {
+              conversationId = conversations[0].id;
+            }
+          }
+        }
+
+        if (conversationId) {
+          router.push({
+            pathname: '/(tenant)/chat',
+            params: { conversationId }
+          });
+        } else {
+          Alert.alert('Error', 'Could not load conversation');
+        }
+      } catch (error) {
+        console.error('Error handling message notification:', error);
+        Alert.alert('Error', 'Failed to open chat');
+      }
+    } else {
+      // For other notification types, navigate based on type
+      switch (notification.type) {
+        case 'booking_approved':
+        case 'booking_rejected':
+        case 'booking_request':
+          router.push('/(tenant)/bookings');
+          break;
+        case 'payment_due':
+        case 'payment_completed':
+          router.push('/(tenant)/payments');
+          break;
+        case 'review':
+          router.push('/(tenant)/bookings');
+          break;
+        default:
+          break;
+      }
     }
   };
 
   const clearAllNotifications = async () => {
     Alert.alert(
       'Clear All Notifications',
-      'Are you sure you want to clear all notifications?',
+      'Are you sure you want to clear all notifications? This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Clear All',
           style: 'destructive',
           onPress: async () => {
-            try {
-              await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify([]));
-              setNotificationList([]);
-            } catch (error) {
-              console.error('Failed to clear notifications', error);
-            }
+            setNotificationList([]);
+            Alert.alert('Cleared', 'All notifications have been cleared.');
           }
         }
       ]
@@ -387,34 +205,41 @@ export default function Notifications() {
   };
 
   const markAllAsRead = async () => {
-    const updatedNotifications = notificationList.map(notif => ({ ...notif, read: true }));
-    setNotificationList(updatedNotifications);
-    
     try {
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(updatedNotifications));
+      // Mark all as read in local state
+      const updatedNotifications = notificationList.map(notif => ({ ...notif, read: true }));
+      setNotificationList(updatedNotifications);
+
+      // Mark all as read in Supabase (bulk operation would be better, but marking individually for now)
+      for (const notif of notificationList.filter(n => !n.read)) {
+        await markNotificationAsRead(notif.id);
+      }
     } catch (error) {
       console.error('Failed to mark all as read', error);
+      Alert.alert('Error', 'Failed to mark all as read');
     }
   };
 
   const getNotificationIcon = (type) => {
     switch (type) {
-      case 'new_listing':
-        return { name: 'home', color: '#3b82f6' };
+      case 'booking_request':
+        return { name: 'calendar', color: '#667eea' };
       case 'booking_approved':
         return { name: 'checkmark-circle', color: '#10b981' };
+      case 'booking_rejected':
+        return { name: 'close-circle', color: '#ef4444' };
       case 'booking_cancelled':
         return { name: 'close-circle', color: '#ef4444' };
-      case 'payment_confirmed':
-        return { name: 'card', color: '#10b981' };
-      case 'payment_reminder':
-        return { name: 'time', color: '#f59e0b' };
-      case 'new_message':
-        return { name: 'chatbubble', color: '#8b5cf6' };
-      case 'price_drop':
-        return { name: 'trending-down', color: '#10b981' };
-      case 'favorite_available':
-        return { name: 'heart', color: '#ef4444' };
+      case 'payment_due':
+        return { name: 'wallet', color: '#f6ad55' };
+      case 'payment_completed':
+        return { name: 'checkmark-done', color: '#48bb78' };
+      case 'message':
+        return { name: 'chatbubble', color: '#4299e1' };
+      case 'review':
+        return { name: 'star', color: '#ed8936' };
+      case 'listing_inquiry':
+        return { name: 'help-circle', color: '#667eea' };
       default:
         return { name: 'notifications', color: '#667eea' };
     }
@@ -435,94 +260,90 @@ export default function Notifications() {
     return notifTime.toLocaleDateString();
   };
 
+  if (isLoading) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#667eea" />
+        <Text style={{ marginTop: 10, color: '#666' }}>Loading notifications...</Text>
+      </View>
+    );
+  }
+
   const unreadCount = notificationList.filter(notif => !notif.read).length;
 
   const renderNotificationItem = ({ item }) => {
     const icon = getNotificationIcon(item.type);
-    
+
     return (
       <TouchableOpacity
-        style={[styles.notificationCard, !item.read && styles.unreadNotification]}
+        style={[
+          styles.notificationCard,
+          !item.read && styles.unreadCard
+        ]}
         onPress={() => handleNotificationPress(item)}
       >
         <View style={styles.notificationContent}>
-          <View style={[styles.iconContainer, { backgroundColor: `${icon.color}15` }]}>
-            <Ionicons name={icon.name} size={24} color={icon.color} />
+          <View style={[styles.iconContainer, { backgroundColor: icon.color + '20' }]}>
+            <Ionicons
+              name={icon.name}
+              size={20}
+              color={icon.color}
+            />
           </View>
-          
-          <View style={styles.notificationText}>
-            <Text style={styles.notificationTitle}>{item.title}</Text>
+          <View style={styles.textContainer}>
+            <View style={styles.headerRow}>
+              <Text style={styles.notificationTitle}>{item.title}</Text>
+              {!item.read && <View style={styles.unreadDot} />}
+            </View>
             <Text style={styles.notificationMessage} numberOfLines={2}>
               {item.message}
             </Text>
-            <Text style={styles.notificationTime}>{getTimeAgo(item.timestamp)}</Text>
+            <Text style={styles.timestamp}>{getTimeAgo(item.timestamp)}</Text>
           </View>
         </View>
-        
-        {!item.read && <View style={styles.unreadDot} />}
       </TouchableOpacity>
     );
   };
 
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Notifications</Text>
-          <Text style={styles.subtitle}>
-            {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
-          </Text>
-        </View>
-        <View style={styles.headerActions}>
-          <TouchableOpacity 
-            style={styles.headerButton}
-            onPress={markAllAsRead}
-            disabled={unreadCount === 0}
-          >
-            <Text style={[styles.headerButtonText, unreadCount === 0 && styles.disabledText]}>
-              Mark all read
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={styles.headerButton}
-            onPress={clearAllNotifications}
-            disabled={notificationList.length === 0}
-          >
-            <Ionicons 
-              name="trash-outline" 
-              size={20} 
-              color={notificationList.length === 0 ? '#ccc' : '#ef4444'} 
-            />
-          </TouchableOpacity>
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Notifications</Text>
+            {notificationList.length > 0 && (
+              <Text style={styles.subtitle}>
+                {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
+              </Text>
+            )}
+          </View>
+          {unreadCount > 0 && (
+            <TouchableOpacity onPress={markAllAsRead} style={styles.markAllButton}>
+              <Text style={styles.markAllButtonText}>Mark all read</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
-      <View style={styles.content}>
-        {notificationList.length > 0 ? (
-          <FlatList
-            data={notificationList}
-            renderItem={renderNotificationItem}
-            keyExtractor={(item) => item.id}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                colors={['#667eea']}
-              />
-            }
-            contentContainerStyle={styles.listContent}
+      <FlatList
+        data={notificationList}
+        renderItem={renderNotificationItem}
+        keyExtractor={(item) => item.id}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
           />
-        ) : (
+        }
+        ListEmptyComponent={
           <View style={styles.emptyState}>
-            <Ionicons name="notifications-off" size={64} color="#ccc" />
+            <Ionicons name="notifications-off-outline" size={48} color="#ccc" />
             <Text style={styles.emptyStateTitle}>No Notifications</Text>
-            <Text style={styles.emptyStateText}>
-              You're all caught up! New notifications will appear here.
-            </Text>
+            <Text style={styles.emptyStateText}>You're all caught up!</Text>
           </View>
-        )}
-      </View>
+        }
+      />
     </View>
   );
 }
@@ -530,124 +351,111 @@ export default function Notifications() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f6f7fb',
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 20,
     backgroundColor: 'white',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e5e5',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
     color: '#333',
+    marginBottom: 4,
   },
   subtitle: {
     fontSize: 14,
-    color: '#667eea',
-    marginTop: 4,
+    color: '#666',
   },
-  headerActions: {
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'space-between',
   },
-  headerButton: {
-    padding: 8,
+  markAllButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#667eea',
+    borderRadius: 6,
   },
-  headerButtonText: {
-    color: '#667eea',
+  markAllButtonText: {
+    color: 'white',
+    fontSize: 12,
     fontWeight: '600',
-    fontSize: 14,
   },
-  disabledText: {
-    color: '#ccc',
-  },
-  content: {
+  loadingContainer: {
     flex: 1,
-  },
-  listContent: {
-    padding: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   notificationCard: {
     backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 3,
-    position: 'relative',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    marginBottom: 2,
   },
-  unreadNotification: {
-    borderLeftWidth: 4,
-    borderLeftColor: '#667eea',
-    backgroundColor: '#f8faff',
+  unreadCard: {
+    backgroundColor: '#f0f4ff',
   },
   notificationContent: {
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
   iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
+    marginTop: 2,
   },
-  notificationText: {
+  textContainer: {
     flex: 1,
   },
   notificationTitle: {
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '600',
     color: '#333',
-    marginBottom: 4,
-  },
-  notificationMessage: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 20,
-    marginBottom: 6,
-  },
-  notificationTime: {
-    fontSize: 12,
-    color: '#999',
+    flex: 1,
   },
   unreadDot: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
     width: 8,
     height: 8,
     borderRadius: 4,
     backgroundColor: '#667eea',
+    marginLeft: 8,
+  },
+  notificationMessage: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 6,
+    lineHeight: 20,
+  },
+  timestamp: {
+    fontSize: 12,
+    color: '#999',
   },
   emptyState: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 60,
+    paddingVertical: 100,
   },
   emptyStateTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: '#666',
-    marginTop: 16,
-    marginBottom: 8,
+    marginTop: 12,
   },
   emptyStateText: {
     fontSize: 14,
     color: '#999',
-    textAlign: 'center',
-    lineHeight: 20,
-    paddingHorizontal: 40,
+    marginTop: 8,
   },
 });

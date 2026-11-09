@@ -18,18 +18,12 @@ export default function TenantLayout() {
         tabBarInactiveTintColor: '#666',
       }}
     >
+      {/* --- VISIBLE TABS --- */}
       <Tabs.Screen
         name="home"
         options={{
           title: 'Home',
           headerShown: false,
-          headerStyle: {
-            backgroundColor: '#667eea',
-          },
-          headerTintColor: 'white',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home" size={size} color={color} />
           ),
@@ -40,13 +34,6 @@ export default function TenantLayout() {
         options={{
           title: 'Messages',
           headerShown: false,
-          headerStyle: {
-            backgroundColor: '#667eea',
-          },
-          headerTintColor: 'white',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
           tabBarIcon: ({ color, size }) => (
             <MessagesTabIcon color={color} size={size} />
           ),
@@ -57,13 +44,6 @@ export default function TenantLayout() {
         options={{
           title: 'Notifications',
           headerShown: false,
-          headerStyle: {
-            backgroundColor: '#667eea',
-          },
-          headerTintColor: 'white',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
           tabBarIcon: ({ color, size }) => (
             <NotificationsTabIcon color={color} size={size} />
           ),
@@ -74,16 +54,18 @@ export default function TenantLayout() {
         options={{
           title: 'Menu',
           headerShown: false,
-          headerStyle: {
-            backgroundColor: '#667eea',
-          },
-          headerTintColor: 'white',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="menu" size={size} color={color} />
           ),
+        }}
+      />
+
+      {/* --- HIDDEN SCREENS (href: null) --- */}
+      <Tabs.Screen
+        name="rented" // <--- This hides "My Rented Properties" from the tab bar
+        options={{
+          href: null,
+          headerShown: false,
         }}
       />
       <Tabs.Screen
@@ -114,8 +96,6 @@ export default function TenantLayout() {
           href: null,
         }}
       />
-      
-      {/* New screens added with headerShown: false */}
       <Tabs.Screen
         name="favorites"
         options={{

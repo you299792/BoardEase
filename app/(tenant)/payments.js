@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,15 +9,30 @@ import {
   RefreshControl,
   Modal,
   TextInput,
+  ActivityIndicator,
+  Platform,
+  BackHandler,
+  Image
 } from 'react-native';
-import { Stack, router, useFocusEffect } from 'expo-router';
+import { Stack, router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Sharing from 'expo-sharing';
+import ViewShot, { captureRef } from 'react-native-view-shot';
+import { 
+  supabase, 
+  getCurrentUser, 
+  getTenantBookings,
+  getTenantProfile,
+  createConversation,
+  sendMessage,
+  uploadMessageImage
+} from '../../lib/supabaseClient';
+import { getLandlordProfile as fetchLandlordProfile } from '../../lib/supabaseClient';
 
-const BOOKINGS_STORAGE_KEY = '@bookings_data';
-const PAYMENTS_STORAGE_KEY = '@payments_data';
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
+const PAYMENTS_STORAGE_KEY = '@tenant_payments_data';
 
 export default function FinancialsScreen() {
   const [selectedPeriod, setSelectedPeriod] = useState('monthly');
@@ -25,39 +40,244 @@ export default function FinancialsScreen() {
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [selectedPayment, setSelectedPayment] = useState(null);
-  const [paymentMethod, setPaymentMethod] = useState('gcash');
+  
+  const [selectedBooking, setSelectedBooking] = useState(null); 
+  const [paymentMethod, setPaymentMethod] = useState('gcash'); 
   const [paymentDetails, setPaymentDetails] = useState({
     accountNumber: '',
     accountName: '',
+    amount: '',
+    reference: ''
   });
+  
+  // Receipt State
+  const [receiptData, setReceiptData] = useState(null);
+  const [receiptAction, setReceiptAction] = useState(null); // 'share' or 'chat'
+  const singleReceiptRef = useRef();
+  const justPaidRef = useRef(new Set());
 
-  const currentUser = {
-    id: 'tenant_jesse_pinkman_01',
-    name: 'Jesse Pinkman',
-    email: 'jessepinkmanyo@gmail.com',
-    phone: '+1 234 567 8900',
-  };
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [tenantProfile, setTenantProfile] = useState(null);
+  const [tenantName, setTenantName] = useState(''); 
 
   useEffect(() => {
     loadData();
   }, []);
 
+  // Trigger capture when data is ready
+  useEffect(() => {
+    if (receiptData && receiptAction) {
+      const timer = setTimeout(() => {
+        captureSingleReceipt();
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [receiptData, receiptAction]);
+
+  // Real-time subscription for payments updates (when landlord records cash payments)
+  useEffect(() => {
+    let subscription;
+
+    const setupSubscription = async () => {
+      try {
+        const user = await getCurrentUser();
+        if (!user) return;
+
+        // Get tenant profile ID
+        const { data: profile } = await supabase
+          .from('tenant_profile')
+          .select('id')
+          .eq('user_id', user.id)
+          .single();
+
+        if (!profile?.id) return;
+
+        console.log('[Tenant Payments] Setting up real-time subscription for tenant_id:', profile.id);
+
+        subscription = supabase
+          .channel(`payments:tenant_${profile.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'payments',
+              filter: `tenant_id=eq.${profile.id}`
+            },
+            (payload) => {
+              console.log('🔔 [Tenant] Payment update received via Websocket:', payload.eventType);
+              loadData(); // Reload data on real-time event
+            }
+          )
+          .subscribe();
+      } catch (error) {
+        console.error('[Tenant Payments] Error setting up subscription:', error);
+      }
+    };
+
+    setupSubscription();
+
+    return () => {
+      if (subscription) {
+        console.log('[Tenant Payments] Cleaning up subscription');
+        supabase.removeChannel(subscription);
+      }
+    };
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+      
+      // Poll every 10 seconds while screen is focused to check for updated payment statuses
+      const pollInterval = setInterval(() => {
+        loadData();
+      }, 10000);
+
+      return () => {
+        if (pollInterval) clearInterval(pollInterval);
+      };
+    }, [])
+  );
+
   const loadData = async () => {
     try {
-      // Load bookings
-      const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-      const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-      const userBookings = allBookings.filter(booking => booking.tenantId === currentUser.id);
-      setBookings(userBookings);
+      setIsLoading(true);
 
-      // Load payments
-      const paymentsJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-      const allPayments = paymentsJson ? JSON.parse(paymentsJson) : [];
-      const userPayments = allPayments.filter(payment => payment.tenantId === currentUser.id);
-      setPayments(userPayments);
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        setIsLoading(false);
+        return;
+      }
+      setCurrentUser(user);
+
+      let fetchedTenantName = 'Tenant';
+      let profileId = null;
+
+      const { success: profileSuccess, user: userObj, profile } = await getTenantProfile(user.id);
+      
+      if (profileSuccess && userObj) {
+        fetchedTenantName = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim() || 'Tenant';
+        profileId = profile?.id; // Get ID from profile object, not user object
+        
+        if (!profileId) {
+             const { data: rawProfile } = await supabase
+            .from('tenant_profile')
+            .select('id')
+            .eq('user_id', user.id)
+            .single();
+            profileId = rawProfile?.id;
+        }
+      }
+
+      setTenantName(fetchedTenantName);
+      setTenantProfile({ id: profileId });
+
+      if (!profileId) {
+        setIsLoading(false);
+        return;
+      }
+
+      // Load Bookings
+      let currentBookings = [];
+      const { success: bookingsSuccess, bookings: bookingsData } = await getTenantBookings(profileId);
+      
+      if (bookingsSuccess) {
+        // Read landlord payment methods from AsyncStorage (fallback only)
+        const methodsJson = await AsyncStorage.getItem('@landlord_payment_methods');
+        let landlordPaymentMethods = [];
+        if (methodsJson) {
+          landlordPaymentMethods = JSON.parse(methodsJson);
+        }
+        currentBookings = bookingsData.map(b => {
+          const listing = b.listing || b.listings || {};
+          const landlord = listing.landlord_profile?.users || {};
+          const landlordProfile = listing.landlord_profile || {};
+          // Prefer server profile fields, fallback to locally saved landlord methods (dev)
+          const gcashMethod = landlordPaymentMethods.find(m => m.type === 'gcash');
+          const paymayaMethod = landlordPaymentMethods.find(m => m.type === 'paymaya');
+          const bankMethod = landlordPaymentMethods.find(m => m.type === 'bank_account');
+          const gcashNumber = landlordProfile.gcash_number || landlordProfile.gcash || landlordProfile.gcash_phone || gcashMethod?.phone || '';
+          const paymayaNumber = landlordProfile.paymaya_number || landlordProfile.paymaya || paymayaMethod?.phone || '';
+          const bankAcct = landlordProfile.bank_account || landlordProfile.bankAccount || bankMethod?.accountNumber || '';
+          return {
+            id: b.id,
+            listingId: listing.id,
+            landlordId: listing.landlord_id, 
+            landlordName: landlord.first_name ? `${landlord.first_name} ${landlord.last_name}` : 'Landlord',
+            property: listing.title || listing.name || 'Unknown Property',
+            amount: b.total_amount || listing.price || 0,
+            status: b.status,
+            moveInDate: b.move_in_date,
+            landlordGcash: gcashNumber,
+            landlordPaymaya: paymayaNumber,
+            landlordBank: bankAcct
+          };
+        });
+        setBookings(currentBookings);
+      }
+
+      // Load Payments
+      const { data: dbPayments, error: paymentsError } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('tenant_id', profileId)
+        .order('paid_date', { ascending: false });
+
+      let allPayments = [];
+
+      if (!paymentsError && dbPayments) {
+        const mappedPayments = dbPayments.map(p => {
+          const matchedByBooking = currentBookings.find(b => String(b.id) === String(p.booking_id));
+          const matchedBooking = matchedByBooking || currentBookings.find(b => b.landlordId === p.landlord_id);
+          const resolvedLandlordName = matchedBooking ? matchedBooking.landlordName : 'Landlord';
+
+          const mapped = {
+            ...p,
+            id: p.id,
+            landlordId: p.landlord_id,
+            landlordName: resolvedLandlordName, 
+            tenantName: fetchedTenantName,
+            property: matchedBooking?.property || 'Unknown Property',
+            amount: parseFloat(p.amount) || 0, 
+            status: p.status ? p.status.toLowerCase() : 'pending', 
+            date: p.paid_date || p.created_at,
+            type: p.payment_type || 'rent',
+            method: p.payment_method || 'Manual',
+            reference: p.reference_number || 'N/A',
+          };
+          
+          return mapped;
+        });
+        allPayments = mappedPayments;
+      }
+
+      const localData = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+      if (localData) {
+        const localPayments = JSON.parse(localData);
+        // Only keep local payments that aren't already in the DB (by reference number)
+        const dbReferences = new Set(allPayments.map(p => p.reference || p.reference_number));
+        const uniqueLocal = localPayments.filter(lp => !dbReferences.has(lp.reference));
+        
+        // Clean up synced payments from AsyncStorage
+        if (uniqueLocal.length < localPayments.length) {
+          await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(uniqueLocal));
+          console.log('[Tenant loadData] Cleaned up synced local payments:', localPayments.length - uniqueLocal.length);
+        }
+        
+        allPayments = [...uniqueLocal, ...allPayments];
+      }
+
+      allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+      
+      setPayments(allPayments);
+
     } catch (error) {
       console.error('Failed to load data', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -67,288 +287,494 @@ export default function FinancialsScreen() {
     setRefreshing(false);
   };
 
-  // Calculate financial data from actual bookings and payments
-  const calculateFinancialData = () => {
-    const completedPayments = payments.filter(p => p.status === 'completed');
-    const pendingPayments = payments.filter(p => p.status === 'pending');
-    
-    const totalSpent = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const pendingAmount = pendingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const activeBookings = bookings.filter(b => b.status === 'approved' || b.status === 'pending').length;
-    
-    // Calculate average rent from completed payments
-    const rentPayments = completedPayments.filter(p => p.type === 'rent');
-    const averageRent = rentPayments.length > 0 
-      ? rentPayments.reduce((sum, payment) => sum + payment.amount, 0) / rentPayments.length 
-      : 0;
-
-    return {
-      totalSpent,
-      pendingPayments: pendingAmount,
-      activeBookings,
-      savedProperties: 8, // This could be connected to favorites if you have that data
-      averageRent: Math.round(averageRent),
-      completedPayments: completedPayments.length,
-    };
-  };
-
-  const financialData = calculateFinancialData();
-
-  // Generate payment history from actual payments
-  const paymentHistory = payments
-    .filter(payment => payment.status === 'completed')
-    .map(payment => ({
-      id: payment.id,
-      landlord: payment.landlordName,
-      property: payment.property,
-      amount: payment.amount,
-      date: payment.paidDate || payment.date,
-      status: 'completed',
-      type: payment.type || 'rent',
-      reference: payment.reference || `REF-${payment.id.slice(-6)}`
-    }))
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  // Generate upcoming payments from pending payments and upcoming bookings
-  const upcomingPayments = [
-    ...payments
-      .filter(payment => payment.status === 'pending')
-      .map(payment => ({
-        id: payment.id,
-        landlord: payment.landlordName,
-        property: payment.property,
-        amount: payment.amount,
-        dueDate: payment.dueDate,
-        type: payment.type || 'rent',
-        description: payment.description || `${getPaymentType(payment.type)} Payment`
-      })),
-    ...bookings
-      .filter(booking => booking.status === 'approved' && !payments.some(p => p.bookingId === booking.id))
-      .map(booking => ({
-        id: `booking_${booking.id}`,
-        landlord: booking.landlordName,
-        property: booking.property,
-        amount: booking.amount || 5000, // Default amount if not specified
-        dueDate: booking.moveInDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        type: 'rent',
-        description: 'Security Deposit & First Month Rent',
-        bookingId: booking.id
-      }))
-  ];
-
-  const handlePayNow = (payment) => {
-    setSelectedPayment(payment);
-    setPaymentDetails({
-      accountNumber: '',
-      accountName: currentUser.name,
-    });
-    setShowPaymentModal(true);
-  };
-
-  const processPayment = async () => {
-    if (!paymentDetails.accountNumber.trim()) {
-      Alert.alert('Error', 'Please enter your account number');
-      return;
-    }
-
+  // --- RECEIPT HANDLER ---
+  const captureSingleReceipt = async () => {
     try {
-      // Generate payment reference
-      const paymentReference = `PAY-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
-      // Create payment record
-      const paymentRecord = {
-        id: `payment_${Date.now()}`,
-        tenantId: currentUser.id,
-        tenantName: currentUser.name,
-        landlordName: selectedPayment.landlord,
-        property: selectedPayment.property,
-        amount: selectedPayment.amount,
-        type: selectedPayment.type,
-        status: 'completed',
-        method: paymentMethod,
-        accountNumber: paymentDetails.accountNumber,
-        accountName: paymentDetails.accountName,
-        reference: paymentReference,
-        paidDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        description: selectedPayment.description || `${getPaymentType(selectedPayment.type)} Payment`,
-        bookingId: selectedPayment.bookingId,
-      };
+      // Generate the image
+      const uri = await captureRef(singleReceiptRef, {
+        format: 'png',
+        quality: 1.0, 
+        result: 'tmpfile'
+      });
 
-      // Update payments storage
-      const paymentsJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
-      const allPayments = paymentsJson ? JSON.parse(paymentsJson) : [];
-      allPayments.push(paymentRecord);
-      await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(allPayments));
+      if (receiptAction === 'share') {
+        // Option A: Share/Download
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, {
+            mimeType: 'image/png',
+            dialogTitle: 'Download Receipt',
+            UTI: 'public.png'
+          });
+        } else {
+          Alert.alert('Error', 'Sharing is not available on this device');
+        }
+      } else if (receiptAction === 'chat') {
+        // Option B: Send to Landlord
+        let landlordId = receiptData?.landlordId || receiptData?.landlord_id || (receiptData?.landlord && (receiptData.landlord.id || receiptData.landlord.user_id)) || null;
+        let landlordName = receiptData?.landlordName || receiptData?.landlord_name || (receiptData?.landlord && (receiptData.landlord.first_name ? `${receiptData.landlord.first_name} ${receiptData.landlord.last_name}` : null)) || 'Landlord';
 
-      // If this was a booking payment, update booking status
-      if (selectedPayment.bookingId) {
-        const bookingsJson = await AsyncStorage.getItem(BOOKINGS_STORAGE_KEY);
-        const allBookings = bookingsJson ? JSON.parse(bookingsJson) : [];
-        const updatedBookings = allBookings.map(booking => 
-          booking.id === selectedPayment.bookingId 
-            ? { ...booking, paymentStatus: 'paid', paidAmount: selectedPayment.amount }
-            : booking
-        );
-        await AsyncStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(updatedBookings));
+        // Fallbacks: try to resolve landlordId from bookings or other payments if missing
+        if (!landlordId) {
+          // Try booking match by bookingId
+          const bookingId = receiptData?.bookingId || receiptData?.booking_id || receiptData?.booking;
+          if (bookingId) {
+            const found = bookings.find(b => String(b.id) === String(bookingId));
+            if (found) landlordId = found.landlordId || found.landlord_id || null;
+          }
+        }
+
+        if (!landlordId && receiptData?.property) {
+          const foundByProp = bookings.find(b => (b.property || '').toLowerCase() === (receiptData.property || '').toLowerCase());
+          if (foundByProp) landlordId = foundByProp.landlordId || foundByProp.landlord_id || null;
+        }
+
+        if (!landlordId && receiptData?.landlordName) {
+          const foundByName = bookings.find(b => (b.landlordName || '').toLowerCase() === (receiptData.landlordName || '').toLowerCase());
+          if (foundByName) landlordId = foundByName.landlordId || foundByName.landlord_id || null;
+        }
+
+        if (!landlordId && payments && payments.length) {
+          const foundInPayments = payments.find(p => (p.landlordName || '').toLowerCase() === (receiptData.landlordName || '').toLowerCase() && (p.landlordId || p.landlord_id));
+          if (foundInPayments) landlordId = foundInPayments.landlordId || foundInPayments.landlord_id || null;
+        }
+
+        if (landlordId) {
+          try {
+            // Ensure we have tenantProfile id and current user
+            const tenantProfileId = tenantProfile?.id;
+            const current = await getCurrentUser();
+            const senderUserId = current?.id;
+
+            // Find existing conversation(s) between tenant and landlord (prefer latest/ matching listing)
+            let conversation = null;
+            const listingIdForConv = receiptData?.listingId || receiptData?.listing_id || selectedBooking?.listingId || selectedBooking?.listing_id || null;
+            const { data: existingConvs, error: existingConvsErr } = await supabase
+              .from('conversations')
+              .select('*')
+              .eq('tenant_id', tenantProfileId)
+              .eq('landlord_id', landlordId)
+              .order('updated_at', { ascending: false })
+              .order('created_at', { ascending: false });
+
+            if (existingConvsErr) console.warn('Existing conversation lookup error:', existingConvsErr);
+
+            if (existingConvs && existingConvs.length) {
+              const normalized = existingConvs.filter(Boolean);
+              const withParticipants = normalized.filter(c => c.tenant_id && c.landlord_id);
+              let candidates = withParticipants;
+              if (listingIdForConv) {
+                const byListing = candidates.filter(c => String(c.listing_id || '') === String(listingIdForConv));
+                if (byListing.length) candidates = byListing;
+              }
+              if (!candidates.length) candidates = withParticipants.length ? withParticipants : normalized;
+              conversation = candidates[0];
+            }
+
+            if (!conversation) {
+              // Create a new conversation (use createConversation helper if possible)
+              try {
+                const { success: convSuccess, conversation: createdConv } = await createConversation(tenantProfileId, landlordId, listingIdForConv);
+                if (convSuccess && createdConv) {
+                  conversation = createdConv;
+                }
+              } catch (e) {
+                console.warn('createConversation helper failed:', e);
+              }
+
+              if (!conversation) {
+                // Fallback: try direct insert. If listingId is missing, insert without it.
+                const insertPayload = listingIdForConv ? { tenant_id: tenantProfileId, landlord_id: landlordId, listing_id: listingIdForConv } : { tenant_id: tenantProfileId, landlord_id: landlordId };
+                const { data: newConv, error: insertErr } = await supabase
+                  .from('conversations')
+                  .insert([insertPayload])
+                  .select()
+                  .single();
+
+                if (insertErr) {
+                  console.error('Conversation insert error:', insertErr);
+                  Alert.alert('Error', `Conversation creation failed: ${insertErr.message || JSON.stringify(insertErr)}`);
+                  conversation = null;
+                } else {
+                  conversation = newConv;
+                }
+              }
+            }
+
+            if (!conversation) throw new Error('Could not create/find conversation');
+
+            // Upload the image to storage and send as message (use auth user ID for upload)
+            const uploadRes = await uploadMessageImage(uri, senderUserId);
+            const imageUrl = uploadRes?.success ? uploadRes.publicUrl : null;
+
+            const messageText = `Payment Receipt${receiptData?.reference ? ' - Ref: ' + receiptData.reference : ''}`;
+
+            // sendMessage expects auth user ID (from users table), not profile ID
+            const sendRes = await sendMessage(conversation.id, senderUserId, messageText, imageUrl);
+            if (!sendRes.success) {
+              console.warn('Failed to send message:', sendRes.error);
+              Alert.alert('Warning', 'Receipt saved but message delivery failed.');
+            }
+
+            // Navigate to conversation in chat screen
+            router.push({ pathname: '/(tenant)/chat', params: { conversationId: conversation.id } });
+
+          } catch (err) {
+            console.error('Failed to send receipt to landlord:', err);
+            Alert.alert('Error', 'Failed to send receipt to landlord.');
+          }
+        } else {
+            Alert.alert("Error", "Landlord information missing for this payment.");
+        }
       }
 
-      // Close modal and reload data
-      setShowPaymentModal(false);
-      setSelectedPayment(null);
-      await loadData();
-
-      // Show success message with receipt
-      Alert.alert(
-        'Payment Successful!',
-        `Payment of ₱${selectedPayment.amount.toLocaleString()} completed successfully.\n\nReference: ${paymentReference}`,
-        [
-          { text: 'OK', style: 'default' },
-          { 
-            text: 'View Receipt', 
-            onPress: () => handleViewReceipt(paymentRecord)
-          }
-        ]
-      );
     } catch (error) {
-      console.error('Failed to process payment', error);
-      Alert.alert('Error', 'Failed to process payment. Please try again.');
+      console.error('Receipt generation failed:', error);
+      Alert.alert('Error', 'Could not generate receipt image.');
+    } finally {
+      setReceiptData(null);
+      setReceiptAction(null);
     }
   };
 
   const handleViewReceipt = (payment) => {
     Alert.alert(
-      'Payment Receipt',
-      `Payment Details:\n\n` +
-      `Amount: ₱${payment.amount.toLocaleString()}\n` +
-      `Property: ${payment.property}\n` +
-      `Landlord: ${payment.landlordName}\n` +
-      `Payment Method: ${payment.method.toUpperCase()}\n` +
-      `Reference: ${payment.reference}\n` +
-      `Date: ${payment.paidDate}\n` +
-      `Status: ${payment.status}`,
-      [{ text: 'OK', style: 'default' }]
-    );
-  };
-
-  const handleAddPaymentMethod = () => {
-    Alert.alert(
-      'Add Payment Method',
-      'Choose your preferred payment method:',
-      [
-        {
-          text: 'GCash',
-          onPress: () => setPaymentMethod('gcash')
-        },
-        {
-          text: 'PayMaya',
-          onPress: () => setPaymentMethod('paymaya')
-        },
-        {
-          text: 'Bank Transfer',
-          onPress: () => setPaymentMethod('bank')
-        },
-        {
-          text: 'Cancel',
-          style: 'cancel'
-        }
-      ]
-    );
-  };
-
-  const handleViewReceipts = () => {
-    const completedPayments = payments.filter(p => p.status === 'completed');
-    if (completedPayments.length === 0) {
-      Alert.alert('No Receipts', 'You have no completed payments yet.');
-      return;
-    }
-    
-    Alert.alert(
-      'Payment Receipts',
-      `You have ${completedPayments.length} completed payments.`,
-      [
-        { text: 'View All', onPress: () => {
-          // This would navigate to a detailed receipts screen
-          Alert.alert('Receipts', 'This would show all your payment receipts in detail.');
-        }},
-        { text: 'Cancel', style: 'cancel' }
-      ]
-    );
-  };
-
-  const handleExportHistory = () => {
-    if (payments.length === 0) {
-      Alert.alert('No Data', 'You have no payment history to export.');
-      return;
-    }
-    
-    // Simulate export functionality
-    Alert.alert(
-      'Export History',
-      'Your payment history will be prepared for download. This may take a few moments.',
+      'Payment Options',
+      `Ref: ${payment.reference}\nAmount: ₱${payment.amount.toLocaleString()}`,
       [
         { text: 'Cancel', style: 'cancel' },
         { 
-          text: 'Export', 
+          text: 'Download', 
           onPress: () => {
-            setTimeout(() => {
-              Alert.alert('Export Complete', 'Your payment history has been exported successfully.');
-            }, 2000);
-          }
+            setReceiptAction('share');
+            setReceiptData(payment);
+          } 
+        },
+        { 
+          text: 'Send to Landlord', 
+          onPress: () => {
+            setReceiptAction('chat');
+            setReceiptData(payment);
+          } 
         }
       ]
     );
   };
 
-  const getStatusColor = (status) => {
-    return status === 'completed' ? '#10b981' : '#f59e0b';
-  };
-
-  const getStatusText = (status) => {
-    return status === 'completed' ? 'Paid' : 'Pending';
-  };
-
-  const getPaymentType = (type) => {
-    return type === 'rent' ? 'Monthly Rent' : 
-           type === 'security_deposit' ? 'Security Deposit' : 
-           type === 'utility' ? 'Utility Bill' :
-           type || 'Payment';
-  };
-
-  const getDaysUntilDue = (dueDate) => {
+  // Helpers
+  const calculateNextDueDate = (moveInDateStr) => {
+    if (!moveInDateStr) return 'N/A';
+    const moveIn = new Date(moveInDateStr);
     const today = new Date();
-    const due = new Date(dueDate);
-    const diffTime = due - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
-    if (diffDays < 0) return 'Overdue';
-    if (diffDays === 0) return 'Due Today';
-    if (diffDays === 1) return 'Due Tomorrow';
-    return `Due in ${diffDays} days`;
+    if (moveIn > today) return moveIn.toISOString().split('T')[0];
+    let nextDue = new Date(moveIn);
+    while (nextDue <= today) {
+      nextDue.setMonth(nextDue.getMonth() + 1);
+    }
+    return nextDue.toISOString().split('T')[0];
   };
 
-  const getPaymentMethodIcon = (method) => {
-    switch (method) {
-      case 'gcash': return 'phone-portrait';
-      case 'paymaya': return 'card';
-      case 'bank': return 'business';
-      default: return 'card';
+  // Normalize any date-like value into YYYY-MM-DD for reliable equality checks
+  const dateKey = (v) => {
+    if (!v) return '';
+    if (typeof v === 'string') {
+      if (v.includes('T')) return v.split('T')[0];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+      const d = new Date(v);
+      if (!isNaN(d)) return d.toISOString().split('T')[0];
+      return '';
+    }
+    const d = new Date(v);
+    if (isNaN(d)) return '';
+    return d.toISOString().split('T')[0];
+  };
+
+  const paymentHistory = payments.map(p => ({
+    ...p,
+    type: p.type ? p.type.charAt(0).toUpperCase() + p.type.slice(1) : 'Payment',
+    status: p.status ? p.status.charAt(0).toUpperCase() + p.status.slice(1) : 'Unknown'
+  }));
+
+  const paidDueKeys = new Set();
+  const paidDueMonthKeys = new Set();
+  payments.forEach(p => {
+    const statusLower = (p.status || '').toLowerCase();
+    if (statusLower !== 'completed' && statusLower !== 'paid') return;
+    const bookingId = String(p.booking_id || p.bookingId || '');
+    if (!bookingId) return;
+    // Check due_date first (landlord records use this), then fall back to paid_date
+    const paymentDateKey = dateKey(p.due_date || p.paid_date || p.date || p.paidDate);
+    if (!paymentDateKey) return;
+    paidDueKeys.add(`${bookingId}_${paymentDateKey}`);
+    const monthKey = paymentDateKey.slice(0, 7);
+    if (monthKey.length === 7) {
+      paidDueMonthKeys.add(`${bookingId}_${monthKey}`);
+    }
+  });
+
+  // For each booking/property, return at most ONE upcoming due (the next unpaid month)
+  const upcomingDue = bookings
+    .map(b => {
+      if (!(b.status === 'approved' || b.status === 'occupied')) return null;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const moveIn = new Date(b.moveInDate);
+      if (isNaN(moveIn.getTime())) return null;
+
+      // Find the first due date that is today or in the future and not already paid (up to 24 months)
+      for (let i = 0; i < 24; i++) {
+        // Use same calculation as landlord's financials.js - create new date each iteration
+        const nextDue = new Date(moveIn.getFullYear(), moveIn.getMonth() + i, moveIn.getDate());
+        
+        // Skip if due date is in the past
+        if (nextDue < today) {
+          continue;
+        }
+
+        const dueDateStr = nextDue.toISOString().split('T')[0];
+        const dueDateKey = dateKey(dueDateStr);
+        if (!dueDateKey) {
+          continue;
+        }
+
+        // Immediate hide if we just paid this specific due (optimistic guard)
+        if (justPaidRef.current.has(`${b.id}_${dueDateStr}`)) {
+          continue;
+        }
+
+        const dueKey = `${b.id}_${dueDateKey}`;
+        const dueMonthKey = `${b.id}_${dueDateKey.slice(0, 7)}`;
+        if (paidDueKeys.has(dueKey) || paidDueMonthKeys.has(dueMonthKey)) {
+          continue;
+        }
+
+        return {
+          id: `due_${b.id}_${dueDateStr}`,
+          property: b.property || 'Property Name',
+          amount: b.amount,
+          dueDate: dueDateStr,
+          type: 'Rent',
+          bookingId: b.id,
+          listingId: b.listingId,
+          landlordId: b.landlordId,
+          landlordName: b.landlordName,
+          landlordGcash: b.landlordGcash || '',
+          landlordPaymaya: b.landlordPaymaya || '',
+          landlordBank: b.landlordBank || ''
+        };
+      }
+
+      // No upcoming unpaid due found within the next 24 months
+      return null;
+    })
+    .filter(Boolean);
+
+    const calculateFinancialData = () => {
+        const completedPayments = payments.filter(p => p.status === 'completed' || p.status === 'paid');
+        
+        // Calculate total spent from completed payments
+        const totalSpent = completedPayments.reduce((sum, payment) => sum + (parseFloat(payment.amount) || 0), 0);
+        
+        // Calculate pending from upcomingDue (upcoming rent that hasn't been paid yet)
+        const pendingAmount = upcomingDue.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+        
+        const rentPayments = completedPayments.filter(p => p.type === 'rent');
+        const averageRent = rentPayments.length > 0 
+          ? rentPayments.reduce((sum, p) => sum + p.amount, 0) / rentPayments.length 
+          : 0;
+    
+        return {
+          totalSpent,
+          pendingAmount,
+          averageRent: Math.round(averageRent),
+        };
+      };
+
+  const financialData = calculateFinancialData();
+
+  const handlePayNow = async (item) => {
+    let enriched = { ...item };
+    // If no methods attached to the item, try fetching landlord profile
+    if (!enriched.landlordGcash && !enriched.landlordPaymaya && !enriched.landlordBank && item?.landlordId) {
+      try {
+        const { success, profile } = await fetchLandlordProfile(item.landlordId);
+        if (success && profile) {
+          const lp = profile || {};
+          const gcash = lp.gcash_number || lp.gcash || lp.gcash_phone || '';
+          const paymaya = lp.paymaya_number || lp.paymaya || '';
+          const bank = lp.bank_account || lp.bankAccount || '';
+          enriched = { ...enriched, landlordGcash: gcash, landlordPaymaya: paymaya, landlordBank: bank };
+        }
+      } catch {}
+    }
+
+    setSelectedBooking(enriched);
+    const available = [];
+    if (enriched?.landlordGcash) available.push('gcash');
+    if (enriched?.landlordPaymaya) available.push('paymaya');
+    if (enriched?.landlordBank) available.push('bank');
+    const initialMethod = available[0] || 'gcash';
+    setPaymentMethod(initialMethod);
+    setPaymentDetails({
+      accountNumber: '',
+      accountName: tenantName, // Pre-fill with fetched name
+      amount: item.amount.toString(),
+      reference: ''
+    });
+    setShowPaymentModal(true);
+  };
+
+  // Removed auto-fill of account number; tenant will input their own
+
+  const processPayment = async () => {
+    // 1. Validation
+    if (!paymentDetails.amount) {
+      Alert.alert('Error', 'Please enter amount');
+      return;
+    }
+    if (paymentMethod !== 'cash' && !paymentDetails.accountNumber) {
+       Alert.alert('Error', 'Please enter account number');
+       return;
+    }
+
+    const amountFloat = parseFloat(paymentDetails.amount);
+    // Use the exact due date from the booking so it matches the "Upcoming Due" logic
+    const duePaidDate = (selectedBooking?.dueDate) ? selectedBooking.dueDate : new Date().toISOString().split('T')[0];
+    
+    const generatedRef = `TRX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    const nameToUse = tenantName || 'Tenant';
+
+    // Map payment methods to database allowed values
+    const paymentMethodMap = {
+      'gcash': 'mobile_wallet',
+      'paymaya': 'mobile_wallet',
+      'bank': 'bank_transfer',
+      'cash': 'cash'
+    };
+    
+    const dbPaymentMethod = paymentMethodMap[paymentMethod] || 'bank_transfer';
+
+    // 2. Prepare Data Objects
+    const newPayment = {
+      booking_id: selectedBooking?.bookingId,
+      listing_id: selectedBooking?.listingId,
+      tenant_id: tenantProfile?.id,
+      landlord_id: selectedBooking?.landlordId, 
+      amount: amountFloat,
+      payment_type: 'rent',
+      status: 'completed', 
+      paid_date: duePaidDate,
+      due_date: duePaidDate, // Critical: needed for landlord's isDuePaid matching
+      payment_method: dbPaymentMethod, 
+      reference_number: generatedRef,
+      notes: `Payment made by ${nameToUse} via ${paymentMethod.toUpperCase()}`
+    };
+
+    // UI Object (Matches exactly what Payment History needs)
+    const optimisticPayment = { 
+        ...newPayment, 
+        id: `temp_${Date.now()}`, 
+        date: duePaidDate, 
+        paidDate: duePaidDate,
+        due_date: duePaidDate, // For matching in paid dues check
+        property: selectedBooking?.property || 'Property', // Ensure property name exists
+        tenant_name: nameToUse,
+        property_title: selectedBooking?.property,
+        tenantName: nameToUse,
+        landlordName: selectedBooking?.landlordName || 'Landlord',
+        landlordId: newPayment.landlord_id,
+        type: 'Rent',
+        status: 'completed',
+        method: paymentMethod,
+        reference: generatedRef
+    };
+    
+    // 3. Update UI Immediately
+    // Mark this due as paid immediately for optimistic UI update
+    if (selectedBooking?.bookingId && duePaidDate) {
+      justPaidRef.current.add(`${selectedBooking.bookingId}_${duePaidDate}`);
+    }
+    // Add to History immediately
+    setPayments(prev => [optimisticPayment, ...prev]);
+    setShowPaymentModal(false);
+
+    try {
+        // 4. Save to Database
+        const { error } = await supabase.from('payments').insert([newPayment]);
+        
+        // 5. CRITICAL FIX: Save to Local Storage regardless of DB result
+        // This ensures loadData() (which runs on a timer) picks this up 
+        // even if the DB is slow to update.
+        const existingJson = await AsyncStorage.getItem(PAYMENTS_STORAGE_KEY);
+        const existing = existingJson ? JSON.parse(existingJson) : [];
+        existing.push(optimisticPayment);
+        await AsyncStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(existing));
+
+        if (error) {
+            console.warn("DB Save failed, kept local copy", error);
+            // We don't alert error here because we already saved it locally for the user
+        } else {
+            // Successful DB insert - reload after a short delay to get fresh data
+            // This ensures both Upcoming Due and Payment History are in sync
+            setTimeout(() => {
+              loadData();
+            }, 1000);
+        }
+
+        Alert.alert('Success', `Payment Sent! Ref: ${generatedRef}`);
+
+    } catch (err) {
+        console.error(err);
+        Alert.alert('Error', 'An unexpected error occurred, but receipt saved locally.');
     }
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      const handleBackPress = () => {
+        router.replace('/(tenant)/menu');
+        return true; 
+      };
+      let backHandlerSubscription;
+               if (Platform.OS === 'android') {
+        backHandlerSubscription = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
+      }
+      return () => {
+        if (backHandlerSubscription) backHandlerSubscription.remove();
+      };
+    }, []) 
+  );
+
+  const getStatusColor = (status) => {
+    const s = status ? status.toLowerCase() : '';
+    if (s === 'completed' || s === 'paid') return '#10b981';
+    if (s === 'pending') return '#f59e0b';
+    return '#666';
+  };
+  
+  const formatDate = (dateStr) => {
+    if(!dateStr) return 'N/A';
+    return new Date(dateStr).toISOString().split('T')[0];
+  };
+
+  const formatType = (type) => {
+      return type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Payment';
+  };
+
+  // Derived UI state for modal validation
+  const amountValid = !!paymentDetails?.amount && !isNaN(parseFloat(paymentDetails.amount)) && parseFloat(paymentDetails.amount) > 0;
+  const hasAccountNumber = !!(paymentDetails?.accountNumber && String(paymentDetails.accountNumber).trim());
+  const hasLandlordNumber = !!(paymentDetails?.landlordNumber && String(paymentDetails.landlordNumber).trim());
+  const confirmDisabled = !amountValid || !hasAccountNumber || !hasLandlordNumber || !paymentMethod;
 
   return (
     <>
       <Stack.Screen
         options={{
-          title: 'Payments & Financials',
+          title: 'My Payments',
           headerShown: true,
-          headerStyle: {
-            backgroundColor: Colors.primary,
-          },
+          headerStyle: { backgroundColor: Colors.primary },
           headerTintColor: '#fff',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
+          headerTitleStyle: { fontWeight: 'bold' },
           headerLeft: () => (
             <TouchableOpacity onPress={() => router.push('/(tenant)/menu')} style={{ paddingLeft: 16 }}>
               <Ionicons name="arrow-back" size={24} color="#fff" />
@@ -360,311 +786,214 @@ export default function FinancialsScreen() {
       <ScrollView 
         style={styles.container} 
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         
+        {/* Period Selector */}
         <View style={styles.periodSelector}>
-          <TouchableOpacity
-            style={[styles.periodButton, selectedPeriod === 'monthly' && styles.periodButtonActive]}
-            onPress={() => setSelectedPeriod('monthly')}
-          >
-            <Text style={[styles.periodText, selectedPeriod === 'monthly' && styles.periodTextActive]}>
-              Monthly
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.periodButton, selectedPeriod === 'quarterly' && styles.periodButtonActive]}
-            onPress={() => setSelectedPeriod('quarterly')}
-          >
-            <Text style={[styles.periodText, selectedPeriod === 'quarterly' && styles.periodTextActive]}>
-              Quarterly
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.periodButton, selectedPeriod === 'yearly' && styles.periodButtonActive]}
-            onPress={() => setSelectedPeriod('yearly')}
-          >
-            <Text style={[styles.periodText, selectedPeriod === 'yearly' && styles.periodTextActive]}>
-              Yearly
-            </Text>
-          </TouchableOpacity>
+          {['monthly', 'quarterly', 'yearly'].map(p => (
+             <TouchableOpacity 
+               key={p} 
+               style={[styles.periodButton, selectedPeriod === p && styles.periodButtonActive]}
+               onPress={() => setSelectedPeriod(p)}
+             >
+               <Text style={[styles.periodText, selectedPeriod === p && styles.periodTextActive]}>
+                 {p.charAt(0).toUpperCase() + p.slice(1)}
+               </Text>
+             </TouchableOpacity>
+          ))}
         </View>
 
-       
+        {/* Overview Cards */}
         <View style={styles.overviewSection}>
-          <Text style={styles.sectionTitle}>Financial Overview</Text>
+          <Text style={styles.sectionTitle}>Overview</Text>
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>
               <View style={[styles.statIcon, { backgroundColor: '#e0f2fe' }]}>
                 <Ionicons name="wallet" size={24} color={Colors.primary} />
               </View>
               <Text style={styles.statValue}>₱{financialData.totalSpent.toLocaleString()}</Text>
-              <Text style={styles.statLabel}>Total Spent</Text>
+              <Text style={styles.statLabel}>Total Paid</Text>
             </View>
             <View style={styles.statCard}>
               <View style={[styles.statIcon, { backgroundColor: '#fef3c7' }]}>
                 <Ionicons name="time" size={24} color="#f59e0b" />
               </View>
-              <Text style={styles.statValue}>₱{financialData.pendingPayments.toLocaleString()}</Text>
-              <Text style={styles.statLabel}>Pending Payments</Text>
-            </View>
-            <View style={styles.statCard}>
-              <View style={[styles.statIcon, { backgroundColor: '#dcfce7' }]}>
-                <Ionicons name="calendar" size={24} color="#10b981" />
-              </View>
-              <Text style={styles.statValue}>{financialData.activeBookings}</Text>
-              <Text style={styles.statLabel}>Active Bookings</Text>
-            </View>
-            <View style={styles.statCard}>
-              <View style={[styles.statIcon, { backgroundColor: '#f0f4ff' }]}>
-                <Ionicons name="receipt" size={24} color={Colors.primary} />
-              </View>
-              <Text style={styles.statValue}>{financialData.completedPayments}</Text>
-              <Text style={styles.statLabel}>Payments Made</Text>
+              <Text style={styles.statValue}>₱{financialData.pendingAmount.toLocaleString()}</Text>
+              <Text style={styles.statLabel}>Pending</Text>
             </View>
           </View>
         </View>
 
-        
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
-          <View style={styles.quickActions}>
-            <TouchableOpacity style={styles.actionButton} onPress={handleAddPaymentMethod}>
-              <Ionicons name="card" size={24} color={Colors.primary} />
-              <Text style={styles.actionText}>Payment Method</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={handleViewReceipts}>
-              <Ionicons name="receipt" size={24} color={Colors.primary} />
-              <Text style={styles.actionText}>View Receipts</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={handleExportHistory}>
-              <Ionicons name="download" size={24} color={Colors.primary} />
-              <Text style={styles.actionText}>Export History</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        
+        {/* Upcoming / Due Payments */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Upcoming Payments</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAllText}>See All</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionTitle}>Upcoming Due</Text>
           </View>
-          
-          <View style={styles.paymentsList}>
-            {upcomingPayments.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="card-outline" size={32} color="#ccc" />
-                <Text style={styles.emptyStateText}>No upcoming payments</Text>
-                <Text style={styles.emptyStateSubtext}>All payments are up to date!</Text>
-              </View>
-            ) : (
-              upcomingPayments.map((payment) => (
-                <View key={payment.id} style={styles.paymentItem}>
-                  <View style={styles.paymentInfo}>
-                    <View style={styles.paymentHeader}>
-                      <Text style={styles.landlordName}>{payment.landlord}</Text>
-                      <Text style={styles.paymentAmount}>₱{payment.amount.toLocaleString()}</Text>
-                    </View>
-                    <Text style={styles.propertyName}>{payment.property}</Text>
-                    <Text style={styles.paymentDescription}>{payment.description}</Text>
-                    <View style={styles.paymentDetails}>
-                      <Text style={styles.paymentDate}>
-                        {getDaysUntilDue(payment.dueDate)} • Due: {payment.dueDate}
-                      </Text>
-                      <Text style={styles.paymentType}>{getPaymentType(payment.type)}</Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity 
-                    style={styles.payButton}
-                    onPress={() => handlePayNow(payment)}
-                  >
-                    <Feather name="credit-card" size={16} color="white" />
-                    <Text style={styles.payButtonText}>Pay Now</Text>
-                  </TouchableOpacity>
+          {upcomingDue.length === 0 ? (
+             <View style={styles.emptyState}>
+               <Text style={styles.emptyStateText}>No upcoming bills.</Text>
+             </View>
+          ) : (
+             upcomingDue.map((item) => (
+                <View key={item.id} style={styles.paymentItem}>
+                   <View style={{flex:1}}>
+                      <Text style={styles.propertyName}>{item.property}</Text> 
+                      <Text style={styles.paymentDate}>Due: {item.dueDate}</Text>
+                      <Text style={styles.paymentType}>{item.type}</Text>
+                   </View>
+                   <View style={{alignItems:'flex-end', justifyContent:'space-between'}}>
+                      <Text style={styles.paymentAmount}>₱{parseFloat(item.amount).toLocaleString()}</Text>
+                      <TouchableOpacity style={styles.payButton} onPress={() => handlePayNow(item)}>
+                         <Text style={styles.payButtonText}>Pay</Text>
+                      </TouchableOpacity>
+                   </View>
                 </View>
-              ))
-            )}
-          </View>
+             ))
+          )}
         </View>
 
-        
+        {/* Payment History */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Payment History</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAllText}>See All</Text>
-            </TouchableOpacity>
           </View>
-          
-          <View style={styles.paymentsList}>
-            {paymentHistory.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="receipt-outline" size={32} color="#ccc" />
-                <Text style={styles.emptyStateText}>No payment history yet</Text>
-                <Text style={styles.emptyStateSubtext}>Your payment history will appear here</Text>
-              </View>
-            ) : (
-              paymentHistory.slice(0, 5).map((payment) => (
-                <View key={payment.id} style={styles.paymentItem}>
-                  <View style={styles.paymentInfo}>
-                    <View style={styles.paymentHeader}>
-                      <Text style={styles.landlordName}>{payment.landlord}</Text>
-                      <Text style={styles.paymentAmount}>₱{payment.amount.toLocaleString()}</Text>
-                    </View>
-                    <Text style={styles.propertyName}>{payment.property}</Text>
-                    <View style={styles.paymentDetails}>
-                      <Text style={styles.paymentDate}>{payment.date}</Text>
-                      <View style={[styles.statusBadge, { backgroundColor: getStatusColor(payment.status) + '20' }]}>
-                        <View style={[styles.statusDot, { backgroundColor: getStatusColor(payment.status) }]} />
-                        <Text style={[styles.statusText, { color: getStatusColor(payment.status) }]}>
-                          {getStatusText(payment.status)}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={styles.paymentReference}>Ref: {payment.reference}</Text>
+          {paymentHistory.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="receipt-outline" size={32} color="#ccc" />
+              <Text style={styles.emptyStateText}>No payment history</Text>
+            </View>
+          ) : (
+            paymentHistory.map((p, i) => (
+              <TouchableOpacity key={p.id || i} style={styles.paymentItem} onPress={() => handleViewReceipt(p)}>
+                <View style={{flex:1}}>
+                  <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                     <Text style={styles.propertyName}>{p.property}</Text>
+                     <Text style={styles.paymentAmount}>₱{p.amount.toLocaleString()}</Text>
                   </View>
-                  <TouchableOpacity 
-                    style={styles.receiptButton}
-                    onPress={() => handleViewReceipt(payment)}
-                  >
-                    <Ionicons name="receipt" size={16} color={Colors.primary} />
-                  </TouchableOpacity>
+                  <View style={{flexDirection:'row', justifyContent:'space-between', marginTop:4}}>
+                     <Text style={styles.paymentDate}>{formatDate(p.date)}</Text>
+                     <View style={{flexDirection:'row', alignItems:'center', gap:4}}>
+                        <View style={{width:6, height:6, borderRadius:3, backgroundColor: getStatusColor(p.status)}} />
+                        <Text style={[styles.statusText, {color: getStatusColor(p.status)}]}>{p.status}</Text>
+                     </View>
+                  </View>
+                  <Text style={styles.paymentReference}>Ref: {p.reference}</Text>
                 </View>
-              ))
-            )}
-          </View>
+                <Ionicons name="chevron-forward" size={20} color="#ccc" style={{marginLeft: 8, alignSelf:'center'}} />
+              </TouchableOpacity>
+            ))
+          )}
         </View>
 
-        
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Financial Summary</Text>
-          <View style={styles.summaryGrid}>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryLabel}>Monthly Average</Text>
-              <Text style={styles.summaryValue}>₱{financialData.averageRent.toLocaleString()}</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryLabel}>Active Bookings</Text>
-              <Text style={styles.summaryValue}>{financialData.activeBookings}</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryLabel}>Total Payments</Text>
-              <Text style={styles.summaryValue}>{financialData.completedPayments}</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryLabel}>Pending Amount</Text>
-              <Text style={styles.summaryValue}>₱{financialData.pendingPayments.toLocaleString()}</Text>
-            </View>
-          </View>
-        </View>
       </ScrollView>
 
-      {/* Payment Modal */}
-      <Modal
-        visible={showPaymentModal}
-        animationType="slide"
-        transparent={true}
-      >
+      {/* --- HIDDEN VIEW: RECEIPT EXPORT (PNG) --- */}
+      {receiptData && (
+        <View style={{ position: 'absolute', left: -10000, top: 0, opacity: 1, backgroundColor: 'white' }} pointerEvents="none">
+          <ViewShot ref={singleReceiptRef} options={{ format: "png", quality: 1.0 }} style={{ backgroundColor: 'white' }}>
+            <View style={styles.exportContainer}>
+              <View style={styles.exportHeader}>
+                <View style={styles.logoRow}>
+                  <Ionicons name="home" size={60} color="#CD212A" />
+                  <Text style={[styles.logoText, {fontSize: 48}]}>BoardEase</Text>
+                </View>
+                <Text style={styles.tagline}>Finding your perfect boarding house in CDO</Text>
+              </View>
+              <View style={styles.divider} />
+              <Text style={styles.recordsTitle}>Payment Receipt</Text>
+              <View style={styles.recordsList}>
+                <View style={styles.recordBlock}>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Date:</Text><Text style={styles.recordValue}>{formatDate(receiptData.date)}</Text></View>
+                  
+                  {/* Tenant Name */}
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Tenant:</Text><Text style={styles.recordValue}>{receiptData.tenantName}</Text></View>
+                  
+                  {/* Property Name */}
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Property:</Text><Text style={styles.recordValue}>{receiptData.property}</Text></View>
+                  
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Amount:</Text><Text style={styles.recordValue}>₱{receiptData.amount.toLocaleString()}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Type:</Text><Text style={styles.recordValue}>{formatType(receiptData.type)}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Status:</Text><Text style={styles.recordValue}>{receiptData.status}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Method:</Text><Text style={styles.recordValue}>{receiptData.method}</Text></View>
+                  <View style={styles.recordRow}><Text style={styles.recordLabel}>Reference:</Text><Text style={styles.recordValue}>{receiptData.reference}</Text></View>
+                </View>
+              </View>
+              <View style={styles.divider} />
+              <View style={styles.exportFooter}>
+                {/* Updated Footer */}
+                <Text style={styles.approvedText}>Approved by: {receiptData.landlordName}</Text>
+              </View>
+            </View>
+          </ViewShot>
+        </View>
+      )}
+
+      {/* Pay Modal */}
+      <Modal visible={showPaymentModal} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Make Payment</Text>
-              <TouchableOpacity 
-                style={styles.modalCloseButton}
-                onPress={() => setShowPaymentModal(false)}
-              >
+              <Text style={styles.modalTitle}>Pay Rent</Text>
+              <TouchableOpacity onPress={() => setShowPaymentModal(false)}>
                 <Ionicons name="close" size={24} color="#666" />
               </TouchableOpacity>
             </View>
 
-            {selectedPayment && (
-              <>
-                <View style={styles.paymentSummary}>
-                  <Text style={styles.paymentSummaryTitle}>Payment Details</Text>
-                  <View style={styles.paymentSummaryRow}>
-                    <Text style={styles.paymentSummaryLabel}>Amount:</Text>
-                    <Text style={styles.paymentSummaryValue}>₱{selectedPayment.amount.toLocaleString()}</Text>
-                  </View>
-                  <View style={styles.paymentSummaryRow}>
-                    <Text style={styles.paymentSummaryLabel}>Property:</Text>
-                    <Text style={styles.paymentSummaryValue}>{selectedPayment.property}</Text>
-                  </View>
-                  <View style={styles.paymentSummaryRow}>
-                    <Text style={styles.paymentSummaryLabel}>Landlord:</Text>
-                    <Text style={styles.paymentSummaryValue}>{selectedPayment.landlord}</Text>
-                  </View>
-                  <View style={styles.paymentSummaryRow}>
-                    <Text style={styles.paymentSummaryLabel}>Description:</Text>
-                    <Text style={styles.paymentSummaryValue}>{selectedPayment.description}</Text>
-                  </View>
-                </View>
+            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+              <Text style={styles.summaryLabel}>Property:</Text>
+              <Text style={styles.summaryValue}>{selectedBooking?.property}</Text>
+            </View>
+            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+              <Text style={styles.summaryLabel}>Amount:</Text>
+              <Text style={[styles.summaryValue, {color:Colors.primary}]}>₱{parseFloat(paymentDetails.amount || 0).toLocaleString()}</Text>
+            </View>
 
-                <View style={styles.paymentMethodSection}>
-                  <Text style={styles.sectionLabel}>Payment Method</Text>
-                  <View style={styles.paymentMethodOptions}>
-                    <TouchableOpacity 
-                      style={[styles.paymentMethodOption, paymentMethod === 'gcash' && styles.paymentMethodActive]}
-                      onPress={() => setPaymentMethod('gcash')}
+            <View style={styles.formSection}>
+               <Text style={styles.formLabel}>Payment Method</Text>
+               <View style={{flexDirection:'row', gap:10, flexWrap:'wrap'}}>
+                  {['gcash', 'paymaya', 'bank'].map(m => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[styles.methodBtn, paymentMethod === m && styles.methodBtnActive]}
+                      onPress={() => setPaymentMethod(m)}
                     >
-                      <Ionicons name="phone-portrait" size={20} color={paymentMethod === 'gcash' ? Colors.primary : '#666'} />
-                      <Text style={[styles.paymentMethodText, paymentMethod === 'gcash' && styles.paymentMethodTextActive]}>
-                        GCash
-                      </Text>
+                      <Text style={[styles.methodText, paymentMethod === m && styles.methodTextActive]}>{m.toUpperCase()}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity 
-                      style={[styles.paymentMethodOption, paymentMethod === 'paymaya' && styles.paymentMethodActive]}
-                      onPress={() => setPaymentMethod('paymaya')}
-                    >
-                      <Ionicons name="card" size={20} color={paymentMethod === 'paymaya' ? Colors.primary : '#666'} />
-                      <Text style={[styles.paymentMethodText, paymentMethod === 'paymaya' && styles.paymentMethodTextActive]}>
-                        PayMaya
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity 
-                      style={[styles.paymentMethodOption, paymentMethod === 'bank' && styles.paymentMethodActive]}
-                      onPress={() => setPaymentMethod('bank')}
-                    >
-                      <Ionicons name="business" size={20} color={paymentMethod === 'bank' ? Colors.primary : '#666'} />
-                      <Text style={[styles.paymentMethodText, paymentMethod === 'bank' && styles.paymentMethodTextActive]}>
-                        Bank Transfer
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                  ))}
+               </View>
+            </View>
 
-                <View style={styles.paymentDetailsSection}>
-                  <Text style={styles.sectionLabel}>Account Details</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Account Number"
-                    value={paymentDetails.accountNumber}
-                    onChangeText={(text) => setPaymentDetails(prev => ({ ...prev, accountNumber: text }))}
-                    keyboardType="numeric"
-                  />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Account Name"
-                    value={paymentDetails.accountName}
-                    onChangeText={(text) => setPaymentDetails(prev => ({ ...prev, accountName: text }))}
-                  />
-                </View>
+            <View style={styles.formSection}>
+              <Text style={styles.formLabel}>Landlord's Number</Text>
+              <TextInput 
+                style={styles.textInput} 
+                placeholder="Enter landlord's account number" 
+                placeholderTextColor="#999"
+                keyboardType="numeric"
+                value={paymentDetails.landlordNumber || ''}
+                onChangeText={t => setPaymentDetails(p => ({...p, landlordNumber: t}))}
+              />
+            </View>
 
-                <TouchableOpacity 
-                  style={styles.confirmPaymentButton}
-                  onPress={processPayment}
-                >
-                  <Ionicons name="lock-closed" size={20} color="white" />
-                  <Text style={styles.confirmPaymentText}>
-                    Pay ₱{selectedPayment.amount.toLocaleString()}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            )}
+            <View style={styles.formSection}>
+              <Text style={styles.formLabel}>Your Account Number</Text>
+              <TextInput 
+                style={styles.textInput} 
+                placeholder="Enter your account number" 
+                placeholderTextColor="#999"
+                keyboardType="numeric"
+                value={paymentDetails.accountNumber}
+                onChangeText={t => setPaymentDetails(p => ({...p, accountNumber: t}))}
+              />
+            </View>
+
+            <TouchableOpacity style={[styles.confirmButton, confirmDisabled && styles.confirmButtonDisabled]} disabled={confirmDisabled} onPress={processPayment}>
+               <Text style={styles.confirmButtonText}>
+                 Confirm Payment
+               </Text>
+            </TouchableOpacity>
+
           </View>
         </View>
       </Modal>
@@ -673,365 +1002,75 @@ export default function FinancialsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f6f7fb',
-    padding: 16,
-  },
-  periodSelector: {
-    flexDirection: 'row',
+  container: { flex: 1, backgroundColor: '#f6f7fb', padding: 16 },
+  periodSelector: { flexDirection: 'row', backgroundColor: 'white', borderRadius: 12, padding: 4, marginBottom: 20 },
+  periodButton: { flex: 1, padding: 8, alignItems: 'center', borderRadius: 8 },
+  periodButtonActive: { backgroundColor: Colors.primary },
+  periodText: { fontSize: 14, color: '#666' },
+  periodTextActive: { color: 'white', fontWeight: 'bold' },
+  
+  overviewSection: { marginBottom: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: '600', color: '#333', marginBottom: 12 },
+  statsGrid: { flexDirection: 'row', gap: 12 },
+  statCard: { width: '48%', backgroundColor: 'white', padding: 16, borderRadius: 12, elevation: 2 },
+  statIcon: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  statValue: { fontSize: 18, fontWeight: 'bold', color: '#333' },
+  statLabel: { fontSize: 12, color: '#666' },
+
+  section: { backgroundColor: 'white', borderRadius: 16, padding: 16, marginBottom: 16 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  seeAllText: { color: Colors.primary, fontWeight: '600' },
+  
+  paymentItem: { backgroundColor: '#f8f9fa', padding: 16, borderRadius: 12, marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between' },
+  propertyName: { fontSize: 16, fontWeight: '600', color: '#333' },
+  paymentAmount: { fontSize: 16, fontWeight: 'bold', color: Colors.primary },
+  paymentDate: { fontSize: 12, color: '#999' },
+  paymentType: { fontSize: 12, color: '#666', fontWeight: '500' },
+  statusText: { fontSize: 12, fontWeight: '600' },
+  paymentReference: { fontSize: 10, color: '#ccc', marginTop: 4 },
+
+  payButton: { backgroundColor: Colors.primary, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, marginTop: 8 },
+  payButtonText: { color: 'white', fontSize: 12, fontWeight: '600' },
+
+  emptyState: { alignItems: 'center', padding: 20 },
+  emptyStateText: { color: '#999', marginTop: 8 },
+
+  // Modal
+  modalOverlay: { flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
+  modalContent: { backgroundColor: 'white', margin: 20, padding: 24, borderRadius: 16 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  modalTitle: { fontSize: 20, fontWeight: 'bold' },
+  summaryLabel: { fontSize: 14, color: '#666', marginBottom: 4 },
+  summaryValue: { fontWeight: 'bold', color: '#333' },
+  formSection: { marginTop: 16 },
+  formLabel: { fontWeight: '600', marginBottom: 8 },
+  textInput: { borderWidth: 1, borderColor: '#e5e5e5', borderRadius: 8, padding: 12 },
+  methodBtn: { flex: 1, padding: 10, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, alignItems: 'center', minWidth: '45%', marginBottom: 8 },
+  methodBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  methodText: { fontSize: 12, color: '#666', fontWeight: '600' },
+  methodTextActive: { color: 'white' },
+  confirmButton: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 20 },
+  confirmButtonDisabled: { backgroundColor: '#cccccc' },
+  confirmButtonText: { color: 'white', fontWeight: '600', fontSize: 16 },
+
+  // Export Styles (BoardEase Format)
+  exportContainer: {
+    width: 500,
     backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  periodButton: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  periodButtonActive: {
-    backgroundColor: Colors.primary,
-  },
-  periodText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#666',
-  },
-  periodTextActive: {
-    color: 'white',
-  },
-  overviewSection: {
-    marginBottom: 20,
-  },
-  section: {
-    backgroundColor: 'white',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 16,
-  },
-  seeAllText: {
-    color: Colors.primary,
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  statCard: {
-    width: '48%',
-    backgroundColor: 'white',
-    padding: 16,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  statIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#666',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  actionButton: {
-    flex: 1,
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-    gap: 8,
-  },
-  actionText: {
-    fontSize: 12,
-    color: Colors.primary,
-    fontWeight: '500',
-    textAlign: 'center',
-  },
-  paymentsList: {
-    gap: 12,
-  },
-  paymentItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-  },
-  paymentInfo: {
-    flex: 1,
-  },
-  paymentHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  landlordName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  paymentAmount: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: Colors.primary,
-  },
-  propertyName: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 2,
-  },
-  paymentDescription: {
-    fontSize: 12,
-    color: '#999',
-    marginBottom: 8,
-  },
-  paymentDetails: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  paymentDate: {
-    fontSize: 12,
-    color: '#999',
-  },
-  paymentType: {
-    fontSize: 12,
-    color: '#666',
-    fontWeight: '500',
-  },
-  paymentReference: {
-    fontSize: 10,
-    color: '#999',
-    marginTop: 4,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    gap: 4,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  statusText: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  payButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: Colors.primary,
-    borderRadius: 8,
-    marginLeft: 12,
-    gap: 4,
-  },
-  payButtonText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  receiptButton: {
-    padding: 8,
-    backgroundColor: '#e0f2fe',
-    borderRadius: 8,
-    marginLeft: 12,
-  },
-  summaryGrid: {
-    gap: 12,
-  },
-  summaryItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-  },
-  summaryLabel: {
-    fontSize: 14,
-    color: '#666',
-  },
-  summaryValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
-  emptyStateText: {
-    fontSize: 14,
-    color: '#999',
-    marginTop: 8,
-  },
-  emptyStateSubtext: {
-    fontSize: 12,
-    color: '#ccc',
-    marginTop: 4,
-  },
-  // Modal Styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    backgroundColor: 'white',
-    borderRadius: 16,
-    padding: 24,
-    margin: 20,
-    width: '90%',
-    maxHeight: '80%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  modalCloseButton: {
-    padding: 4,
-  },
-  paymentSummary: {
-    backgroundColor: '#f8f9fa',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 20,
-  },
-  paymentSummaryTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 12,
-  },
-  paymentSummaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  paymentSummaryLabel: {
-    fontSize: 14,
-    color: '#666',
-  },
-  paymentSummaryValue: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#333',
-  },
-  paymentMethodSection: {
-    marginBottom: 20,
-  },
-  sectionLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 12,
-  },
-  paymentMethodOptions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  paymentMethodOption: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    gap: 6,
-  },
-  paymentMethodActive: {
-    borderColor: Colors.primary,
-    backgroundColor: '#f0f4ff',
-  },
-  paymentMethodText: {
-    fontSize: 12,
-    color: '#666',
-    fontWeight: '500',
-  },
-  paymentMethodTextActive: {
-    color: Colors.primary,
-  },
-  paymentDetailsSection: {
-    marginBottom: 24,
-  },
-  textInput: {
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    marginBottom: 12,
-  },
-  confirmPaymentButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.primary,
-    padding: 16,
-    borderRadius: 12,
-    gap: 8,
-  },
-  confirmPaymentText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-  },
+    padding: 40,
+    paddingTop: 60,
+  },
+  exportHeader: { alignItems: 'center', marginBottom: 20 },
+  logoRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  logoText: { fontSize: 40, fontWeight: 'bold', color: '#000' },
+  tagline: { fontSize: 16, color: '#555', marginTop: 8, fontStyle: 'italic' },
+  divider: { height: 3, backgroundColor: '#000', marginVertical: 20 },
+  recordsTitle: { fontSize: 32, fontWeight: 'bold', color: '#000', marginBottom: 20 },
+  recordsList: { gap: 20 },
+  recordBlock: { gap: 5 },
+  recordRow: { flexDirection: 'row', marginBottom: 4 },
+  recordLabel: { width: 140, fontSize: 18, fontWeight: '500', color: '#000' },
+  recordValue: { fontSize: 18, color: '#333', flex: 1 },
+  exportFooter: { alignItems: 'flex-end', marginTop: 20 },
+  approvedText: { fontSize: 18, color: '#000', fontWeight: '500' },
 });

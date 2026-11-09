@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,18 +14,38 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import CachedRemoteImage from '../../components/CachedRemoteImage';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { boardingHouses as mockData } from '../../data/mockData'; 
-import AsyncStorage from '@react-native-async-storage/async-storage'; 
-import MapView, { Marker } from 'react-native-maps';
+import OpenStreetMap from '../../components/OpenStreetMap';
+import { supabase } from '../../lib/supabaseClient';
+import {
+  getCurrentUser,
+  getListing,
+  createReview,
+  getTenantProfile,
+  toggleFavorite,
+  createBooking,
+  sendInterestMessage,
+  sendMessage,
+  createConversation,
+  getListingReviews,
+} from '../../lib/supabaseClient';
+
+// Lazy load Calendar to avoid issues on initial render
+let Calendar = null;
+try {
+  Calendar = require('react-native-calendars').Calendar;
+} catch (e) {
+  console.warn('Calendar component not available:', e);
+}
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-const LISTINGS_STORAGE_KEY = '@landlord_listings'; 
+
+// AsyncStorage Keys for local messages (temporary local storage until synced with database)
 const TENANT_MESSAGES_KEY = '@tenant_messages';
 const LANDLORD_INQUIRIES_KEY = '@landlord_inquiries';
-const FAVORITES_STORAGE_KEY = '@tenant_favorites';
-const REVIEWS_STORAGE_KEY = '@boarding_house_reviews';
 
 export default function BoardingHouseDetails() {
   const { id } = useLocalSearchParams();
@@ -40,71 +60,205 @@ export default function BoardingHouseDetails() {
   const [inquiryMessage, setInquiryMessage] = useState('');
   const [bookingDate, setBookingDate] = useState('');
   const [bookingGuests, setBookingGuests] = useState('1');
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [userRating, setUserRating] = useState(0);
   const [userReview, setUserReview] = useState('');
+  const [hasUserReviewed, setHasUserReviewed] = useState(false);
+  const [house, setHouse] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
   const scrollViewRef = useRef(null);
   const imageScrollViewRef = useRef(null);
-    
-  const [house, setHouse] = useState(null); 
-  const [isLoading, setIsLoading] = useState(true);
+  
+  // Refs for text inputs to prevent keyboard reset
+  const inquiryMessageRef = useRef(inquiryMessage);
+  const userReviewRef = useRef(userReview);
+  const bookingGuestsRef = useRef(bookingGuests);
+  const bookingDateRef = useRef(bookingDate);
 
-  const currentUser = {
-    id: 'tenant_jesse_pinkman_01',
-    name: 'Jesse Pinkman',
-    image: 'https://i.insider.com/5d9f454ee94e865e924818da?width=700',
-    phone: '+1 234 567 8900',
-  };
+  // Sync refs with state when modals open
+  useEffect(() => {
+    if (showInquiryModal) inquiryMessageRef.current = inquiryMessage;
+  }, [showInquiryModal]);
+  
+  useEffect(() => {
+    if (showAddReviewModal) userReviewRef.current = userReview;
+  }, [showAddReviewModal]);
+  
+  useEffect(() => {
+    if (showBookingModal) {
+      bookingGuestsRef.current = bookingGuests;
+      bookingDateRef.current = bookingDate;
+    }
+  }, [showBookingModal]);
+
+  // Handlers that update refs immediately but delay state updates
+  const handleInquiryChange = useCallback((text) => {
+    inquiryMessageRef.current = text;
+  }, []);
+
+  const handleReviewChange = useCallback((text) => {
+    userReviewRef.current = text;
+  }, []);
+
+  const handleGuestsChange = useCallback((text) => {
+    bookingGuestsRef.current = text;
+  }, []);
+
+  const handleBookingDateChange = useCallback((text) => {
+    bookingDateRef.current = text;
+  }, []);
 
   // Safe house data access with fallbacks
   const getHouseImages = () => house?.images || [];
-  const getHouseLocation = () => house?.location || 'Location not available';
-  const getHousePrice = () => house?.price || '0';
-  const getHouseName = () => house?.name || 'Unknown Property';
-  const getHouseType = () => house?.type || 'Boarding House';
+  const getHouseLocation = () => house?.city || 'Location not available';
+  const getHousePrice = () => house?.price_per_month || '0';
+  const getHouseName = () => house?.title || 'Unknown Property';
+  const getHouseType = () => {
+    const enumVal = house?.room_type;
+    const labels = {
+      single_room: 'Single Room',
+      shared_room: 'Shared Room',
+      studio: 'Studio Unit',
+      suite: 'Suite',
+      bed_space: 'Bed Space',
+    };
+    if (enumVal) return labels[enumVal] || enumVal;
+    // fallback to property type if no room_type
+    const prop = house?.property_type;
+    if (prop === 'apartment') return 'Apartment';
+    if (prop === 'dormitory') return 'Dormitory';
+    return 'Boarding House';
+  };
   const getHouseDescription = () => house?.description || 'No description available.';
-  const getHouseAmenities = () => house?.amenities || [];
-  const getHouseRules = () => house?.rules || [];
+  const getHouseAmenities = () => {
+    if (!house?.amenities) return [];
+    const amenitiesMap = {
+      wifi: 'WiFi',
+      airConditioning: 'Air Conditioning',
+      parking: 'Parking',
+      kitchen: 'Kitchen',
+      laundry: 'Laundry',
+      security: 'Security',
+      furnished: 'Furnished',
+      waterIncluded: 'Water Included',
+      electricityIncluded: 'Electricity Included',
+      petsAllowed: 'Pets Allowed',
+    };
+    // If already an array of strings, normalize values
+    if (Array.isArray(house.amenities)) {
+      return house.amenities.map(a => {
+        if (!a) return a;
+        const key = a.toString().trim();
+        const lower = key.toLowerCase();
+        const foundKey = Object.keys(amenitiesMap).find(k => k.toLowerCase() === lower);
+        return foundKey ? amenitiesMap[foundKey] : key;
+      });
+    }
+    // If amenities saved as object mapping (e.g., {wifi: true, parking: false}), convert to array
+    if (typeof house.amenities === 'object') {
+      const amenitiesMap = {
+        wifi: 'WiFi',
+        airConditioning: 'Air Conditioning',
+        parking: 'Parking',
+        kitchen: 'Kitchen',
+        laundry: 'Laundry',
+        security: 'Security',
+        furnished: 'Furnished',
+        waterIncluded: 'Water Included',
+        electricityIncluded: 'Electricity Included',
+        petsAllowed: 'Pets Allowed',
+      };
+      return Object.entries(house.amenities)
+        .filter(([key, value]) => !!value)
+        .map(([key]) => amenitiesMap[key] || key);
+    }
+    // Fallback: return as-is (could be string or other)
+    return [house.amenities];
+  };
+  const getHouseRules = () => house?.rules_regulations || [];
   const getHouseDistance = () => house?.distance || '';
   const getHouseRating = () => house?.rating || 0;
-  const getHouseReviewsCount = () => house?.reviews || 0;
+  const getHouseReviewsCount = () => house?.total_reviews || 0;
   const getHouseAvailable = () => house?.available !== undefined ? house.available : true;
-  const getHouseAvailableFrom = () => house?.availableFrom || '';
-  const getHouseLocationData = () => house?.locationData || null;
-  
-  const getLandlord = () => house?.landlord || {
-    id: 'unknown',
-    name: 'Unknown Landlord',
-    phone: 'Not available',
-    email: 'Not available',
-    image: '',
-    verified: false
+  const getHouseAvailableFrom = () => house?.available_from || '';
+  const getHouseLocationData = () => {
+    if (house?.latitude && house?.longitude) {
+      return {
+        latitude: house.latitude,
+        longitude: house.longitude,
+      };
+    }
+    return null;
+  };
+
+  // Updated to match Landlord Profile logic exactly
+  const getLandlord = () => {
+    const landlordUsers = house?.landlord_profile?.users;
+    const landlordProfile = house?.landlord_profile;
+    
+    if (landlordUsers) {
+      return {
+        id: landlordUsers.id,
+        first_name: landlordUsers.first_name || 'Unknown',
+        last_name: landlordUsers.last_name || 'Landlord',
+        name: `${landlordUsers.first_name || ''} ${landlordUsers.last_name || ''}`.trim() || 'Unknown Landlord',
+        // Prefer phone from user record if present; landlord_profile may not have phone
+        phone: landlordUsers.phone || landlordProfile?.phone || 'Not available',
+        email: landlordUsers.email || 'Not available',
+        profile_image_url: landlordUsers.profile_image_url,
+        bio: landlordUsers.bio,
+        verified: landlordProfile?.bank_account_verified || false,
+        rating: landlordProfile?.rating || 0,
+        company_name: landlordProfile?.company_name,
+        years_experience: landlordProfile?.years_experience ?? null,
+        total_properties: landlordProfile?.total_properties ?? null,
+        response_rate: landlordProfile?.response_rate ?? null,
+        join_date: landlordProfile?.join_date ?? null,
+      };
+    }
+    
+    return {
+      id: 'unknown',
+      first_name: 'Unknown',
+      last_name: 'Landlord',
+      name: 'Unknown Landlord',
+      phone: 'Not available',
+      email: 'Not available',
+      profile_image_url: '',
+      verified: false,
+      rating: 0,
+      company_name: null,
+      years_experience: null,
+      total_properties: null,
+      response_rate: null,
+      join_date: null,
+    };
+  };
+
+  // Helper to safely wrap primitive children (strings/numbers) with <Text> to avoid React Native errors
+  const WrapPrimitiveChildren = ({ children, style }) => {
+    const wrapNode = (node) => {
+      if (node === null || node === undefined) return null;
+      if (typeof node === 'string' || typeof node === 'number') {
+        return <Text style={style}>{node}</Text>;
+      }
+      if (React.isValidElement(node)) {
+        const childProps = node?.props?.children;
+        if (!childProps) return node;
+        return React.cloneElement(node, node.props, React.Children.map(childProps, wrapNode));
+      }
+      return node;
+    };
+    return <>{React.Children.map(children, wrapNode)}</>;
   };
 
   useEffect(() => {
-    const loadHouseFromStorage = async () => {
-      if (!id) {
-        setIsLoading(false);
-        return;
-      }
-      
-      try {
-        const jsonValue = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-        const allListings = jsonValue != null ? JSON.parse(jsonValue) : mockData;
-        
-        const foundHouse = allListings.find(h => String(h.id) === String(id)); 
-        
-        setHouse(foundHouse); 
-      } catch (e) {
-        console.error("Failed to load house details", e);
-        setHouse(mockData.find(h => String(h.id) === String(id)));
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadHouseFromStorage();
-  }, [id]); 
+    loadHouseDetails();
+  }, [id]);
 
   // Load reviews when house loads
   useEffect(() => {
@@ -124,48 +278,128 @@ export default function BoardingHouseDetails() {
     }, [house])
   );
 
+  const loadHouseDetails = async () => {
+    if (!id) {
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (user) {
+        setCurrentUser(user);
+        const { profile } = await getTenantProfile(user.id);
+        if (profile?.id) {
+          setTenantProfileId(profile.id);
+        }
+      }
+
+      // Fetch listing details from Supabase
+      const { success, listing, error } = await getListing(id);
+
+      if (success && listing) {
+        // Transform Supabase data to match component expectations
+        const transformedListing = {
+          id: listing.id,
+          title: listing.title,
+          description: listing.description,
+          images: listing.images || [],
+          amenities: listing.amenities || [],
+          city: listing.city,
+          price_per_month: listing.price_per_month,
+          room_type: listing.room_type,
+          rating: listing.rating,
+          total_reviews: listing.total_reviews,
+          rules_regulations: listing.rules_regulations || [],
+          available: listing.available,
+          latitude: listing.latitude,
+          longitude: listing.longitude,
+          address: listing.address,
+          max_guests: listing.max_guests,
+          landlord_profile: listing.landlord_profile,
+          // Property details
+          bedrooms: listing.bedrooms,
+          bathrooms: listing.bathrooms,
+          property_size: listing.property_size,
+          total_rooms: listing.total_rooms,
+          available_rooms: listing.available_rooms,
+          // Timestamp
+          created_at: listing.created_at,
+          createdAt: listing.created_at,
+        };
+        console.log(`[boarding-house-details] Loaded listing: ${transformedListing.title}, room_type: ${listing.room_type}, property_type: ${listing.property_type}, friendly type: ${getHouseType()}, Images:`, transformedListing.images);
+        console.log(`[boarding-house-details] Listing timestamps:`, {
+          created_at: transformedListing.created_at,
+          createdAt: transformedListing.createdAt,
+        });
+        setHouse(transformedListing);
+      } else {
+        Alert.alert('Error', error || 'Failed to load listing details');
+      }
+    } catch (error) {
+      console.error('Failed to load house details', error);
+      Alert.alert('Error', 'Failed to load listing details');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Function to load reviews
   const loadReviews = async () => {
     try {
-      const reviewsJson = await AsyncStorage.getItem(REVIEWS_STORAGE_KEY);
-      const allReviews = reviewsJson ? JSON.parse(reviewsJson) : [];
-      
-      // Filter reviews for this specific house
-      const houseReviews = allReviews.filter(review => review.houseId === house.id);
-      setReviews(houseReviews);
-    } catch (error) {
-      console.error('Failed to load reviews', error);
+      if (!house) return;
+      const { success: reviewsSuccess, reviews: reviewsData } = await getListingReviews(house.id);
+      if (reviewsSuccess && reviewsData) {
+        setReviews(reviewsData);
+        
+        // Check if current user has already reviewed this property
+        if (currentUser) {
+          const userHasReviewed = reviewsData.some(
+            review => review.reviewer_id === currentUser.id
+          );
+          setHasUserReviewed(userHasReviewed);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load reviews', e);
     }
   };
 
   // Function to check favorite status
   const checkIfFavorite = async () => {
     try {
-      const favoritesJson = await AsyncStorage.getItem(FAVORITES_STORAGE_KEY);
-      const favorites = favoritesJson ? JSON.parse(favoritesJson) : [];
-      setIsFavorite(favorites.includes(house.id));
-    } catch (error) {
-      console.error('Failed to check favorite status', error);
+      if (!tenantProfileId || !house) return;
+      const { data, error } = await supabase
+        .from('favorites')
+        .select('id')
+        .eq('tenant_id', tenantProfileId)
+        .eq('listing_id', house.id)
+        .single();
+      setIsFavorite(!!data && !error);
+    } catch (e) {
+      setIsFavorite(false);
     }
   };
-
   // Toggle favorite function
-  const toggleFavorite = async () => {
+  const toggleFavoriteHandler = async () => {
     try {
-      const favoritesJson = await AsyncStorage.getItem(FAVORITES_STORAGE_KEY);
-      const favorites = favoritesJson ? JSON.parse(favoritesJson) : [];
-      
-      let updatedFavorites;
-      if (isFavorite) {
-        updatedFavorites = favorites.filter(favId => favId !== house.id);
-        Alert.alert('Removed from Favorites', `${getHouseName()} has been removed from your favorites.`);
+      if (!tenantProfileId || !house) return;
+
+      const result = await toggleFavorite(tenantProfileId, house.id, isFavorite);
+
+      if (result.success) {
+        setIsFavorite(!isFavorite);
+        if (!isFavorite) {
+          Alert.alert('Added to Favorites', `${getHouseName()} has been added to your favorites!`);
+        } else {
+          Alert.alert('Removed from Favorites', `${getHouseName()} has been removed from your favorites.`);
+        }
       } else {
-        updatedFavorites = [...favorites, house.id];
-        Alert.alert('Added to Favorites', `${getHouseName()} has been added to your favorites!`);
+        Alert.alert('Error', result.error || 'Failed to update favorites');
       }
-      
-      await AsyncStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(updatedFavorites));
-      setIsFavorite(!isFavorite);
     } catch (error) {
       console.error('Failed to toggle favorite', error);
       Alert.alert('Error', 'Failed to update favorites. Please try again.');
@@ -174,47 +408,49 @@ export default function BoardingHouseDetails() {
 
   // Function to submit review
   const submitReview = async () => {
+    const reviewText = userReviewRef.current;
+    
     if (userRating === 0) {
       Alert.alert('Rating Required', 'Please select a rating before submitting your review.');
       return;
     }
 
-    if (userReview.trim().length < 10) {
+    if (!reviewText || reviewText.trim().length < 10) {
       Alert.alert('Review Too Short', 'Please write a more detailed review (at least 10 characters).');
       return;
     }
 
     try {
-      const newReview = {
-        id: `review_${Date.now()}`,
-        houseId: house.id,
-        user: currentUser.name,
-        userImage: currentUser.image,
+      if (!currentUser) {
+        Alert.alert('Error', 'User not logged in');
+        return;
+      }
+
+      const reviewData = {
+        reviewedItemType: 'listing',
+        reviewedItemId: house.id,
+        reviewerId: currentUser.id,
+        bookingId: null,
         rating: userRating,
-        comment: userReview,
-        date: 'Just now',
-        timestamp: new Date().toISOString(),
+        title: `Review of ${getHouseName()}`,
+        reviewText: reviewText,
       };
 
-      // Get existing reviews
-      const reviewsJson = await AsyncStorage.getItem(REVIEWS_STORAGE_KEY);
-      const allReviews = reviewsJson ? JSON.parse(reviewsJson) : [];
-      
-      // Add new review
-      const updatedReviews = [newReview, ...allReviews];
-      
-      // Save back to storage
-      await AsyncStorage.setItem(REVIEWS_STORAGE_KEY, JSON.stringify(updatedReviews));
-      
-      // Update local state
-      setReviews(prevReviews => [newReview, ...prevReviews]);
-      
-      // Reset form
-      setUserRating(0);
-      setUserReview('');
-      setShowAddReviewModal(false);
-      
-      Alert.alert('Review Submitted', 'Thank you for your review!');
+      const { success, error } = await createReview(reviewData);
+
+      if (success) {
+        // Update local state
+        setUserRating(0);
+        userReviewRef.current = '';
+        setShowAddReviewModal(false);
+        setHasUserReviewed(true);
+
+        Alert.alert('Review Submitted', 'Thank you for your review!');
+        // Reload reviews
+        loadReviews();
+      } else {
+        Alert.alert('Error', error || 'Failed to submit review');
+      }
     } catch (error) {
       console.error('Failed to submit review', error);
       Alert.alert('Error', 'Failed to submit review. Please try again.');
@@ -230,8 +466,11 @@ export default function BoardingHouseDetails() {
   // Function to handle image scroll in modal
   const handleModalImageScroll = (event) => {
     const contentOffsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(contentOffsetX / screenWidth);
-    setActiveImageIndex(index);
+    // Use same calculation as main carousel for consistency
+    const index = Math.floor((contentOffsetX + screenWidth / 2) / screenWidth);
+    const maxIndex = getHouseImages().length - 1;
+    const clampedIndex = Math.max(0, Math.min(index, maxIndex));
+    setActiveImageIndex(clampedIndex);
   };
 
   // Function to navigate to specific image in modal
@@ -241,6 +480,13 @@ export default function BoardingHouseDetails() {
       imageScrollViewRef.current.scrollTo({ x: index * screenWidth, animated: true });
     }
   };
+
+  // When modal opens, ensure we scroll to the active image
+  useEffect(() => {
+    if (showImageModal && imageScrollViewRef.current) {
+      imageScrollViewRef.current.scrollTo({ x: activeImageIndex * screenWidth, animated: false });
+    }
+  }, [showImageModal, activeImageIndex]);
 
   // Function to open map modal
   const openMapModal = () => {
@@ -311,19 +557,35 @@ export default function BoardingHouseDetails() {
   };
 
   // Function to render individual review
-  const renderReview = ({ item }) => (
-    <View style={styles.reviewCard}>
-      <View style={styles.reviewHeader}>
-        <Image source={{ uri: item.userImage }} style={styles.reviewerImage} />
-        <View style={styles.reviewerInfo}>
-          <Text style={styles.reviewerName}>{item.user}</Text>
-          {renderStars(item.rating)}
+  const renderReview = ({ item }) => {
+    const reviewer = item.reviewer || item.users || {};
+    const reviewerName = reviewer.first_name || reviewer.last_name 
+      ? `${reviewer.first_name || ''} ${reviewer.last_name || ''}`.trim() 
+      : 'Anonymous';
+    const reviewerImage = reviewer.profile_image_url || 'https://via.placeholder.com/40?text=User';
+    const reviewDate = item.created_at ? new Date(item.created_at).toLocaleDateString() : 'N/A';
+    
+    return (
+      <View style={styles.reviewCard}>
+        <View style={styles.reviewHeader}>
+          <Image source={{ uri: reviewerImage }} style={styles.reviewerImage} />
+          <View style={styles.reviewerInfo}>
+            <Text style={styles.reviewerName}>{reviewerName}</Text>
+            {renderStars(item.rating)}
+          </View>
+          <Text style={styles.reviewDate}>{reviewDate}</Text>
         </View>
-        <Text style={styles.reviewDate}>{item.date}</Text>
+        <Text style={styles.reviewTitle}>{item.title}</Text>
+        <Text style={styles.reviewComment}>{item.review_text}</Text>
+        {item.is_verified_booking && (
+          <View style={styles.verifiedBadge}>
+            <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
+            <Text style={styles.verifiedText}>Verified Booking</Text>
+          </View>
+        )}
       </View>
-      <Text style={styles.reviewComment}>{item.comment}</Text>
-    </View>
-  );
+    );
+  };
 
   // Function to render all reviews modal
   const renderAllReviewsModal = () => (
@@ -386,24 +648,26 @@ export default function BoardingHouseDetails() {
             style={styles.allReviewsList}
           />
           
-          {/* Add Review Button */}
-          <TouchableOpacity 
-            style={styles.addReviewFloatingButton}
-            onPress={() => {
-              setShowAllReviewsModal(false);
-              setShowAddReviewModal(true);
-            }}
-          >
-            <Ionicons name="pencil" size={20} color="white" />
-            <Text style={styles.addReviewFloatingText}>Write a Review</Text>
-          </TouchableOpacity>
+          {/* Add Review Button - only show if user hasn't reviewed */}
+          {!hasUserReviewed && (
+            <TouchableOpacity 
+              style={styles.addReviewFloatingButton}
+              onPress={() => {
+                setShowAllReviewsModal(false);
+                setShowAddReviewModal(true);
+              }}
+            >
+              <Ionicons name="pencil" size={20} color="white" />
+              <Text style={styles.addReviewFloatingText}>Write a Review</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Modal>
   );
 
-  // Function to render add review modal
-  const renderAddReviewModal = () => (
+  // Memoized add review modal to prevent keyboard reset
+  const renderAddReviewModal = useMemo(() => (
     <Modal
       visible={showAddReviewModal}
       animationType="slide"
@@ -430,8 +694,9 @@ export default function BoardingHouseDetails() {
             multiline
             numberOfLines={6}
             placeholder="Share details of your own experience at this property..."
-            value={userReview}
-            onChangeText={setUserReview}
+            placeholderTextColor="#999"
+            defaultValue=""
+            onChangeText={handleReviewChange}
             textAlignVertical="top"
           />
           
@@ -441,7 +706,7 @@ export default function BoardingHouseDetails() {
               onPress={() => {
                 setShowAddReviewModal(false);
                 setUserRating(0);
-                setUserReview('');
+                userReviewRef.current = '';
               }}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -451,6 +716,188 @@ export default function BoardingHouseDetails() {
               onPress={submitReview}
             >
               <Text style={styles.submitButtonText}>Submit Review</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  ), [showAddReviewModal, userRating]);
+
+  // Memoized inquiry modal to prevent keyboard reset
+  const renderInquiryModal = (
+    <Modal
+      visible={showInquiryModal}
+      animationType="slide"
+      transparent={true}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Express Interest</Text>
+          <Text style={styles.modalSubtitle}>
+            Send a message to {getLandlord().name} about {getHouseName()}
+          </Text>
+          
+          <TextInput
+            style={styles.messageInput}
+            multiline
+            numberOfLines={4}
+            placeholder="Tell the landlord why you're interested... (optional)"
+            placeholderTextColor="#999"
+            defaultValue=""
+            onChangeText={handleInquiryChange}
+          />
+          
+          <View style={styles.modalButtons}>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.cancelButton]}
+              onPress={() => {
+                setShowInquiryModal(false);
+                inquiryMessageRef.current = '';
+              }}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.submitButton]}
+              onPress={() => {
+                console.log('[BUTTON] Send Interest button pressed directly');
+                submitInquiry();
+              }}
+            >
+              <Text style={styles.submitButtonText}>Send Interest</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  // Booking modal
+  const renderBookingModal = (
+    <Modal
+      visible={showBookingModal}
+      animationType="slide"
+      transparent={true}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={[styles.modalContent, showCalendar && styles.modalContentExpanded]}>
+          <Text style={styles.modalTitle}>Ready to Book</Text>
+          <Text style={styles.modalSubtitle}>
+            Send booking request for {getHouseName()}
+          </Text>
+          
+          <View style={styles.priceSection}>
+            <Text style={styles.priceLabel}>Monthly Rate:</Text>
+            <Text style={styles.priceValue}>₱{getHousePrice()}/month</Text>
+          </View>
+          
+          <ScrollView style={styles.bookingFormScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.bookingForm}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Preferred Move-in Date</Text>
+                <TouchableOpacity 
+                  style={styles.datePickerButton}
+                  onPress={() => setShowCalendar(!showCalendar)}
+                >
+                  <Ionicons name="calendar" size={20} color="#667eea" />
+                  <Text style={[styles.datePickerText, !selectedDate && styles.datePickerPlaceholder]}>
+                    {selectedDate ? new Date(selectedDate).toLocaleDateString('en-US', { 
+                      weekday: 'short', 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric' 
+                    }) : 'Select a date'}
+                  </Text>
+                  <Ionicons name={showCalendar ? "chevron-up" : "chevron-down"} size={20} color="#666" />
+                </TouchableOpacity>
+                
+                {showCalendar && (
+                  <View style={styles.calendarContainer}>
+                    {Calendar ? (
+                      <Calendar
+                        key="booking-calendar"
+                        current={selectedDate || new Date().toISOString().split('T')[0]}
+                        minDate={new Date().toISOString().split('T')[0]}
+                        onDayPress={(day) => {
+                          setSelectedDate(day.dateString);
+                          setBookingDate(day.dateString);
+                          bookingDateRef.current = day.dateString;
+                          setShowCalendar(false);
+                        }}
+                        markedDates={selectedDate ? {
+                          [selectedDate]: {
+                            selected: true,
+                            selectedColor: '#667eea',
+                          },
+                        } : {}}
+                        theme={{
+                          backgroundColor: '#ffffff',
+                          calendarBackground: '#ffffff',
+                          textSectionTitleColor: '#666666',
+                          selectedDayBackgroundColor: '#667eea',
+                          selectedDayTextColor: '#ffffff',
+                          todayTextColor: '#667eea',
+                          dayTextColor: '#333333',
+                          textDisabledColor: '#d9e1e8',
+                          dotColor: '#667eea',
+                          selectedDotColor: '#ffffff',
+                          arrowColor: '#667eea',
+                          monthTextColor: '#333333',
+                          indicatorColor: '#667eea',
+                        }}
+                        style={styles.calendar}
+                        hideExtraDays={true}
+                        enableSwipeMonths={true}
+                      />
+                    ) : (
+                      <View style={styles.fallbackDatePicker}>
+                        <TextInput
+                          style={styles.textInput}
+                          placeholder="YYYY-MM-DD"
+                          placeholderTextColor="#999"
+                          defaultValue=""
+                          onChangeText={handleBookingDateChange}
+                        />
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Number of Guests</Text>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="1"
+                  placeholderTextColor="#999"
+                  keyboardType="numeric"
+                  defaultValue="1"
+                  onChangeText={handleGuestsChange}
+                />
+              </View>
+            </View>
+          </ScrollView>
+          
+          <View style={styles.modalButtons}>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.cancelButton]}
+              onPress={() => {
+                setShowBookingModal(false);
+                setShowCalendar(false);
+                bookingGuestsRef.current = '1';
+                bookingDateRef.current = '';
+              }}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.submitButton]}
+              onPress={() => {
+                console.log('[BUTTON] Request Booking button pressed directly');
+                confirmBooking();
+              }}
+            >
+              <Text style={styles.submitButtonText}>Request Booking</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -472,7 +919,9 @@ export default function BoardingHouseDetails() {
       params: { 
         landlordId: contactKey(landlord),
         landlordName: landlord.name,
-        landlordImage: landlord.image,
+        landlordImage: landlord.profile_image_url,
+        landlordEmail: landlord.email,
+        landlordPhone: landlord.phone,
         houseName: getHouseName(),
       }
     });
@@ -480,8 +929,13 @@ export default function BoardingHouseDetails() {
 
   const handleImageScroll = (event) => {
     const contentOffsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(contentOffsetX / screenWidth);
-    setActiveImageIndex(index);
+    // Use floor to determine which page we're primarily viewing
+    // Add half screenWidth to round to nearest page
+    const index = Math.floor((contentOffsetX + screenWidth / 2) / screenWidth);
+    const maxIndex = getHouseImages().length - 1;
+    // Clamp to valid range
+    const clampedIndex = Math.max(0, Math.min(index, maxIndex));
+    setActiveImageIndex(clampedIndex);
   };
 
   const handleShare = async () => {
@@ -493,240 +947,159 @@ export default function BoardingHouseDetails() {
     }
   };
 
-  const handleExpressInterest = () => {
+  const handleExpressInterest = useCallback(() => {
     setShowInquiryModal(true);
-  };
+  }, []);
 
-  const handleReadyToBook = () => {
+  const handleReadyToBook = useCallback(() => {
     setShowBookingModal(true);
-  };
+  }, []);
 
-  const submitInquiry = () => {
+  const submitInquiry = useCallback(async () => {
+    console.log('[submitInquiry] BUTTON PRESSED - Function called!');
     const landlord = getLandlord();
-    const messageText = inquiryMessage || `I'm interested in ${getHouseName()}. Can you provide more details?`;
+    const messageText = inquiryMessageRef.current || `I'm interested in ${getHouseName()}. Can you provide more details?`;
 
-    const messageData = {
-      id: `msg_${Date.now()}`,
-      sender: currentUser.id,
-      text: messageText,
-      type: 'inquiry',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
+    if (!tenantProfileId || !house?.landlord_profile?.id) {
+      Alert.alert('Error', 'Unable to send inquiry. Missing profile information.');
+      return;
+    }
 
-    (async () => {
-      try {
-        const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-        let tenantConversations = tenantJson != null ? JSON.parse(tenantJson) : [];
+    setIsLoading(true);
 
-        const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
-        const landlordKey = contactKey(landlord);
-        const conversationId = `${landlordKey}_${house.id}`;
-        
-        const tenantConvoIndex = tenantConversations.findIndex(c => c.id === conversationId);
+    try {
+      console.log('[submitInquiry] Starting inquiry submission...');
+      // Send interest message which creates conversation and inquiry
+      const { success, conversationId, error } = await sendInterestMessage(
+        tenantProfileId,
+        house.landlord_profile.id,
+        house.id,
+        messageText
+      );
 
-        if (tenantConvoIndex > -1) {
-          if (!tenantConversations[tenantConvoIndex].history) tenantConversations[tenantConvoIndex].history = [];
-          tenantConversations[tenantConvoIndex].history.unshift(messageData);
-          tenantConversations[tenantConvoIndex].lastMessage = messageText;
-          tenantConversations[tenantConvoIndex].time = 'Just now';
-          tenantConversations[tenantConvoIndex].unread = false;
-          tenantConversations[tenantConvoIndex].status = tenantConversations[tenantConvoIndex].status || 'interested';
-        } else {
-          tenantConversations.unshift({
-            id: conversationId,
-            landlord: {
-              id: landlord.id,
-              name: landlord.name,
-              image: landlord.image,
-              email: landlord.email,
-              phone: landlord.phone,
-            },
-            houseName: getHouseName(),
-            houseId: house.id,
-            lastMessage: messageText,
-            time: 'Just now',
-            unread: false,
-            status: 'interested',
-            history: [messageData],
-          });
-        }
-
-        await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(tenantConversations));
-
-        const landlordJson = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-        let landlordInquiries = landlordJson != null ? JSON.parse(landlordJson) : [];
-
-        const landlordConvoIndex = landlordInquiries.findIndex(c => 
-          c.tenant.id === currentUser.id && 
-          contactKey(c.landlord) === landlordKey &&
-          c.property === getHouseName()
-        );
-
-        if (landlordConvoIndex > -1) {
-          if (!landlordInquiries[landlordConvoIndex].history) landlordInquiries[landlordConvoIndex].history = [];
-          landlordInquiries[landlordConvoIndex].history.unshift(messageData);
-          landlordInquiries[landlordConvoIndex].lastMessage = messageText;
-          landlordInquiries[landlordConvoIndex].time = 'Just now';
-          landlordInquiries[landlordConvoIndex].unread = true;
-          landlordInquiries[landlordConvoIndex].status = landlordInquiries[landlordConvoIndex].status || 'interested';
-        } else {
-          landlordInquiries.unshift({
-            id: `inq_${Date.now()}`,
-            tenant: currentUser,
-            landlord: {
-              id: landlord.id,
-              name: landlord.name,
-              image: landlord.image,
-              email: landlord.email,
-              phone: landlord.phone,
-            },
-            property: getHouseName() || 'General Inquiry',
-            houseId: house.id,
-            lastMessage: messageText,
-            time: 'Just now',
-            unread: true,
-            status: 'interested',
-            history: [messageData],
-          });
-        }
-
-        await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(landlordInquiries));
-
-        Alert.alert('Inquiry Sent!', `Your interest in ${getHouseName()} has been sent to ${landlord.name}.`);
-        setShowInquiryModal(false);
-        setInquiryMessage('');
-
-        router.push({
-          pathname: '/(tenant)/chat',
-          params: {
-            landlordId: landlord.id,
-            landlordEmail: landlord.email,
-            landlordPhone: landlord.phone,
-            landlordName: landlord.name,
-            landlordImage: landlord.image,
-            houseName: getHouseName(),
-          }
-        });
-      } catch (e) {
-        console.error('Failed to send inquiry', e);
-        Alert.alert('Error', 'Failed to send inquiry. Please try again.');
+      if (!success || !conversationId) {
+        throw new Error(error || 'Failed to create conversation');
       }
-    })();
-  };
 
-  const submitBooking = () => {
+      console.log('[submitInquiry] Inquiry sent successfully, conversationId:', conversationId);
+      Alert.alert('Inquiry Sent!', `Your interest in ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
+      setShowInquiryModal(false);
+      inquiryMessageRef.current = '';
+
+      // Small delay to ensure modal closes before navigation
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      console.log('[submitInquiry] Navigating to chat with conversationId:', conversationId);
+
+      router.push({
+        pathname: '/(tenant)/chat',
+        params: {
+          conversationId: conversationId,
+          landlordId: landlord.id,
+          landlordEmail: landlord.email,
+          landlordPhone: landlord.phone,
+          landlordName: `${landlord.first_name || ''} ${landlord.last_name || ''}`.trim(),
+          landlordImage: landlord.profile_image_url,
+          houseName: getHouseName(),
+        }
+      });
+    } catch (e) {
+      console.error('[submitInquiry] Error:', e);
+      Alert.alert('Error', e.message || 'Failed to send inquiry. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [tenantProfileId, house, getHouseName, getLandlord, currentUser, router]);
+
+  const submitBooking = useCallback(async () => {
     const landlord = getLandlord();
-    const messageText = `I'd like to book ${getHouseName()} on ${bookingDate || 'N/A'} for ${bookingGuests} guest(s). Please confirm availability.`;
+    const dateValue = bookingDateRef.current || selectedDate || 'N/A';
+    const guestsValue = bookingGuestsRef.current || '1';
+    const messageText = `I'd like to book ${getHouseName()} on ${dateValue} for ${guestsValue} guest(s). Please confirm availability.`;
 
-    const messageData = {
-      id: `msg_${Date.now()}`,
-      sender: currentUser.id,
-      text: messageText,
-      type: 'booking',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    (async () => {
-      try {
-        const tenantJson = await AsyncStorage.getItem(TENANT_MESSAGES_KEY);
-        let tenantConversations = tenantJson != null ? JSON.parse(tenantJson) : [];
-
-        const contactKey = (c) => (c?.id || c?.email || c?.phone || c?.name || '').toString();
-        const landlordKey = contactKey(landlord);
-        const conversationId = `${landlordKey}_${house.id}`;
-        
-        const tenantConvoIndex = tenantConversations.findIndex(c => c.id === conversationId);
-
-        if (tenantConvoIndex > -1) {
-          if (!tenantConversations[tenantConvoIndex].history) tenantConversations[tenantConvoIndex].history = [];
-          tenantConversations[tenantConvoIndex].history.unshift(messageData);
-          tenantConversations[tenantConvoIndex].lastMessage = messageText;
-          tenantConversations[tenantConvoIndex].time = 'Just now';
-          tenantConversations[tenantConvoIndex].unread = false;
-          tenantConversations[tenantConvoIndex].status = tenantConversations[tenantConvoIndex].status || 'ready_to_book';
-        } else {
-          tenantConversations.unshift({
-            id: conversationId,
-            landlord: {
-              id: landlord.id,
-              name: landlord.name,
-              image: landlord.image,
-              email: landlord.email,
-              phone: landlord.phone,
-            },
-            houseName: getHouseName(),
-            houseId: house.id,
-            lastMessage: messageText,
-            time: 'Just now',
-            unread: false,
-            status: 'ready_to_book',
-            history: [messageData],
-          });
-        }
-
-        await AsyncStorage.setItem(TENANT_MESSAGES_KEY, JSON.stringify(tenantConversations));
-
-        const landlordJson = await AsyncStorage.getItem(LANDLORD_INQUIRIES_KEY);
-        let landlordInquiries = landlordJson != null ? JSON.parse(landlordJson) : [];
-
-        const landlordConvoIndex = landlordInquiries.findIndex(c => 
-          c.tenant.id === currentUser.id && 
-          contactKey(c.landlord) === landlordKey &&
-          c.property === getHouseName()
-        );
-
-        if (landlordConvoIndex > -1) {
-          if (!landlordInquiries[landlordConvoIndex].history) landlordInquiries[landlordConvoIndex].history = [];
-          landlordInquiries[landlordConvoIndex].history.unshift(messageData);
-          landlordInquiries[landlordConvoIndex].lastMessage = messageText;
-          landlordInquiries[landlordConvoIndex].time = 'Just now';
-          landlordInquiries[landlordConvoIndex].unread = true;
-          landlordInquiries[landlordConvoIndex].status = landlordInquiries[landlordConvoIndex].status || 'ready_to_book';
-        } else {
-          landlordInquiries.unshift({
-            id: `inq_${Date.now()}`,
-            tenant: currentUser,
-            landlord: {
-              id: landlord.id,
-              name: landlord.name,
-              image: landlord.image,
-              email: landlord.email,
-              phone: landlord.phone,
-            },
-            property: getHouseName() || 'Booking Request',
-            houseId: house.id,
-            lastMessage: messageText,
-            time: 'Just now',
-            unread: true,
-            status: 'ready_to_book',
-            history: [messageData],
-          });
-        }
-
-        await AsyncStorage.setItem(LANDLORD_INQUIRIES_KEY, JSON.stringify(landlordInquiries));
-
-        Alert.alert('Booking Request Sent!', `Your booking request for ${getHouseName()} has been sent to ${landlord.name}.`);
-        setShowBookingModal(false);
-        setBookingDate('');
-        setBookingGuests('1');
-
-        router.push({
-          pathname: '/(tenant)/chat',
-          params: {
-            landlordId: landlord.id,
-            landlordEmail: landlord.email,
-            landlordPhone: landlord.phone,
-            landlordName: landlord.name,
-            landlordImage: landlord.image,
-            houseName: getHouseName(),
-          }
-        });
-      } catch (e) {
-        console.error('Failed to send booking request', e);
-        Alert.alert('Error', 'Failed to send booking request. Please try again.');
+    try {
+      console.log('[submitBooking] Starting booking submission...');
+      
+      if (!currentUser) {
+        Alert.alert('Error', 'User not authenticated');
+        return;
       }
-    })();
-  };
+
+      if (!tenantProfileId || !house?.landlord_profile?.id) {
+        Alert.alert('Error', 'Missing tenant or landlord profile information');
+        return;
+      }
+
+      // Use createConversation helper like sendInterestMessage does
+      const { success: convSuccess, conversation, error: convError } = await createConversation(
+        tenantProfileId,
+        house.landlord_profile.id,
+        house.id
+      );
+
+      if (!convSuccess || !conversation || !conversation.id) {
+        console.error('[submitBooking] Failed to create conversation:', convError);
+        Alert.alert('Error', convError || 'Failed to create conversation');
+        return;
+      }
+
+      const conversationId = conversation.id;
+      console.log('[submitBooking] Conversation created:', conversationId);
+
+      // Send the booking message
+      const { success, error } = await sendMessage(
+        conversationId,
+        currentUser.id,
+        messageText,
+        null // no image for booking message
+      );
+
+      if (!success) {
+        console.error('[submitBooking] Failed to send message:', error);
+        Alert.alert('Error', error || 'Failed to send booking request');
+        return;
+      }
+
+      console.log('[submitBooking] Message sent successfully');
+      Alert.alert('Booking Request Sent!', `Your booking request for ${getHouseName()} has been sent to ${landlord.first_name || landlord.name}.`);
+      setShowBookingModal(false);
+      setBookingDate('');
+      setBookingGuests('1');
+
+      // Small delay to ensure modal closes before navigation
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      console.log('[submitBooking] Navigating to chat...');
+      router.push({
+        pathname: '/(tenant)/chat',
+        params: {
+          conversationId: conversationId,
+          landlordId: landlord.id,
+          landlordEmail: landlord.email,
+          landlordPhone: landlord.phone,
+          landlordName: `${landlord.first_name || ''} ${landlord.last_name || ''}`.trim(),
+          landlordImage: landlord.profile_image_url,
+          houseName: getHouseName(),
+        }
+      });
+    } catch (e) {
+      console.error('[submitBooking] Error:', e);
+      Alert.alert('Error', 'Failed to send booking request. Please try again.');
+    }
+  }, [tenantProfileId, house, selectedDate, getHouseName, getLandlord, currentUser, router]);
+
+  // Show a confirmation dialog before proceeding to submit booking
+  const confirmBooking = useCallback(() => {
+    Alert.alert(
+      'Confirm Booking',
+      'Are you sure the details are right?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Confirm', onPress: () => submitBooking() },
+      ],
+      { cancelable: true }
+    );
+  }, [submitBooking]);
 
   const handleViewLandlordProfile = () => {
     const landlord = getLandlord();
@@ -768,8 +1141,15 @@ export default function BoardingHouseDetails() {
     );
   }
 
+  const landlord = getLandlord();
+  const landlordDisplayName = landlord.name || 'Unknown Landlord';
+  // Use verified property directly from getLandlord which is now true by default
+  const landlordStatusLabel = landlord.verified ? 'Verified' : 'Unverified';
+  const landlordProfileImage = landlord.profile_image_url || 'https://via.placeholder.com/64?text=LL';
+
   return (
     <View style={styles.container}>
+      <WrapPrimitiveChildren>
       
       {/* Header */}
       <View style={styles.header}>
@@ -794,7 +1174,7 @@ export default function BoardingHouseDetails() {
       </View>
 
       {/* Content */}
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} nestedScrollEnabled={true} directionalLockEnabled={true}>
         
         {/* Image Section */}
         <View style={styles.imageSection}>
@@ -805,18 +1185,20 @@ export default function BoardingHouseDetails() {
             showsHorizontalScrollIndicator={false}
             onScroll={handleImageScroll}
             scrollEventThrottle={16}
+            nestedScrollEnabled={true}
+            directionalLockEnabled={true}
           >
             {getHouseImages().map((image, index) => (
-              <TouchableOpacity 
+              <View
                 key={index}
-                activeOpacity={0.9}
-                onPress={() => openImageModal(index)}
+                onTouchEnd={() => openImageModal(index)}
               >
-                <Image
-                  source={{ uri: image }}
+                <CachedRemoteImage
+                  uri={image}
                   style={styles.houseImage}
+                  placeholder={null}
                 />
-              </TouchableOpacity>
+              </View>
             ))}
           </ScrollView>
           
@@ -841,7 +1223,7 @@ export default function BoardingHouseDetails() {
               styles.favoriteButton,
               isFavorite && styles.favoriteButtonActive
             ]}
-            onPress={toggleFavorite}
+            onPress={toggleFavoriteHandler}
           >
             <Ionicons 
               name={isFavorite ? "heart" : "heart-outline"} 
@@ -872,6 +1254,19 @@ export default function BoardingHouseDetails() {
             </View>
             <Text style={styles.houseType}>{getHouseType()}</Text>
           </View>
+
+          {(house?.created_at || house?.createdAt) && (
+            <View style={styles.createdAtContainer}>
+              <Ionicons name="calendar-outline" size={16} color="#666" />
+              <Text style={styles.createdAtText}>
+                Listed on {new Date(house.created_at || house.createdAt).toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                })}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Quick Actions */}
@@ -893,11 +1288,17 @@ export default function BoardingHouseDetails() {
           </TouchableOpacity>
           
           <TouchableOpacity 
-            style={styles.quickActionButton}
-            onPress={() => setShowAddReviewModal(true)}
+            style={[styles.quickActionButton, hasUserReviewed && styles.quickActionButtonDisabled]}
+            onPress={() => {
+              if (hasUserReviewed) {
+                Alert.alert('Already Reviewed', 'You have already submitted a review for this property.');
+              } else {
+                setShowAddReviewModal(true);
+              }
+            }}
           >
-            <Ionicons name="star-outline" size={20} color="#667eea" />
-            <Text style={styles.quickActionText}>Rate</Text>
+            <Ionicons name={hasUserReviewed ? "checkmark-circle" : "star-outline"} size={20} color={hasUserReviewed ? "#10b981" : "#667eea"} />
+            <Text style={[styles.quickActionText, hasUserReviewed && styles.quickActionTextDisabled]}>{hasUserReviewed ? "Reviewed" : "Rate"}</Text>
           </TouchableOpacity>
         </View>
 
@@ -920,28 +1321,12 @@ export default function BoardingHouseDetails() {
             {/* Mini Map Preview */}
             {getHouseLocationData() && (
               <TouchableOpacity style={styles.mapPreview} onPress={openMapModal}>
-                <MapView
+                <OpenStreetMap
+                  latitude={getHouseLocationData().latitude}
+                  longitude={getHouseLocationData().longitude}
+                  zoom={15}
                   style={styles.miniMap}
-                  region={{
-                    latitude: getHouseLocationData().latitude,
-                    longitude: getHouseLocationData().longitude,
-                    latitudeDelta: 0.005,
-                    longitudeDelta: 0.005,
-                  }}
-                  scrollEnabled={false}
-                  zoomEnabled={false}
-                  pitchEnabled={false}
-                  rotateEnabled={false}
-                >
-                  <Marker
-                    coordinate={{
-                      latitude: getHouseLocationData().latitude,
-                      longitude: getHouseLocationData().longitude,
-                    }}
-                    title={getHouseName()}
-                    pinColor="#667eea"
-                  />
-                </MapView>
+                />
                 <View style={styles.mapOverlay}>
                   <Text style={styles.mapPreviewText}>Tap to view full map</Text>
                 </View>
@@ -967,49 +1352,41 @@ export default function BoardingHouseDetails() {
           </View>
         </View>
 
-        {/* Landlord Information */}
+        {/* Landlord Information - Aligned with Profile Contact Info */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Landlord Information</Text>
-          <View style={styles.landlordCard}>
-            <View style={styles.landlordInfo}>
-              <Ionicons 
-                name={getLandlord().verified ? "checkmark-circle" : "person-circle"} 
-                size={40} 
-                color={getLandlord().verified ? "#10b981" : "#667eea"} 
-              />
-              <View style={styles.landlordDetails}>
-                <Text style={styles.landlordName}>{getLandlord().name}</Text>
-                <Text style={styles.landlordPhone}>{getLandlord().phone}</Text>
-                <Text style={styles.landlordEmail}>{getLandlord().email}</Text>
-                <View style={styles.verificationBadge}>
-                  <Ionicons 
-                    name={getLandlord().verified ? "shield-checkmark" : "time"} 
-                    size={14} 
-                    color={getLandlord().verified ? "#10b981" : "#666"} 
-                  />
-                  <Text style={[
-                    styles.verificationText,
-                    { color: getLandlord().verified ? "#10b981" : "#666" }
-                  ]}>
-                    {getLandlord().verified ? 'Verified Landlord' : 'Pending Verification'}
-                  </Text>
-                </View>
+          <View style={styles.landlordInfoCard}>
+            <TouchableOpacity style={styles.landlordProfileRow} onPress={handleViewLandlordProfile}>
+              <Image source={{ uri: landlordProfileImage }} style={styles.landlordProfileImage} />
+              <View style={styles.landlordProfileDetails}>
+                <Text style={styles.landlordProfileName}>{landlordDisplayName}</Text>
+                <Text style={{fontSize:12,color:'#667eea',marginTop:2}}>View Profile</Text>
               </View>
+            </TouchableOpacity>
+            
+            {/* Contact Information - Exactly matching landlord-profile.js structure */}
+            <View style={styles.landlordInfoRow}>
+              <Text style={styles.landlordInfoLabel}>Full Name:</Text>
+              <Text style={styles.landlordInfoValue}>{landlord?.name ? landlord.name : 'Not available'}</Text>
             </View>
-            <View style={styles.landlordActions}>
-              <TouchableOpacity 
-                style={styles.messageLandlordButton}
-                onPress={handleMessageLandlord}
-              >
-                <Ionicons name="chatbubble-ellipses-outline" size={16} color="#667eea" />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.viewProfileButton}
-                onPress={handleViewLandlordProfile}
-              >
-                <Text style={styles.viewProfileText}>View Profile</Text>
-              </TouchableOpacity>
-            </View>
+            {landlord?.bio && (
+              <View style={styles.landlordInfoRow}>
+                <Text style={styles.landlordInfoLabel}>About:</Text>
+                <Text style={styles.landlordInfoValue}>{landlord.bio}</Text>
+              </View>
+            )}
+            {landlord?.company_name && (
+              <View style={styles.landlordInfoRow}>
+                <Text style={styles.landlordInfoLabel}>Company:</Text>
+                <Text style={styles.landlordInfoValue}>{landlord.company_name}</Text>
+              </View>
+            )}
+            {landlord?.years_experience && (
+              <View style={styles.landlordInfoRow}>
+                <Text style={styles.landlordInfoLabel}>Experience:</Text>
+                <Text style={styles.landlordInfoValue}>{`${landlord.years_experience} years`}</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -1019,17 +1396,70 @@ export default function BoardingHouseDetails() {
           <Text style={styles.descriptionText}>{getHouseDescription()}</Text>
         </View>
 
+        {/* Property Details */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Property Details</Text>
+          <View style={styles.propertyDetailsGrid}>
+            {house?.bedrooms !== undefined && house?.bedrooms !== null && (
+              <View style={styles.detailCard}>
+                <Ionicons name="bed" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.bedrooms}</Text>
+                <Text style={styles.detailLabel}>Bedrooms</Text>
+              </View>
+            )}
+            {house?.bathrooms !== undefined && house?.bathrooms !== null && (
+              <View style={styles.detailCard}>
+                <Ionicons name="water" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.bathrooms}</Text>
+                <Text style={styles.detailLabel}>Bathrooms</Text>
+              </View>
+            )}
+            {house?.max_guests && (
+              <View style={styles.detailCard}>
+                <Ionicons name="people" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.max_guests}</Text>
+                <Text style={styles.detailLabel}>Capacity</Text>
+              </View>
+            )}
+            {house?.property_size && (
+              <View style={styles.detailCard}>
+                <Ionicons name="resize" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.property_size}</Text>
+                <Text style={styles.detailLabel}>Sq. Ft</Text>
+              </View>
+            )}
+            {house?.total_rooms && (
+              <View style={styles.detailCard}>
+                <Ionicons name="home" size={24} color="#667eea" />
+                <Text style={styles.detailValue}>{house.total_rooms}</Text>
+                <Text style={styles.detailLabel}>Total Rooms</Text>
+              </View>
+            )}
+            {house?.available_rooms !== undefined && house?.available_rooms !== null && (
+              <View style={styles.detailCard}>
+                <Ionicons name="checkmark-done" size={24} color="#10b981" />
+                <Text style={styles.detailValue}>{house.available_rooms}</Text>
+                <Text style={styles.detailLabel}>Available</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
         {/* Amenities */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Amenities</Text>
-          <View style={styles.amenitiesGrid}>
-            {getHouseAmenities().map((amenity, index) => (
-              <View key={index} style={styles.amenityItem}>
-                <Ionicons name="checkmark-circle" size={20} color="#10b981" />
-                <Text style={styles.amenityText}>{amenity}</Text>
-              </View>
-            ))}
-          </View>
+          {getHouseAmenities().length === 0 ? (
+            <Text style={styles.noAmenitiesText}>No amenities listed.</Text>
+          ) : (
+            <View style={styles.amenitiesGrid}>
+              {getHouseAmenities().map((amenity, index) => (
+                <View key={index} style={styles.amenityItem}>
+                  <Ionicons name="checkmark-circle" size={20} color="#10b981" />
+                  <Text style={styles.amenityText}>{amenity}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* House Rules */}
@@ -1082,13 +1512,15 @@ export default function BoardingHouseDetails() {
             <View style={styles.noReviews}>
               <Ionicons name="star-outline" size={48} color="#ccc" />
               <Text style={styles.noReviewsText}>No reviews yet</Text>
-              <Text style={styles.noReviewsSubtext}>Be the first to review this property</Text>
-              <TouchableOpacity 
-                style={styles.addFirstReviewButton}
-                onPress={() => setShowAddReviewModal(true)}
-              >
-                <Text style={styles.addFirstReviewText}>Write First Review</Text>
-              </TouchableOpacity>
+              <Text style={styles.noReviewsSubtext}>{hasUserReviewed ? 'You have already reviewed this property' : 'Be the first to review this property'}</Text>
+              {!hasUserReviewed && (
+                <TouchableOpacity 
+                  style={styles.addFirstReviewButton}
+                  onPress={() => setShowAddReviewModal(true)}
+                >
+                  <Text style={styles.addFirstReviewText}>Write First Review</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
         </View>
@@ -1117,6 +1549,8 @@ export default function BoardingHouseDetails() {
             onScroll={handleModalImageScroll}
             scrollEventThrottle={16}
             style={styles.imageModalScrollView}
+            nestedScrollEnabled={true}
+            directionalLockEnabled={true}
           >
             {getHouseImages().map((image, index) => (
               <View key={index} style={styles.fullScreenImageContainer}>
@@ -1181,27 +1615,12 @@ export default function BoardingHouseDetails() {
             </View>
             
             {getHouseLocationData() && (
-              <MapView
+              <OpenStreetMap
+                latitude={getHouseLocationData().latitude}
+                longitude={getHouseLocationData().longitude}
+                zoom={15}
                 style={styles.fullMap}
-                region={{
-                  latitude: getHouseLocationData().latitude,
-                  longitude: getHouseLocationData().longitude,
-                  latitudeDelta: 0.01,
-                  longitudeDelta: 0.01,
-                }}
-                showsUserLocation={true}
-                showsMyLocationButton={true}
-              >
-                <Marker
-                  coordinate={{
-                    latitude: getHouseLocationData().latitude,
-                    longitude: getHouseLocationData().longitude,
-                  }}
-                  title={getHouseName()}
-                  description={getHouseLocation()}
-                  pinColor="#667eea"
-                />
-              </MapView>
+              />
             )}
             
             <View style={styles.mapModalActions}>
@@ -1223,101 +1642,13 @@ export default function BoardingHouseDetails() {
       {renderAllReviewsModal()}
 
       {/* Add Review Modal */}
-      {renderAddReviewModal()}
+      {renderAddReviewModal}
 
       {/* Inquiry Modal */}
-      <Modal
-        visible={showInquiryModal}
-        animationType="slide"
-        transparent={true}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Express Interest</Text>
-            <Text style={styles.modalSubtitle}>
-              Send a message to {getLandlord().name} about {getHouseName()}
-            </Text>
-            
-            <TextInput
-              style={styles.messageInput}
-              multiline
-              numberOfLines={4}
-              placeholder="Tell the landlord why you're interested... (optional)"
-              value={inquiryMessage}
-              onChangeText={setInquiryMessage}
-            />
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]}
-                onPress={() => setShowInquiryModal(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.submitButton]}
-                onPress={submitInquiry}
-              >
-                <Text style={styles.submitButtonText}>Send Interest</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {renderInquiryModal}
 
       {/* Booking Modal */}
-      <Modal
-        visible={showBookingModal}
-        animationType="slide"
-        transparent={true}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Ready to Book</Text>
-            <Text style={styles.modalSubtitle}>
-              Send booking request for {getHouseName()}
-            </Text>
-            
-            <View style={styles.bookingForm}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Preferred Move-in Date</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="YYYY-MM-DD"
-                  value={bookingDate}
-                  onChangeText={setBookingDate}
-                />
-              </View>
-              
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Number of Guests</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="1"
-                  keyboardType="numeric"
-                  value={bookingGuests}
-                  onChangeText={setBookingGuests}
-                />
-              </View>
-            </View>
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]}
-                onPress={() => setShowBookingModal(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.submitButton]}
-                onPress={submitBooking}
-              >
-                <Text style={styles.submitButtonText}>Request Booking</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {renderBookingModal}
 
       {/* Bottom Action Bar */}
       <View style={styles.bottomActionBar}>
@@ -1345,7 +1676,8 @@ export default function BoardingHouseDetails() {
           <Text style={styles.bookButtonText}>Book Now</Text>
         </TouchableOpacity>
       </View>
-    </View>
+      </WrapPrimitiveChildren>
+      </View>
   );
 }
 
@@ -1494,6 +1826,24 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 16,
   },
+  createdAtContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#f0f9ff',
+    borderRadius: 8,
+    marginTop: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#667eea',
+  },
+  createdAtText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+    flex: 1,
+  },
   quickActions: {
     flexDirection: 'row',
     padding: 20,
@@ -1508,11 +1858,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e5e5e5',
   },
+  quickActionButtonDisabled: {
+    backgroundColor: '#f0fdf4',
+    borderColor: '#10b981',
+  },
   quickActionText: {
     marginTop: 4,
     fontSize: 12,
     color: '#667eea',
     fontWeight: '500',
+  },
+  quickActionTextDisabled: {
+    color: '#10b981',
   },
   sectionTitle: {
     fontSize: 20,
@@ -1829,6 +2186,39 @@ const styles = StyleSheet.create({
     color: '#333',
     flex: 1,
   },
+  noAmenitiesText: {
+    fontSize: 14,
+    color: '#888',
+    marginTop: 8,
+  },
+  propertyDetailsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 12,
+  },
+  detailCard: {
+    width: '31%',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  detailValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 8,
+  },
+  detailLabel: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 4,
+    textAlign: 'center',
+  },
   rulesList: {
     gap: 12,
   },
@@ -1858,6 +2248,47 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginLeft: 28,
+  },
+  landlordInfoCard: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 14,
+    padding: 16,
+    marginTop: 8,
+    gap: 8,
+  },
+  landlordInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  landlordInfoLabel: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '600',
+  },
+  landlordInfoValue: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+  },
+  landlordProfileRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  landlordProfileImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#e5e7eb',
+  },
+  landlordProfileDetails: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  landlordProfileName: {
+    fontSize: 16,
+    color: '#111',
+    fontWeight: '700',
   },
   reviewsHeader: {
     flexDirection: 'row',
@@ -2055,6 +2486,25 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     lineHeight: 22,
   },
+  priceSection: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  priceLabel: {
+    fontSize: 16,
+    color: '#666',
+    fontWeight: '500',
+  },
+  priceValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#667eea',
+  },
   messageInput: {
     borderWidth: 1,
     borderColor: '#e5e5e5',
@@ -2068,6 +2518,9 @@ const styles = StyleSheet.create({
   bookingForm: {
     gap: 16,
     marginBottom: 20,
+  },
+  bookingFormScroll: {
+    maxHeight: 400,
   },
   inputGroup: {
     gap: 8,
@@ -2083,6 +2536,41 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
+  },
+  datePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 12,
+    padding: 16,
+    backgroundColor: '#fff',
+    gap: 10,
+  },
+  datePickerText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#333',
+  },
+  datePickerPlaceholder: {
+    color: '#999',
+  },
+  calendarContainer: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+  },
+  calendar: {
+    borderRadius: 12,
+  },
+  fallbackDatePicker: {
+    padding: 8,
+  },
+  modalContentExpanded: {
+    maxHeight: '85%',
   },
   modalButtons: {
     flexDirection: 'row',

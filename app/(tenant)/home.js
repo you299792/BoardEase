@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'; // ADD: useEffect
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,132 +8,242 @@ import {
   FlatList,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import FilterModal from '../../components/FilterModal';
 import { router } from 'expo-router'; 
 import BoardingHouseCard from '../../components/BoardingHouseCard';
 import SearchBar from '../../components/SearchBar';
-// REMOVE: import { useListings } from '../../hooks/useListings';
-import AsyncStorage from '@react-native-async-storage/async-storage'; // ADD
-import { boardingHouses as mockData } from '../../data/mockData'; // ADD (make sure this path is correct)r
-
-// ADD: The same key the landlord app uses to save
-const LISTINGS_STORAGE_KEY = '@landlord_listings';
+import { getListingsForTenant, toggleFavorite, getCurrentUser, getTenantProfile } from '../../lib/supabaseClient';
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isFilterModalVisible, setFilterModalVisible] = useState(false);
   const [activeFilters, setActiveFilters] = useState(null);
-  
-  // --- START OF NEW DATA LOADING LOGIC ---
-  const [boardingHouses, setBoardingHouses] = useState([]); // This will hold our listings
+  const [listings, setListings] = useState([]);
+  const [filteredListings, setFilteredListings] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [favorites, setFavorites] = useState([]);
+  const [tenantProfileId, setTenantProfileId] = useState(null);
+  const [userData, setUserData] = useState(null);
 
   useEffect(() => {
-    // Load listings from the phone's storage
-    const loadListingsFromStorage = async () => {
-      try {
-        const jsonValue = await AsyncStorage.getItem(LISTINGS_STORAGE_KEY);
-        if (jsonValue !== null) {
-          // We found saved data, use it
-          setBoardingHouses(JSON.parse(jsonValue));
-        } else {
-          // No saved data, use the default mock data
-          setBoardingHouses(mockData);
-        }
-      } catch (e) {
-        console.error("Failed to load listings", e);
-        setBoardingHouses(mockData); // Use mock data as a fallback
-      } finally {
-        setIsLoading(false);
-      }
-    };
+    loadData();
+  }, []);
 
-    loadListingsFromStorage();
-  }, []); // The empty [] means this only runs once on startup
-  // --- END OF NEW DATA LOADING LOGIC ---
+  useEffect(() => {
+    applyFiltersAndSearch();
+  }, [listings, searchQuery, activeFilters]);
+
+  const loadData = async () => {
+    try {
+      setIsLoading(true);
+
+      // Get current user
+      const user = await getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Not logged in');
+        return;
+      }
+
+      setUserData(user);
+
+      // Get tenant profile
+      const { profile } = await getTenantProfile(user.id);
+      if (profile?.id) {
+        setTenantProfileId(profile.id);
+      }
+
+      // Fetch listings from Supabase
+      let filters = {};
+      if (activeFilters) {
+        if (activeFilters.priceRange) {
+          filters.minPrice = activeFilters.priceRange[0];
+          filters.maxPrice = activeFilters.priceRange[1];
+        }
+        if (activeFilters.roomType) {
+          filters.roomType = activeFilters.roomType;
+        }
+        if (activeFilters.location) {
+          filters.city = activeFilters.location;
+        }
+        if (activeFilters.minRating) {
+          filters.minRating = activeFilters.minRating;
+        }
+      }
+
+      const { success, listings: data } = await getListingsForTenant(profile?.id, filters);
+
+      if (success) {
+        // Transform Supabase data to match component expectations
+          // Only show available properties (not occupied)
+          const transformedListings = data
+            .filter(listing => listing.status !== 'occupied')
+            .map(listing => {
+              console.log(`[Home] Listing: ${listing.title}, Images:`, listing.images);
+              return {
+                id: listing.id,
+                name: listing.title,
+                description: listing.description,
+                location: listing.city,
+                address: listing.address,
+                price: listing.price_per_month,
+                type: (listing.room_type ? (function(enumVal){
+                  const labels = {
+                    single_room: 'Single Room',
+                    shared_room: 'Shared Room',
+                    studio: 'Studio Unit',
+                    suite: 'Suite',
+                    bed_space: 'Bed Space',
+                  };
+                  return labels[enumVal] || enumVal;
+                })(listing.room_type) : 'Boarding House'),
+                rating: listing.rating,
+                totalReviews: listing.total_reviews,
+                images: listing.images || [],
+                amenities: listing.amenities || [],
+                available: listing.available === undefined ? true : listing.available,
+                status: listing.status || null,
+                landlord: {
+                  id: listing.landlord_profile?.user_id,
+                  name: `${listing.landlord_profile?.users?.first_name} ${listing.landlord_profile?.users?.last_name}`,
+                  image: listing.landlord_profile?.users?.profile_image_url,
+                  rating: listing.landlord_profile?.rating,
+                  verified: listing.landlord_profile?.bank_account_verified,
+                },
+                latitude: listing.latitude,
+                longitude: listing.longitude,
+              };
+            });
+
+          setListings(transformedListings);
+      }
+    } catch (error) {
+      console.error('Load data error:', error);
+      Alert.alert('Error', 'Failed to load listings');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const onRefresh = async () => {
+    try {
+      setRefreshing(true);
+      await loadData();
+    } catch (e) {
+      console.error('Refresh failed:', e);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
 
   const applyFilters = (filters) => {
-    // *** NEW: Price range validation ***
+    // Validate price range
     if (filters.priceRange) {
       const [min, max] = filters.priceRange;
       if (max < min) {
-        Alert.alert(
-          "Filter Error",
-          "The maximum price cannot be lower than the minimum price."
-        );
-        // Do not apply the filters, so the modal stays open for correction
-        return; 
+        Alert.alert('Filter Error', 'Maximum price cannot be lower than minimum price.');
+        return;
       }
     }
 
-    // Apply filters and close modal
     setActiveFilters(filters);
     setFilterModalVisible(false);
   };
 
-  const filteredHouses = boardingHouses.filter(house => {
-    // ... (this filter logic is unchanged)
-    
-    // Search filter
-    const matchesSearch = house.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         house.location.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         house.type.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    if (!activeFilters) return matchesSearch;
-
-    // Price range filter
-    const matchesPrice = house.price >= activeFilters.priceRange[0] && 
-                        house.price <= activeFilters.priceRange[1];
-    
-    // Room type filter
-    const matchesType = !activeFilters.roomType || house.type === activeFilters.roomType;
-    
-    // Location filter
-    const matchesLocation = !activeFilters.location || 
-                           house.location.toLowerCase().includes(activeFilters.location.toLowerCase());
-    
-    // Amenities filter
-    const matchesAmenities = activeFilters.amenities.length === 0 || 
-                            activeFilters.amenities.every(amenity => 
-                              house.amenities.includes(amenity));
-    
-    // Verified landlord filter
-    // ADD: Check if landlord object exists before accessing 'verified'
-    const matchesVerified = !activeFilters.verifiedOnly || (house.landlord && house.landlord.verified);
-
-    return matchesSearch && matchesPrice && matchesType && matchesLocation && 
-           matchesAmenities && matchesVerified;
-  });
-
+  // Clear all filters and search query
   const clearFilters = () => {
-    // ... (this function is unchanged)
     setActiveFilters(null);
+    setSearchQuery('');
+    // Reset filtered listings to full list
+    setFilteredListings(listings);
   };
 
-  const handleHousePress = (house) => {
-    // ... (this function is unchanged)
-    router.push({
-      pathname: '/(tenant)/boarding-house-details',
-      params: { id: house.id }
-    });
+  const applyFiltersAndSearch = () => {
+    let filtered = listings;
+
+    // Search filter
+    if (searchQuery) {
+      filtered = filtered.filter(house =>
+        house.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        house.location.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        house.type.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    }
+
+    // Apply active filters
+    if (activeFilters) {
+      // Price range filter
+      if (activeFilters.priceRange) {
+        const [min, max] = activeFilters.priceRange;
+        filtered = filtered.filter(h => h.price >= min && h.price <= max);
+      }
+
+      // Room type filter
+      if (activeFilters.roomType) {
+        filtered = filtered.filter(h => h.type === activeFilters.roomType);
+      }
+
+      // Location filter
+      if (activeFilters.location) {
+        filtered = filtered.filter(h =>
+          h.location.toLowerCase().includes(activeFilters.location.toLowerCase())
+        );
+      }
+
+      // Amenities filter
+      if (activeFilters.amenities && activeFilters.amenities.length > 0) {
+        filtered = filtered.filter(h =>
+          activeFilters.amenities.every(amenity =>
+            h.amenities.includes(amenity)
+          )
+        );
+      }
+
+      // Verified landlord filter
+      if (activeFilters.verifiedOnly) {
+        filtered = filtered.filter(h => h.landlord?.verified);
+      }
+
+      // Minimum rating filter
+      if (activeFilters.minRating) {
+        filtered = filtered.filter(h => h.rating >= activeFilters.minRating);
+      }
+    }
+
+    setFilteredListings(filtered);
   };
 
-  const renderBoardingHouse = ({ item }) => (
-    <BoardingHouseCard 
-      house={item} 
-      onPress={() => handleHousePress(item)}
-    />
-  );
+  const handleToggleFavorite = async (listingId) => {
+    if (!tenantProfileId) return;
+    
+    try {
+      const isFavorited = favorites.includes(listingId);
+      const result = await toggleFavorite(tenantProfileId, listingId, isFavorited);
+      
+      if (result.success) {
+        if (isFavorited) {
+          setFavorites(favorites.filter(id => id !== listingId));
+        } else {
+          setFavorites([...favorites, listingId]);
+        }
+      } else {
+        Alert.alert('Error', result.error || 'Failed to update favorite');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update favorite');
+      console.error(error);
+    }
+  };
 
-  // ADD: Show a loading screen while data is loaded
   if (isLoading) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color="#667eea" />
-        <Text style={{ marginTop: 10, color: '#666' }}>Loading boarding houses...</Text>
+        <Text style={{ marginTop: 10, color: '#666' }}>Loading listings...</Text>
       </View>
     );
   }
@@ -143,15 +253,31 @@ export default function Home() {
       {/* ... (rest of your JSX header is unchanged) ... */}
       <View style={styles.header}> 
         <View style={styles.headerContent}>
-          <Text style={styles.greeting}>Hello, Tenant!</Text>
+          <Text style={styles.greeting}>
+            Hello, {userData?.first_name || 'Guest'}!
+          </Text>
           <Text style={styles.subGreeting}>Find your perfect boarding house</Text>
         </View>
-        <TouchableOpacity style={styles.profileButton}>
+        <TouchableOpacity 
+          style={styles.profileButton}
+          onPress={() => router.push('/profile')}
+        >
           <Ionicons name="person-circle" size={32} color="#667eea" />
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#667eea"]}
+            tintColor="#667eea"
+          />
+        }
+      >
         {/* ... (rest of your JSX is unchanged) ... */}
          <View style={styles.searchContainer}>
           <SearchBar
@@ -226,7 +352,7 @@ export default function Home() {
         {/* Results Count */}
         <View style={styles.resultsContainer}>
           <Text style={styles.resultsText}>
-            {filteredHouses.length} boarding house{filteredHouses.length !== 1 ? 's' : ''} found
+            {filteredListings.length} boarding house{filteredListings.length !== 1 ? 's' : ''} found
             {searchQuery ? ` for "${searchQuery}"` : ''}
           </Text>
         </View>
@@ -242,10 +368,23 @@ export default function Home() {
         </View>
 
         {/* Boarding Houses List */}
-        {filteredHouses.length > 0 ? (
+        {filteredListings.length > 0 ? (
           <FlatList
-            data={filteredHouses}
-            renderItem={renderBoardingHouse}
+            data={filteredListings}
+            renderItem={({ item }) => (
+              <BoardingHouseCard
+                house={item}
+                onPress={() => router.push(`/boarding-house-details?id=${item.id}`)}
+                isFavoriteProp={favorites.includes(item.id)}
+                onFavoriteChange={(listingId, newFavoriteStatus) => {
+                  if (newFavoriteStatus) {
+                    setFavorites([...favorites, listingId]);
+                  } else {
+                    setFavorites(favorites.filter(id => id !== listingId));
+                  }
+                }}
+              />
+            )}
             keyExtractor={item => item.id}
             scrollEnabled={false}
             showsVerticalScrollIndicator={false}
