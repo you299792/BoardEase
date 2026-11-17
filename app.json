@@ -4,11 +4,6 @@
     "slug": "board-ease",
     "version": "1.0.0",
     "icon": "./assets/icon.png",
-    "splash": {
-      "image": "./assets/BoardEase_intro.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -27,6 +22,16 @@
           "photosPermission": "The app accesses your photos to help you upload images.",
           "cameraPermission": "The app accesses your camera to take photos."
         }
+      ],
+      "expo-sharing",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/BoardEase_intro.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
       ]
     ],
     "experiments": {
@@ -41,12 +46,7 @@
     "owner": "hakugin",
     "android": {
       "package": "com.hakugin.boardease",
-      "icon": "./assets/adaptive-icon.png",
-      "splash": {
-        "image": "./assets/BoardEase_intro.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#ffffff"
-      }
+      "icon": "./assets/adaptive-icon.png"
     }
   }
 }
