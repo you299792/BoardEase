@@ -1,8 +1,32 @@
 -- ============================================================================
--- COMPLETE BoardEase Database Schema for Supabase
+-- BoardEase Database Schema for Supabase
 -- Purpose: Boarding House Rental Management Platform
--- Features: Multi-tenant support, Payment tracking, Messaging, Reviews
--- Version: 2.0 - Supabase Optimized
+-- Version: 3.0 - Rebuilt from a full audit of actual app code usage
+--          (lib/supabaseClient.js + every app/ screen that talks to Supabase)
+--          after the previous Supabase project was terminated for inactivity.
+--
+-- This file is meant to be run top-to-bottom on a fresh Supabase project.
+-- It supersedes database/migrations/add_subscriptions_table.sql (merged in)
+-- and supabase/migrations/20240101000000_create_storage_buckets.sql
+-- (buckets recreated here, including the previously-missing one).
+--
+-- Fixes applied vs. the old schema, based on the code audit:
+--   1. Added id_verification table (code inserts into it; no CREATE TABLE existed)
+--   2. Added the id-verifications storage bucket (code uploads to it; bucket
+--      never existed) with a corrected per-user folder policy
+--   3. Merged subscriptions table into the main schema
+--   4. payments.payment_type CHECK extended with 'security_deposit' (the
+--      landlord financials UI sends this value; it would have violated the
+--      old CHECK constraint)
+--   5. conversations.conversation_topic CHECK made case-insensitive (app has
+--      a retry path that sends 'General' with a capital G)
+--   6. bookings.status CHECK extended with 'occupied' (defensively checked
+--      against in 4 screens; cheap to allow even if rarely written)
+--   7. bookings gained cancelled_at / cancellation_reason columns (the UI
+--      reads these; nothing wrote them before because they didn't exist)
+--   8. Added real Row Level Security policies. users.id is always set to
+--      Supabase Auth's auth.uid() at signup (confirmed in supabaseClient.js),
+--      so every policy below anchors on auth.uid().
 -- ============================================================================
 
 -- ============================================================================
@@ -132,6 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_listings_price ON listings(price_per_month);
 CREATE INDEX IF NOT EXISTS idx_listings_available ON listings(available);
 CREATE INDEX IF NOT EXISTS idx_listings_rating ON listings(rating);
 CREATE INDEX IF NOT EXISTS idx_listings_created ON listings(created_at);
+CREATE INDEX IF NOT EXISTS idx_listings_room_type ON listings(room_type);
 
 -- ============================================================================
 -- 5. BOOKINGS TABLE - Tenant bookings/reservations
@@ -144,7 +169,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   booking_date DATE NOT NULL DEFAULT CURRENT_DATE,
   move_in_date DATE NOT NULL,
   move_out_date DATE,
-  status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled', 'completed', 'active')),
+  status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled', 'completed', 'active', 'occupied')),
   duration_months INT,
   number_of_guests INT DEFAULT 1 CHECK (number_of_guests > 0),
   special_requests TEXT,
@@ -155,6 +180,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   deposit_amount DECIMAL(10, 2),
   discount_amount DECIMAL(10, 2) DEFAULT 0,
   is_review_pending BOOLEAN DEFAULT FALSE,
+  cancelled_at TIMESTAMP WITH TIME ZONE,
+  cancellation_reason TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -201,7 +228,7 @@ CREATE TABLE IF NOT EXISTS payments (
   listing_id UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   payment_method_id UUID REFERENCES payment_methods(id) ON DELETE SET NULL,
   amount DECIMAL(10, 2) NOT NULL CHECK (amount > 0),
-  payment_type VARCHAR(50) DEFAULT 'rent' CHECK (payment_type IN ('rent', 'deposit', 'utility', 'maintenance', 'other', 'advance')),
+  payment_type VARCHAR(50) DEFAULT 'rent' CHECK (payment_type IN ('rent', 'deposit', 'security_deposit', 'utility', 'maintenance', 'other', 'advance')),
   status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed', 'refunded', 'partially_paid')),
   payment_method VARCHAR(50) DEFAULT 'bank_transfer' CHECK (payment_method IN ('bank_transfer', 'credit_card', 'debit_card', 'mobile_wallet', 'cash', 'check')),
   transaction_id VARCHAR(255) UNIQUE,
@@ -224,6 +251,10 @@ CREATE INDEX IF NOT EXISTS idx_payments_due_date ON payments(due_date);
 CREATE INDEX IF NOT EXISTS idx_payments_paid_date ON payments(paid_date);
 CREATE INDEX IF NOT EXISTS idx_payments_created ON payments(created_at);
 
+-- Realtime subscribes to '*' events filtered by landlord_id/tenant_id (non-PK
+-- columns), so full old-row data is needed for UPDATE/DELETE filtering.
+ALTER TABLE payments REPLICA IDENTITY FULL;
+
 -- ============================================================================
 -- 8. CONVERSATIONS TABLE - Chat conversations
 -- ============================================================================
@@ -233,7 +264,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   tenant_id UUID NOT NULL REFERENCES tenant_profile(id) ON DELETE CASCADE,
   listing_id UUID REFERENCES listings(id) ON DELETE SET NULL,
   booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
-  conversation_topic VARCHAR(50) DEFAULT 'general' CHECK (conversation_topic IN ('inquiry', 'booking', 'maintenance', 'payment', 'general')),
+  conversation_topic VARCHAR(50) DEFAULT 'general' CHECK (LOWER(conversation_topic) IN ('inquiry', 'booking', 'maintenance', 'payment', 'general')),
   last_message TEXT,
   last_message_sender_id UUID,
   last_message_time TIMESTAMP WITH TIME ZONE,
@@ -249,6 +280,11 @@ CREATE INDEX IF NOT EXISTS idx_conversations_tenant_id ON conversations(tenant_i
 CREATE INDEX IF NOT EXISTS idx_conversations_listing_id ON conversations(listing_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_is_active ON conversations(is_active);
 CREATE INDEX IF NOT EXISTS idx_conversations_created ON conversations(created_at);
+-- createConversation() dedupes by exactly this triple before inserting
+CREATE INDEX IF NOT EXISTS idx_conversations_dedupe ON conversations(tenant_id, landlord_id, listing_id);
+
+-- Realtime subscribes to '*' events filtered by landlord_id (non-PK column)
+ALTER TABLE conversations REPLICA IDENTITY FULL;
 
 -- ============================================================================
 -- 9. MESSAGES TABLE - Direct messages between users
@@ -272,6 +308,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id);
 CREATE INDEX IF NOT EXISTS idx_messages_receiver_id ON messages(receiver_id);
 CREATE INDEX IF NOT EXISTS idx_messages_is_read ON messages(is_read);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+-- TabBarBadge.js / unread counts filter on exactly this pair
+CREATE INDEX IF NOT EXISTS idx_messages_receiver_unread ON messages(receiver_id, is_read);
 
 -- ============================================================================
 -- 10. INQUIRIES TABLE - General inquiries and support tickets
@@ -324,6 +362,8 @@ CREATE TABLE IF NOT EXISTS reviews (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- reviewed_item_id is polymorphic (listing/landlord/tenant) so it cannot carry
+-- a DB-level FOREIGN KEY; integrity across that pointer is enforced in RLS below.
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewed_item ON reviews(reviewed_item_type, reviewed_item_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewer_id ON reviews(reviewer_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_booking_id ON reviews(booking_id);
@@ -443,8 +483,332 @@ CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 
 -- ============================================================================
--- 18. ID_VERIFICATION TABLE - Landlord ID verification documents
+-- 18. ID_VERIFICATION TABLE - Landlord ID verification images
+-- (Previously only a section header existed here with no CREATE TABLE, even
+-- though lib/supabaseClient.js uploadIDVerificationImage() inserts into it.)
 -- ============================================================================
+CREATE TABLE IF NOT EXISTS id_verification (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  landlord_id UUID NOT NULL REFERENCES landlord_profile(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  image_url TEXT NOT NULL,
+  verified BOOLEAN DEFAULT FALSE,
+  verified_at TIMESTAMP WITH TIME ZONE,
+  rejection_reason TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_id_verification_landlord_id ON id_verification(landlord_id);
+CREATE INDEX IF NOT EXISTS idx_id_verification_user_id ON id_verification(user_id);
+CREATE INDEX IF NOT EXISTS idx_id_verification_verified ON id_verification(verified);
+
+-- ============================================================================
+-- 19. SUBSCRIPTIONS TABLE - Landlord subscription plans
+-- (Previously lived only in database/migrations/add_subscriptions_table.sql;
+-- merged here so a fresh project only needs this one file.)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  landlord_id UUID NOT NULL UNIQUE REFERENCES landlord_profile(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  current_plan VARCHAR(50) DEFAULT 'basic' CHECK (current_plan IN ('basic', 'pro', 'enterprise')),
+  started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  renewed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_landlord_id ON subscriptions(landlord_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_plan ON subscriptions(current_plan);
+
+-- Ensure every existing landlord has a subscription row (no-op on a fresh DB)
+INSERT INTO subscriptions (landlord_id, user_id, current_plan)
+SELECT lp.id, lp.user_id, 'basic'
+FROM landlord_profile lp
+WHERE NOT EXISTS (
+  SELECT 1 FROM subscriptions s WHERE s.landlord_id = lp.id
+)
+ON CONFLICT DO NOTHING;
+
+-- ============================================================================
+-- STORAGE BUCKETS
+-- (Previously only profile-images, listing-images and documents existed;
+-- id-verifications was used by the app but never created.)
+-- ============================================================================
+INSERT INTO storage.buckets (id, name, public)
+VALUES
+  ('profile-images', 'profile-images', true),
+  ('listing-images', 'listing-images', true),
+  ('documents', 'documents', false),
+  ('id-verifications', 'id-verifications', false)
+ON CONFLICT (id) DO NOTHING;
+
+-- profile-images: public read, owner-only write. Also used for chat message
+-- images (uploadMessageImage reuses this bucket under <user_id>/messages/...).
+DROP POLICY IF EXISTS "profile-images public read" ON storage.objects;
+CREATE POLICY "profile-images public read" ON storage.objects
+  FOR SELECT USING (bucket_id = 'profile-images');
+DROP POLICY IF EXISTS "profile-images owner write" ON storage.objects;
+CREATE POLICY "profile-images owner write" ON storage.objects
+  FOR INSERT WITH CHECK (bucket_id = 'profile-images' AND auth.uid()::text = (storage.foldername(name))[1]);
+DROP POLICY IF EXISTS "profile-images owner update" ON storage.objects;
+CREATE POLICY "profile-images owner update" ON storage.objects
+  FOR UPDATE USING (bucket_id = 'profile-images' AND auth.uid()::text = (storage.foldername(name))[1]);
+DROP POLICY IF EXISTS "profile-images owner delete" ON storage.objects;
+CREATE POLICY "profile-images owner delete" ON storage.objects
+  FOR DELETE USING (bucket_id = 'profile-images' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+-- listing-images: public read (browsing), owner-only write
+DROP POLICY IF EXISTS "listing-images public read" ON storage.objects;
+CREATE POLICY "listing-images public read" ON storage.objects
+  FOR SELECT USING (bucket_id = 'listing-images');
+DROP POLICY IF EXISTS "listing-images owner write" ON storage.objects;
+CREATE POLICY "listing-images owner write" ON storage.objects
+  FOR INSERT WITH CHECK (bucket_id = 'listing-images' AND auth.uid()::text = (storage.foldername(name))[1]);
+DROP POLICY IF EXISTS "listing-images owner update" ON storage.objects;
+CREATE POLICY "listing-images owner update" ON storage.objects
+  FOR UPDATE USING (bucket_id = 'listing-images' AND auth.uid()::text = (storage.foldername(name))[1]);
+DROP POLICY IF EXISTS "listing-images owner delete" ON storage.objects;
+CREATE POLICY "listing-images owner delete" ON storage.objects
+  FOR DELETE USING (bucket_id = 'listing-images' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+-- documents: private, owner-only read/write
+DROP POLICY IF EXISTS "documents owner read" ON storage.objects;
+CREATE POLICY "documents owner read" ON storage.objects
+  FOR SELECT USING (bucket_id = 'documents' AND auth.uid()::text = (storage.foldername(name))[1]);
+DROP POLICY IF EXISTS "documents owner write" ON storage.objects;
+CREATE POLICY "documents owner write" ON storage.objects
+  FOR INSERT WITH CHECK (bucket_id = 'documents' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+-- id-verifications: private, owner-only read/write.
+-- NOTE: the app currently uploads to the path
+--   id-verifications/<user_id>/<timestamp>-id.jpg
+-- i.e. inside the bucket of the same name, the FIRST folder segment is
+-- already <user_id> (the duplicate "id-verifications/" segment some code
+-- paths add is the bucket prefix returned by getPublicUrl, not a real path
+-- segment stored in `name`). So foldername(name)[1] = user_id, matching the
+-- pattern used by the other buckets. If the upload path is ever changed to
+-- nest an extra literal "id-verifications" folder inside the bucket, update
+-- this policy to foldername(name)[2] accordingly.
+DROP POLICY IF EXISTS "id-verifications owner read" ON storage.objects;
+CREATE POLICY "id-verifications owner read" ON storage.objects
+  FOR SELECT USING (bucket_id = 'id-verifications' AND auth.uid()::text = (storage.foldername(name))[1]);
+DROP POLICY IF EXISTS "id-verifications owner write" ON storage.objects;
+CREATE POLICY "id-verifications owner write" ON storage.objects
+  FOR INSERT WITH CHECK (bucket_id = 'id-verifications' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+-- ============================================================================
+-- ROW LEVEL SECURITY
+-- users.id is always set to Supabase Auth's auth.uid() at signup (see
+-- lib/supabaseClient.js signUp flows), so every policy below can anchor
+-- directly on auth.uid() through the users/tenant_profile/landlord_profile
+-- chain. Without this, any client could pass an arbitrary tenant_id/
+-- landlord_id and read or write someone else's bookings, payments, messages,
+-- conversations, notifications, favorites and reviews.
+-- ============================================================================
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_profile ENABLE ROW LEVEL SECURITY;
+ALTER TABLE landlord_profile ENABLE ROW LEVEL SECURITY;
+ALTER TABLE listings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_methods ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inquiries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE favorites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE search_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE id_verification ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+
+-- USERS: anyone signed in can read any user's public profile fields (needed
+-- to show the other party's name/photo in chats, bookings, listings); a user
+-- can only update their own row.
+DROP POLICY IF EXISTS "users read all" ON users;
+CREATE POLICY "users read all" ON users FOR SELECT USING (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "users insert self" ON users;
+CREATE POLICY "users insert self" ON users FOR INSERT WITH CHECK (id = auth.uid());
+DROP POLICY IF EXISTS "users update self" ON users;
+CREATE POLICY "users update self" ON users FOR UPDATE USING (id = auth.uid());
+
+-- TENANT_PROFILE: owner-only read/write
+DROP POLICY IF EXISTS "tenant_profile owner all" ON tenant_profile;
+CREATE POLICY "tenant_profile owner all" ON tenant_profile FOR ALL
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+-- LANDLORD_PROFILE: readable by anyone authenticated (tenants need to see
+-- landlord rating/stats on listings), owner-only write
+DROP POLICY IF EXISTS "landlord_profile read all" ON landlord_profile;
+CREATE POLICY "landlord_profile read all" ON landlord_profile FOR SELECT USING (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "landlord_profile owner write" ON landlord_profile;
+CREATE POLICY "landlord_profile owner write" ON landlord_profile FOR INSERT WITH CHECK (user_id = auth.uid());
+DROP POLICY IF EXISTS "landlord_profile owner update" ON landlord_profile;
+CREATE POLICY "landlord_profile owner update" ON landlord_profile FOR UPDATE USING (user_id = auth.uid());
+
+-- LISTINGS: public read (tenants browse all listings), owner-only write
+DROP POLICY IF EXISTS "listings public read" ON listings;
+CREATE POLICY "listings public read" ON listings FOR SELECT USING (true);
+DROP POLICY IF EXISTS "listings owner write" ON listings;
+CREATE POLICY "listings owner write" ON listings FOR INSERT WITH CHECK (
+  landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "listings owner update" ON listings;
+CREATE POLICY "listings owner update" ON listings FOR UPDATE USING (
+  landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "listings owner delete" ON listings;
+CREATE POLICY "listings owner delete" ON listings FOR DELETE USING (
+  landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+
+-- BOOKINGS: visible/writable only by the tenant or landlord involved
+DROP POLICY IF EXISTS "bookings involved read" ON bookings;
+CREATE POLICY "bookings involved read" ON bookings FOR SELECT USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "bookings tenant insert" ON bookings;
+CREATE POLICY "bookings tenant insert" ON bookings FOR INSERT WITH CHECK (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "bookings involved update" ON bookings;
+CREATE POLICY "bookings involved update" ON bookings FOR UPDATE USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+
+-- PAYMENT_METHODS: owner-only
+DROP POLICY IF EXISTS "payment_methods owner all" ON payment_methods;
+CREATE POLICY "payment_methods owner all" ON payment_methods FOR ALL
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+-- PAYMENTS: visible/writable only by the tenant or landlord involved
+DROP POLICY IF EXISTS "payments involved read" ON payments;
+CREATE POLICY "payments involved read" ON payments FOR SELECT USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "payments involved write" ON payments;
+CREATE POLICY "payments involved write" ON payments FOR INSERT WITH CHECK (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "payments involved update" ON payments;
+CREATE POLICY "payments involved update" ON payments FOR UPDATE USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+
+-- CONVERSATIONS: visible/writable only by the tenant or landlord in it
+DROP POLICY IF EXISTS "conversations involved all" ON conversations;
+CREATE POLICY "conversations involved all" ON conversations FOR ALL USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+) WITH CHECK (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+
+-- MESSAGES: visible only to sender/receiver; only the sender can insert as themself
+DROP POLICY IF EXISTS "messages involved read" ON messages;
+CREATE POLICY "messages involved read" ON messages FOR SELECT USING (
+  sender_id = auth.uid() OR receiver_id = auth.uid()
+);
+DROP POLICY IF EXISTS "messages sender insert" ON messages;
+CREATE POLICY "messages sender insert" ON messages FOR INSERT WITH CHECK (
+  sender_id = auth.uid()
+);
+DROP POLICY IF EXISTS "messages receiver update" ON messages;
+CREATE POLICY "messages receiver update" ON messages FOR UPDATE USING (
+  receiver_id = auth.uid()
+);
+
+-- INQUIRIES: visible/writable only by the tenant or landlord involved
+DROP POLICY IF EXISTS "inquiries involved read" ON inquiries;
+CREATE POLICY "inquiries involved read" ON inquiries FOR SELECT USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "inquiries tenant insert" ON inquiries;
+CREATE POLICY "inquiries tenant insert" ON inquiries FOR INSERT WITH CHECK (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+);
+DROP POLICY IF EXISTS "inquiries involved update" ON inquiries;
+CREATE POLICY "inquiries involved update" ON inquiries FOR UPDATE USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+  OR landlord_id IN (SELECT id FROM landlord_profile WHERE user_id = auth.uid())
+);
+
+-- REVIEWS: public read, write only your own review
+DROP POLICY IF EXISTS "reviews public read" ON reviews;
+CREATE POLICY "reviews public read" ON reviews FOR SELECT USING (true);
+DROP POLICY IF EXISTS "reviews own insert" ON reviews;
+CREATE POLICY "reviews own insert" ON reviews FOR INSERT WITH CHECK (reviewer_id = auth.uid());
+DROP POLICY IF EXISTS "reviews own update" ON reviews;
+CREATE POLICY "reviews own update" ON reviews FOR UPDATE USING (reviewer_id = auth.uid());
+
+-- FAVORITES: owner-only
+DROP POLICY IF EXISTS "favorites owner all" ON favorites;
+CREATE POLICY "favorites owner all" ON favorites FOR ALL USING (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+) WITH CHECK (
+  tenant_id IN (SELECT id FROM tenant_profile WHERE user_id = auth.uid())
+);
+
+-- NOTIFICATIONS: owner-only read/update; inserted by the app on behalf of
+-- the recipient, so allow any authenticated user to insert for anyone
+-- (notifications are always triggered by the other party's action).
+DROP POLICY IF EXISTS "notifications owner read" ON notifications;
+CREATE POLICY "notifications owner read" ON notifications FOR SELECT USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "notifications authenticated insert" ON notifications;
+CREATE POLICY "notifications authenticated insert" ON notifications FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "notifications owner update" ON notifications;
+CREATE POLICY "notifications owner update" ON notifications FOR UPDATE USING (user_id = auth.uid());
+
+-- SEARCH_HISTORY: owner-only
+DROP POLICY IF EXISTS "search_history owner all" ON search_history;
+CREATE POLICY "search_history owner all" ON search_history FOR ALL
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+-- TRANSACTIONS_LOG: owner-only read; inserted by the app on the user's own behalf
+DROP POLICY IF EXISTS "transactions_log owner read" ON transactions_log;
+CREATE POLICY "transactions_log owner read" ON transactions_log FOR SELECT USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "transactions_log owner insert" ON transactions_log;
+CREATE POLICY "transactions_log owner insert" ON transactions_log FOR INSERT WITH CHECK (user_id = auth.uid());
+
+-- DOCUMENTS: owner-only
+DROP POLICY IF EXISTS "documents owner all" ON documents;
+CREATE POLICY "documents owner all" ON documents FOR ALL
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+-- FEEDBACK: owner-only
+DROP POLICY IF EXISTS "feedback owner all" ON feedback;
+CREATE POLICY "feedback owner all" ON feedback FOR ALL
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+-- ID_VERIFICATION: owner (landlord) can read/insert their own; nothing in the
+-- app ever sets verified = true client-side, so no client UPDATE policy is
+-- granted — that should only ever be done via the service role (admin review).
+DROP POLICY IF EXISTS "id_verification owner read" ON id_verification;
+CREATE POLICY "id_verification owner read" ON id_verification FOR SELECT USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "id_verification owner insert" ON id_verification;
+CREATE POLICY "id_verification owner insert" ON id_verification FOR INSERT WITH CHECK (user_id = auth.uid());
+
+-- SUBSCRIPTIONS: owner-only read; writes are performed by the app on the
+-- landlord's own behalf (plan selection/upgrade)
+DROP POLICY IF EXISTS "subscriptions owner read" ON subscriptions;
+CREATE POLICY "subscriptions owner read" ON subscriptions FOR SELECT USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "subscriptions owner write" ON subscriptions;
+CREATE POLICY "subscriptions owner write" ON subscriptions FOR INSERT WITH CHECK (user_id = auth.uid());
+DROP POLICY IF EXISTS "subscriptions owner update" ON subscriptions;
+CREATE POLICY "subscriptions owner update" ON subscriptions FOR UPDATE USING (user_id = auth.uid());
 
 -- ============================================================================
 -- ENTITY RELATIONSHIP DIAGRAM & DOCUMENTATION
@@ -453,7 +817,7 @@ CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 MULTI-USER DATA MODEL FOR SUPABASE:
 
 CORE ENTITIES:
-├── USERS (id, email, user_type='tenant'|'landlord')
+├── USERS (id, email, user_type='tenant'|'landlord'; id == auth.uid())
 │   ├── 1-to-1 ──> TENANT_PROFILE (via user_id) - for tenants
 │   ├── 1-to-1 ──> LANDLORD_PROFILE (via user_id) - for landlords
 │   ├── 1-to-many ──> DOCUMENTS (via user_id)
@@ -462,6 +826,7 @@ CORE ENTITIES:
 │   ├── 1-to-many ──> FEEDBACK (via user_id)
 │   ├── 1-to-many ──> SEARCH_HISTORY (via user_id)
 │   ├── 1-to-many ──> PAYMENT_METHODS (via user_id)
+│   ├── 1-to-many ──> ID_VERIFICATION (via user_id)
 │   └── 1-to-many ──> REVIEWS (via reviewer_id)
 │
 ├── TENANT_PROFILE
@@ -477,6 +842,7 @@ CORE ENTITIES:
 │   ├── 1-to-many ──> PAYMENTS (via landlord_id)
 │   ├── 1-to-many ──> INQUIRIES (via landlord_id)
 │   ├── 1-to-many ──> CONVERSATIONS (via landlord_id)
+│   ├── 1-to-1 ──> SUBSCRIPTIONS (via landlord_id)
 │   └── 1-to-many ──> ID_VERIFICATION (via landlord_id)
 │
 ├── LISTINGS (owned by LANDLORD_PROFILE)
@@ -519,7 +885,9 @@ CORE ENTITIES:
     ├── DOCUMENTS - KYC/verification
     ├── FEEDBACK - User feedback
     ├── SEARCH_HISTORY - Analytics
-    └── TRANSACTIONS_LOG - Audit trail
+    ├── TRANSACTIONS_LOG - Audit trail
+    ├── ID_VERIFICATION - Landlord ID review images
+    └── SUBSCRIPTIONS - Landlord plan tier
 
 KEY DATA FLOWS:
 1. BOOKING CREATION:
@@ -542,23 +910,23 @@ KEY DATA FLOWS:
    Events → NOTIFICATIONS ← USERS
    └─> Linked to: booking, payment, message, review, etc.
 
-MULTI-TENANCY ISOLATION:
-- Every database operation filters by user context
+6. LANDLORD ID VERIFICATION:
+   LANDLORD_PROFILE → upload to id-verifications storage bucket → ID_VERIFICATION row
+   └─> verified stays false until an admin (service role) approves it
+
+MULTI-TENANCY ISOLATION (now enforced by Row Level Security above, not just
+by the app trusting client-supplied ids):
 - Tenants can only see: their own profile, listings, bookings, payments, conversations
-- Landlords can only see: their own profile, listings, bookings (for their properties), inquiries
-- Shared resources (listings) are visible to all but editable only by owner
+- Landlords can only see: their own profile, bookings/payments for their properties, inquiries
+- Shared resources (listings, reviews, landlord profiles) are visible to all but editable only by owner
 - Messages/Conversations are isolated by (tenant_id, landlord_id) pairs
 - Payments show to both parties (landlord receives, tenant pays)
 
-SUPABASE ROW-LEVEL SECURITY (RLS) STRATEGY:
-- Users can read/write only their own records
-- Tenant_profiles: users can read/write only their own
-- Landlord_profiles: users can read/write only their own
-- Listings: all can read, only landlord can write
-- Bookings: tenant/landlord involved can read, appropriate user can write
-- Payments: both parties can read, system/appropriate user writes
-- Messages/Conversations: involved parties can read/write
-- Reviews: user can read all, write only their own
+KNOWN APP-CODE ISSUES NOT FIXABLE AT THE SCHEMA LEVEL (fix in lib/supabaseClient.js):
+- createBooking() has a `.maybeno()` typo where `.maybeSingle()` was intended
+- getLandlordRevenue() filters payments by `landlord_id = <users.id>` but
+  payments.landlord_id actually references landlord_profile(id), not users(id)
+- notifications' client-side `supportedTypes` whitelist omits
+  'booking_cancelled' and 'booking_rejected', silently downgrading them to
+  'system' even though both are valid per this schema's CHECK constraint
 */
-
-
